@@ -3,7 +3,7 @@ ERCOT Battery Storage Revenue Opportunity Dashboard
 Zentus - Intelligent Forecasting for Renewables
 
 Author: Juan Manuel Boullosa Novo
-Date: November 2024
+Date: November 2025
 
 Run with: streamlit run app.py
 """
@@ -890,7 +890,7 @@ st.markdown("""
 <div style='text-align: center; color: #6C757D;'>
     <p><strong>Zentus</strong> - Intelligent Forecasting for Renewables</p>
     <p>Stanford Doerr School of Sustainability Accelerator Fellow</p>
-    <p>Engie Urja AI Challenge 2024</p>
+    <p>Engie Urja AI Challenge 2025</p>
     <p>Contact: info@zentus.io | zentus.io</p>
 </div>
 """, unsafe_allow_html=True)
