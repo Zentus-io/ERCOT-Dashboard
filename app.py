@@ -104,10 +104,33 @@ def get_available_nodes(price_data):
 # BATTERY SIMULATION
 # ============================================================================
 
+def calculate_dynamic_thresholds(price_df):
+    """
+    Calculate dynamic charge/discharge thresholds based on price distribution.
+
+    Returns:
+    --------
+    tuple: (charge_threshold, discharge_threshold)
+    """
+    rt_prices = price_df['price_mwh_rt']
+
+    # Use 25th and 75th percentiles for thresholds
+    charge_threshold = rt_prices.quantile(0.25)
+    discharge_threshold = rt_prices.quantile(0.75)
+
+    # Ensure minimum spread of $5/MWh for arbitrage opportunity
+    if discharge_threshold - charge_threshold < 5:
+        median = rt_prices.median()
+        charge_threshold = median - 2.5
+        discharge_threshold = median + 2.5
+
+    return charge_threshold, discharge_threshold
+
+
 def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
                               efficiency, use_optimal=True, improvement_factor=0.0):
     """
-    Simulate battery dispatch strategy
+    Simulate battery dispatch strategy with dynamic thresholds.
 
     Parameters:
     -----------
@@ -123,12 +146,21 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
         If True, use perfect foresight (RT prices). If False, use DA prices.
     improvement_factor : float
         Fraction of forecast error to correct (0 to 1)
+
+    Returns:
+    --------
+    pd.DataFrame: Original dataframe with added columns for dispatch decisions
     """
     df = price_df.copy()
+
+    # Calculate dynamic thresholds based on actual RT price distribution
+    charge_threshold, discharge_threshold = calculate_dynamic_thresholds(df)
 
     # Start at 50% state of charge
     soc = 0.5 * battery_capacity_mwh
     revenue = 0
+    charge_cost = 0
+    discharge_revenue = 0
 
     dispatch = []
     soc_history = []
@@ -137,33 +169,39 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
 
     for idx, row in df.iterrows():
         if use_optimal:
-            # Perfect foresight - use actual RT prices
+            # Perfect foresight - use actual RT prices for decisions
             decision_price = row['price_mwh_rt']
         else:
             # Use day-ahead forecast with potential improvement
+            # improvement_factor = 0: uses DA only (baseline)
+            # improvement_factor = 1: uses RT (perfect forecast)
+            # improvement_factor = 0.1: moves 10% towards RT from DA
             improved_forecast = row['price_mwh_da'] + (row['forecast_error'] * improvement_factor)
             decision_price = improved_forecast
 
-        # Actual price paid/received (always RT price)
+        # Actual price paid/received (always RT price in real market)
         rt_price = row['price_mwh_rt']
 
-        # Simple threshold strategy
-        # Charge when prices are low, discharge when high
-        if decision_price < 20 and soc < battery_capacity_mwh * 0.9:
+        # Dynamic threshold strategy
+        # Charge when price is below 25th percentile and battery not full
+        if decision_price < charge_threshold and soc < battery_capacity_mwh * 0.95:
             # Charge
-            charge_amount = min(battery_power_mw, battery_capacity_mwh - soc)
+            charge_amount = min(battery_power_mw, battery_capacity_mwh * 0.95 - soc)
             soc += charge_amount * efficiency
             cost = charge_amount * rt_price
             revenue -= cost
+            charge_cost += cost
             action = 'charge'
             power = -charge_amount
 
-        elif decision_price > 80 and soc > battery_capacity_mwh * 0.1:
+        # Discharge when price is above 75th percentile and battery not empty
+        elif decision_price > discharge_threshold and soc > battery_capacity_mwh * 0.05:
             # Discharge
-            discharge_amount = min(battery_power_mw, soc)
+            discharge_amount = min(battery_power_mw, soc - battery_capacity_mwh * 0.05)
             soc -= discharge_amount
             revenue_from_sale = discharge_amount * rt_price
             revenue += revenue_from_sale
+            discharge_revenue += revenue_from_sale
             action = 'discharge'
             power = discharge_amount
 
@@ -181,6 +219,15 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     df['soc'] = soc_history
     df['cumulative_revenue'] = revenue_history
     df['power'] = power_history
+
+    # Store thresholds and totals for display
+    df.attrs['charge_threshold'] = charge_threshold
+    df.attrs['discharge_threshold'] = discharge_threshold
+    df.attrs['total_charge_cost'] = charge_cost
+    df.attrs['total_discharge_revenue'] = discharge_revenue
+    df.attrs['charge_count'] = (df['dispatch'] == 'charge').sum()
+    df.attrs['discharge_count'] = (df['dispatch'] == 'discharge').sum()
+    df.attrs['hold_count'] = (df['dispatch'] == 'hold').sum()
 
     return df
 
@@ -289,6 +336,15 @@ st.sidebar.metric("Date", "July 20, 2025")
 st.sidebar.metric("Hours Available", len(node_data))
 st.sidebar.metric("Extreme Events (>$10 spread)", node_data['extreme_event'].sum())
 
+# Calculate and display dynamic thresholds
+charge_thresh, discharge_thresh = calculate_dynamic_thresholds(node_data)
+st.sidebar.markdown("---")
+st.sidebar.subheader("Trading Thresholds")
+st.sidebar.metric("Charge Below", f"${charge_thresh:.2f}/MWh",
+                 help="Charge when price is below 25th percentile")
+st.sidebar.metric("Discharge Above", f"${discharge_thresh:.2f}/MWh",
+                 help="Discharge when price is above 75th percentile")
+
 # ============================================================================
 # RUN SIMULATIONS
 # ============================================================================
@@ -362,6 +418,37 @@ with col4:
 
 st.markdown("---")
 
+# Dispatch statistics
+st.subheader("📋 Battery Dispatch Summary")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("**Baseline (DA Forecast)**")
+    st.write(f"Charge events: {naive_dispatch.attrs['charge_count']}")
+    st.write(f"Discharge events: {naive_dispatch.attrs['discharge_count']}")
+    st.write(f"Hold periods: {naive_dispatch.attrs['hold_count']}")
+    st.write(f"Charge cost: ${naive_dispatch.attrs['total_charge_cost']:,.0f}")
+    st.write(f"Discharge revenue: ${naive_dispatch.attrs['total_discharge_revenue']:,.0f}")
+
+with col2:
+    st.markdown(f"**Improved (+{forecast_improvement}%)**")
+    st.write(f"Charge events: {improved_dispatch.attrs['charge_count']}")
+    st.write(f"Discharge events: {improved_dispatch.attrs['discharge_count']}")
+    st.write(f"Hold periods: {improved_dispatch.attrs['hold_count']}")
+    st.write(f"Charge cost: ${improved_dispatch.attrs['total_charge_cost']:,.0f}")
+    st.write(f"Discharge revenue: ${improved_dispatch.attrs['total_discharge_revenue']:,.0f}")
+
+with col3:
+    st.markdown("**Optimal (Perfect Forecast)**")
+    st.write(f"Charge events: {optimal_dispatch.attrs['charge_count']}")
+    st.write(f"Discharge events: {optimal_dispatch.attrs['discharge_count']}")
+    st.write(f"Hold periods: {optimal_dispatch.attrs['hold_count']}")
+    st.write(f"Charge cost: ${optimal_dispatch.attrs['total_charge_cost']:,.0f}")
+    st.write(f"Discharge revenue: ${optimal_dispatch.attrs['total_discharge_revenue']:,.0f}")
+
+st.markdown("---")
+
 # ============================================================================
 # MAIN VISUALIZATIONS
 # ============================================================================
@@ -406,10 +493,11 @@ with tab1:
             hovertemplate='Negative Price: $%{y:.2f}/MWh<extra></extra>'
         ))
 
-    fig_price.add_hline(y=80, line_dash="dot", line_color="green",
-                        annotation_text="Discharge Threshold ($80/MWh)")
-    fig_price.add_hline(y=20, line_dash="dot", line_color="orange",
-                        annotation_text="Charge Threshold ($20/MWh)")
+    # Add dynamic threshold lines
+    fig_price.add_hline(y=discharge_thresh, line_dash="dot", line_color="green",
+                        annotation_text=f"Discharge Threshold (${discharge_thresh:.2f}/MWh)")
+    fig_price.add_hline(y=charge_thresh, line_dash="dot", line_color="orange",
+                        annotation_text=f"Charge Threshold (${charge_thresh:.2f}/MWh)")
     fig_price.add_hline(y=0, line_dash="solid", line_color="gray",
                         annotation_text="$0/MWh")
 
