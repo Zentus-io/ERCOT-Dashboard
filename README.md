@@ -99,4 +99,4 @@ ERCOT-Dashboard/
 Stanford Doerr School of Sustainability Accelerator Fellow
 
 Email: <jmboullosa@zentus.io>
-Website: <zentus.io>
+Website: <https://zentus.io>
