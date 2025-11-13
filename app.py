@@ -20,9 +20,12 @@ from pathlib import Path
 # PAGE CONFIGURATION
 # ============================================================================
 
+# Set custom favicon
+favicon_path = Path(__file__).parent / 'media' / 'favicon-32x32.png'
+
 st.set_page_config(
     page_title="Zentus - ERCOT Revenue Opportunity",
-    page_icon="⚡",
+    page_icon=str(favicon_path) if favicon_path.exists() else "⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
