@@ -1,6 +1,6 @@
 # ERCOT Battery Storage Revenue Opportunity Dashboard
 
-**Zentus - Engie Urja AI Challenge 2025**
+## Zentus - Engie Urja AI Challenge 2025
 
 Interactive Streamlit dashboard demonstrating how improved renewable energy forecasting increases battery storage revenue in ERCOT markets.
 
@@ -37,11 +37,13 @@ The dashboard will open automatically in your browser at `http://localhost:8501`
 ## Features
 
 ### Interactive Analysis
+
 - Select different settlement points
 - Adjust battery specifications (capacity, power, efficiency)
 - Simulate forecast accuracy improvements (0-50%)
 
 ### Visualizations
+
 - Real-time vs Day-ahead price comparison
 - Battery state of charge across strategies
 - Cumulative revenue comparison
@@ -50,6 +52,7 @@ The dashboard will open automatically in your browser at `http://localhost:8501`
 - Price spread analysis
 
 ### Three Strategy Comparison
+
 1. **Baseline**: Day-ahead forecast only
 2. **Improved**: With forecast accuracy improvement
 3. **Optimal**: Perfect foresight (theoretical maximum)
@@ -64,6 +67,7 @@ The dashboard will open automatically in your browser at `http://localhost:8501`
 ## Data Sources
 
 Price data processed from ERCOT shadow-monitor repository:
+
 - `data/da_prices.csv` - Day-ahead market prices
 - `data/rt_prices.csv` - Real-time market prices
 
@@ -71,7 +75,7 @@ Format: `timestamp, node, price_mwh`
 
 ## Project Structure
 
-```
+```txt
 ERCOT-Dashboard/
 ├── app.py              # Main Streamlit application
 ├── data/              # Price data CSVs
@@ -94,8 +98,8 @@ ERCOT-Dashboard/
 **Zentus** - Intelligent Forecasting for Renewables
 Stanford Doerr School of Sustainability Accelerator Fellow
 
-Email: jmboullosa@zentus.io
-Website: zentus.io
+Email: <jmboullosa@zentus.io>
+Website: <zentus.io>
 
 ## Next Steps
 
