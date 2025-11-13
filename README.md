@@ -9,7 +9,7 @@ Interactive Streamlit dashboard demonstrating how improved renewable energy fore
 ### 1. Install Dependencies
 
 ```bash
-cd /home/boujuan/Documents/ZENTUS/Autonomo/ERCOT/ERCOT-Dashboard
+cd ~/ERCOT/ERCOT-Dashboard
 pip install -r requirements.txt
 ```
 
@@ -78,8 +78,7 @@ ERCOT-Dashboard/
 │   ├── da_prices.csv
 │   └── rt_prices.csv
 ├── requirements.txt   # Python dependencies
-├── README.md          # This file
-└── CLAUDE.md          # Development guidance
+└── README.md          # This file
 ```
 
 ## Team
@@ -95,7 +94,7 @@ ERCOT-Dashboard/
 **Zentus** - Intelligent Forecasting for Renewables
 Stanford Doerr School of Sustainability Accelerator Fellow
 
-Email: aoife@zentus.io
+Email: jmboullosa@zentus.io
 Website: zentus.io
 
 ## Next Steps
@@ -104,9 +103,4 @@ Website: zentus.io
 2. Add hub-level prices (HB_NORTH, HB_HOUSTON) for broader analysis
 3. Refine battery dispatch strategy based on market insights
 4. Prepare 2-3 page analysis document for submission
-5. Deploy dashboard for demo (optional)
-
-## Submission Timeline
-
-- **November 28**: Team review of MVP
-- **November 30**: Final submission deadline
+5. Deploy dashboard for demo
