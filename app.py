@@ -496,7 +496,7 @@ with tab1:
         x=node_data['timestamp'],
         y=node_data['price_mwh_da'],
         name='Day-Ahead Price',
-        line=dict(color='#FF6B35', width=2, dash='dash'),
+        line={'color': '#FF6B35', 'width': 2, 'dash': 'dash'},
         hovertemplate='DA: $%{y:.2f}/MWh<extra></extra>'
     ))
 
