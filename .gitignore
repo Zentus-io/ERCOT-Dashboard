@@ -42,6 +42,9 @@ ENV/
 CLAUDE.md
 Thumbs.db
 
+# Documentation and analysis files (not for git)
+docs/
+
 # Environment variables
 .env
 .env.local
