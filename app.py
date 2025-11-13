@@ -496,7 +496,7 @@ with tab1:
         x=node_data['timestamp'],
         y=node_data['price_mwh_da'],
         name='Day-Ahead Price',
-        line={'color': '#FF6B35', 'width': 2, 'dash': 'dash'},
+        line=dict(color='#FF6B35', width=2, dash='dash'),
         hovertemplate='DA: $%{y:.2f}/MWh<extra></extra>'
     ))
 
@@ -890,7 +890,7 @@ st.markdown("""
 <div style='text-align: center; color: #6C757D;'>
     <p><strong>Zentus</strong> - Intelligent Forecasting for Renewables</p>
     <p>Stanford Doerr School of Sustainability Accelerator Fellow</p>
-    <p>Engie Urja AI Challenge 2025</p>
+    <p>Engie Urja AI Challenge 2024</p>
     <p>Contact: info@zentus.io | zentus.io</p>
 </div>
 """, unsafe_allow_html=True)
