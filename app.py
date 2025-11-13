@@ -104,23 +104,40 @@ def get_available_nodes(price_data):
 # BATTERY SIMULATION
 # ============================================================================
 
-def calculate_dynamic_thresholds(price_df):
+def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=False):
     """
     Calculate dynamic charge/discharge thresholds based on price distribution.
+
+    Thresholds are calculated from the forecast type being used to ensure
+    fair comparison and meaningful differences between strategies.
+
+    Parameters:
+    -----------
+    price_df : pd.DataFrame
+        Price data with columns: price_mwh_da, price_mwh_rt, forecast_error
+    improvement_factor : float
+        Fraction of forecast error correction (0 to 1)
+    use_optimal : bool
+        If True, use RT prices. If False, use DA-based forecasts.
 
     Returns:
     --------
     tuple: (charge_threshold, discharge_threshold)
     """
-    rt_prices = price_df['price_mwh_rt']
+    if use_optimal:
+        # For optimal strategy, use RT price distribution
+        decision_prices = price_df['price_mwh_rt']
+    else:
+        # For baseline/improved, calculate the forecast prices that will be used
+        decision_prices = price_df['price_mwh_da'] + (price_df['forecast_error'] * improvement_factor)
 
     # Use 25th and 75th percentiles for thresholds
-    charge_threshold = rt_prices.quantile(0.25)
-    discharge_threshold = rt_prices.quantile(0.75)
+    charge_threshold = decision_prices.quantile(0.25)
+    discharge_threshold = decision_prices.quantile(0.75)
 
     # Ensure minimum spread of $5/MWh for arbitrage opportunity
     if discharge_threshold - charge_threshold < 5:
-        median = rt_prices.median()
+        median = decision_prices.median()
         charge_threshold = median - 2.5
         discharge_threshold = median + 2.5
 
@@ -153,8 +170,10 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     """
     df = price_df.copy()
 
-    # Calculate dynamic thresholds based on actual RT price distribution
-    charge_threshold, discharge_threshold = calculate_dynamic_thresholds(df)
+    # Calculate thresholds appropriate for this forecast type
+    charge_threshold, discharge_threshold = calculate_dynamic_thresholds(
+        df, improvement_factor=improvement_factor, use_optimal=use_optimal
+    )
 
     # Start at 50% state of charge
     soc = 0.5 * battery_capacity_mwh
@@ -336,8 +355,8 @@ st.sidebar.metric("Date", "July 20, 2025")
 st.sidebar.metric("Hours Available", len(node_data))
 st.sidebar.metric("Extreme Events (>$10 spread)", node_data['extreme_event'].sum())
 
-# Calculate and display dynamic thresholds
-charge_thresh, discharge_thresh = calculate_dynamic_thresholds(node_data)
+# Calculate and display dynamic thresholds (baseline uses DA-based thresholds)
+charge_thresh, discharge_thresh = calculate_dynamic_thresholds(node_data, improvement_factor=0.0, use_optimal=False)
 st.sidebar.markdown("---")
 st.sidebar.subheader("Trading Thresholds")
 st.sidebar.metric("Charge Below", f"${charge_thresh:.2f}/MWh",
