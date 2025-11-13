@@ -541,7 +541,7 @@ with tab1:
         hovermode='x unified'
     )
 
-    st.plotly_chart(fig_price, use_container_width=True)
+    st.plotly_chart(fig_price, width='stretch')
 
     # Price statistics and forecast error
     col1, col2 = st.columns(2)
@@ -584,7 +584,7 @@ with tab1:
             color_discrete_sequence=['#0A5F7A']
         )
         fig_error_hist.update_layout(showlegend=False)
-        st.plotly_chart(fig_error_hist, use_container_width=True)
+        st.plotly_chart(fig_error_hist, width='stretch')
 
         mae = node_data['forecast_error'].abs().mean()
         st.metric("Mean Absolute Error", f"${mae:.2f}/MWh")
@@ -631,7 +631,7 @@ with tab2:
         hovermode='x unified'
     )
 
-    st.plotly_chart(fig_soc, use_container_width=True)
+    st.plotly_chart(fig_soc, width='stretch')
 
     # Dispatch actions comparison
     col1, col2 = st.columns(2)
@@ -645,7 +645,7 @@ with tab2:
             title="Distribution of Actions (Baseline)",
             color_discrete_map={'charge': '#28A745', 'discharge': '#DC3545', 'hold': '#6C757D'}
         )
-        st.plotly_chart(fig_dispatch_naive, use_container_width=True)
+        st.plotly_chart(fig_dispatch_naive, width='stretch')
 
     with col2:
         st.subheader("Optimal Dispatch Actions")
@@ -656,7 +656,7 @@ with tab2:
             title="Distribution of Actions (Optimal)",
             color_discrete_map={'charge': '#28A745', 'discharge': '#DC3545', 'hold': '#6C757D'}
         )
-        st.plotly_chart(fig_dispatch_opt, use_container_width=True)
+        st.plotly_chart(fig_dispatch_opt, width='stretch')
 
 with tab3:
     st.subheader("Cumulative Revenue Comparison")
@@ -695,7 +695,7 @@ with tab3:
         hovermode='x unified'
     )
 
-    st.plotly_chart(fig_revenue, use_container_width=True)
+    st.plotly_chart(fig_revenue, width='stretch')
 
     # Revenue metrics
     st.subheader("Revenue Breakdown")
@@ -770,7 +770,7 @@ with tab4:
     fig_sensitivity.update_traces(line_color='#0A5F7A', line_width=3)
     fig_sensitivity.update_layout(height=500)
 
-    st.plotly_chart(fig_sensitivity, use_container_width=True)
+    st.plotly_chart(fig_sensitivity, width='stretch')
 
     # Key insights
     col1, col2 = st.columns(2)
@@ -818,7 +818,7 @@ with tab4:
             line=dict(color='gray', dash='dash')
         ))
 
-        st.plotly_chart(fig_spread, use_container_width=True)
+        st.plotly_chart(fig_spread, width='stretch')
 
 # ============================================================================
 # FOOTER AND EXPORT
