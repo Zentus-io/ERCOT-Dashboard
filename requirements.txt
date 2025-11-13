@@ -1,5 +1,5 @@
 # ERCOT Battery Storage Revenue Opportunity Dashboard
-# Zentus - Engie Urja AI Challenge 2024
+# Zentus - Engie Urja AI Challenge 2025
 
 # Core dashboard framework
 streamlit>=1.28.0
@@ -10,7 +10,3 @@ numpy>=1.24.0
 
 # Visualization
 plotly>=5.17.0
-
-# Optional: For future enhancements
-# openpyxl>=3.0.0  # Excel file support
-# python-dotenv>=0.19.0  # Environment variables
