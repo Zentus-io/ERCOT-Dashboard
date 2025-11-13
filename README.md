@@ -1,6 +1,6 @@
 # ERCOT Battery Storage Revenue Opportunity Dashboard
 
-**Zentus - Engie Urja AI Challenge 2024**
+**Zentus - Engie Urja AI Challenge 2025**
 
 Interactive Streamlit dashboard demonstrating how improved renewable energy forecasting increases battery storage revenue in ERCOT markets.
 
