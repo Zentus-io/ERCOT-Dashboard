@@ -263,12 +263,22 @@ with col1:
                 unsafe_allow_html=True)
 
 with col2:
-    st.markdown("""
-        <div style='text-align: right; padding: 20px;'>
-            <span style='font-size: 2rem; color: #0A5F7A; font-weight: bold;'>Zentus</span><br>
-            <span style='font-size: 0.9rem; color: #6C757D;'>Intelligent Forecasting</span>
-        </div>
-    """, unsafe_allow_html=True)
+    # Display Zentus logo and brand text together
+    logo_path = Path(__file__).parent / 'media' / 'Logo_Option_5_nobg.png'
+
+    col2a, col2b = st.columns([1, 2])
+
+    with col2a:
+        if logo_path.exists():
+            st.image(str(logo_path), width=80)
+
+    with col2b:
+        st.markdown("""
+            <div style='padding-top: 15px;'>
+                <span style='font-size: 1.8rem; color: #0A5F7A; font-weight: bold;'>Zentus</span><br>
+                <span style='font-size: 0.8rem; color: #6C757D;'>Intelligent Forecasting</span>
+            </div>
+        """, unsafe_allow_html=True)
 
 # Data availability notice
 st.markdown("""
