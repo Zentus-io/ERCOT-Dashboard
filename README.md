@@ -88,7 +88,7 @@ ERCOT-Dashboard/
 ## Team
 
 - **Juan Boullosa** - Dashboard development
-- **Nicholas** - Data processing (ERCOT-shadow-monitor)
+- **N** - Data processing (ERCOT-shadow-monitor)
 - **Aoife Henry** - Strategy and submission
 - **Rafa Mudafort** - Database infrastructure
 - **Ishaan Sood** - Market context
@@ -100,11 +100,3 @@ Stanford Doerr School of Sustainability Accelerator Fellow
 
 Email: <jmboullosa@zentus.io>
 Website: <zentus.io>
-
-## Next Steps
-
-1. Request additional historical data from Nicholas showing extreme events
-2. Add hub-level prices (HB_NORTH, HB_HOUSTON) for broader analysis
-3. Refine battery dispatch strategy based on market insights
-4. Prepare 2-3 page analysis document for submission
-5. Deploy dashboard for demo
