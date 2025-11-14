@@ -830,27 +830,12 @@ col1, col2, col3 = st.columns([2, 2, 1])
 
 with col1:
     st.markdown("""
-    ### About This Analysis
-
-    This dashboard demonstrates the potential revenue impact of improved forecasting
-    for battery storage operations in ERCOT. The analysis compares three scenarios:
-
-    - **Baseline**: Using day-ahead price forecasts only
-    - **Improved**: With enhanced forecast accuracy
-    - **Optimal**: With perfect foresight (theoretical maximum)
-
-    **Current data**: July 20, 2025 wind resource prices (24 hours)
+    ### About
     """)
 
 with col2:
     st.markdown("""
-    ### Key Takeaways
-
-    1. Extreme price events drive the majority of revenue opportunity
-    2. Forecast accuracy during volatile periods is critical
-    3. Small improvements in forecasting yield significant returns
-    4. Negative prices create unique arbitrage opportunities
-    5. Traditional RMSE optimization misses revenue-critical hours
+    ### Info
     """)
 
 with col3:
