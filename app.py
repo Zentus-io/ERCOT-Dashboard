@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from datetime import datetime
 from pathlib import Path
 
@@ -107,7 +108,8 @@ def get_available_nodes(price_data):
 # BATTERY SIMULATION
 # ============================================================================
 
-def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=False):
+def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=False,
+                                 charge_percentile=0.25, discharge_percentile=0.75):
     """
     Calculate dynamic charge/discharge thresholds based on price distribution.
 
@@ -122,6 +124,10 @@ def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=F
         Fraction of forecast error correction (0 to 1)
     use_optimal : bool
         If True, use RT prices. If False, use DA-based forecasts.
+    charge_percentile : float
+        Percentile for charge threshold (default: 0.25 = 25th percentile)
+    discharge_percentile : float
+        Percentile for discharge threshold (default: 0.75 = 75th percentile)
 
     Returns:
     --------
@@ -134,9 +140,9 @@ def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=F
         # For baseline/improved, calculate the forecast prices that will be used
         decision_prices = price_df['price_mwh_da'] + (price_df['forecast_error'] * improvement_factor)
 
-    # Use 25th and 75th percentiles for thresholds
-    charge_threshold = decision_prices.quantile(0.25)
-    discharge_threshold = decision_prices.quantile(0.75)
+    # Use configurable percentiles for thresholds
+    charge_threshold = decision_prices.quantile(charge_percentile)
+    discharge_threshold = decision_prices.quantile(discharge_percentile)
 
     # Ensure minimum spread of $5/MWh for arbitrage opportunity
     if discharge_threshold - charge_threshold < 5:
@@ -148,7 +154,8 @@ def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=F
 
 
 def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
-                              efficiency, use_optimal=True, improvement_factor=0.0):
+                              efficiency, use_optimal=True, improvement_factor=0.0,
+                              charge_percentile=0.25, discharge_percentile=0.75):
     """
     Simulate battery dispatch strategy with dynamic thresholds.
 
@@ -166,6 +173,10 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
         If True, use perfect foresight (RT prices). If False, use DA prices.
     improvement_factor : float
         Fraction of forecast error to correct (0 to 1)
+    charge_percentile : float
+        Percentile for charge threshold (default: 0.25)
+    discharge_percentile : float
+        Percentile for discharge threshold (default: 0.75)
 
     Returns:
     --------
@@ -175,7 +186,8 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
 
     # Calculate thresholds appropriate for this forecast type
     charge_threshold, discharge_threshold = calculate_dynamic_thresholds(
-        df, improvement_factor=improvement_factor, use_optimal=use_optimal
+        df, improvement_factor=improvement_factor, use_optimal=use_optimal,
+        charge_percentile=charge_percentile, discharge_percentile=discharge_percentile
     )
 
     # Start at 50% state of charge
@@ -253,6 +265,118 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
 
     return df
 
+
+def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
+                                     efficiency, window_hours=6, improvement_factor=0.0):
+    """
+    Simulate battery dispatch using rolling window optimization strategy.
+
+    At each hour, looks ahead N hours and makes locally optimal decision:
+    - Charge if current price is minimum in lookahead window
+    - Discharge if current price is maximum in lookahead window
+    - Hold otherwise
+
+    This strategy naturally handles temporal constraints and avoids threshold
+    crossing sensitivity issues of percentile-based strategies.
+
+    Parameters:
+    -----------
+    price_df : pd.DataFrame
+        Price data with columns: timestamp, price_mwh_da, price_mwh_rt, forecast_error
+    battery_capacity_mwh : float
+        Battery energy capacity
+    battery_power_mw : float
+        Battery power capacity (charge/discharge rate)
+    efficiency : float
+        Round-trip efficiency (0 to 1)
+    window_hours : int
+        Number of hours to look ahead for optimization (default: 6)
+    improvement_factor : float
+        Fraction of forecast error to correct (0 to 1)
+
+    Returns:
+    --------
+    pd.DataFrame: Original dataframe with added columns for dispatch decisions
+    """
+    df = price_df.copy()
+
+    # Start at 50% state of charge
+    soc = 0.5 * battery_capacity_mwh
+    revenue = 0
+    charge_cost = 0
+    discharge_revenue = 0
+
+    dispatch = []
+    soc_history = []
+    revenue_history = []
+    power_history = []
+
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+
+        # Calculate decision price (forecast with potential improvement)
+        improved_forecast = row['price_mwh_da'] + (row['forecast_error'] * improvement_factor)
+        decision_price = improved_forecast
+
+        # Actual price paid/received (always RT price in real market)
+        rt_price = row['price_mwh_rt']
+
+        # Define lookahead window
+        window_end = min(idx + window_hours, len(df))
+        window_prices = df.iloc[idx:window_end].apply(
+            lambda r: r['price_mwh_da'] + (r['forecast_error'] * improvement_factor),
+            axis=1
+        )
+
+        # Rolling window optimization logic
+        # Charge if current price is minimum in window AND battery not full
+        if decision_price == window_prices.min() and soc < battery_capacity_mwh * 0.95:
+            # Charge: this is the cheapest hour in lookahead window
+            charge_amount = min(battery_power_mw, battery_capacity_mwh * 0.95 - soc)
+            soc += charge_amount * efficiency
+            cost = charge_amount * rt_price
+            revenue -= cost
+            charge_cost += cost
+            action = 'charge'
+            power = -charge_amount
+
+        # Discharge if current price is maximum in window AND battery not empty
+        elif decision_price == window_prices.max() and soc > battery_capacity_mwh * 0.05:
+            # Discharge: this is the most expensive hour in lookahead window
+            discharge_amount = min(battery_power_mw, soc - battery_capacity_mwh * 0.05)
+            soc -= discharge_amount
+            revenue_from_sale = discharge_amount * rt_price
+            revenue += revenue_from_sale
+            discharge_revenue += revenue_from_sale
+            action = 'discharge'
+            power = discharge_amount
+
+        else:
+            # Hold
+            action = 'hold'
+            power = 0
+
+        dispatch.append(action)
+        soc_history.append(soc)
+        revenue_history.append(revenue)
+        power_history.append(power)
+
+    df['dispatch'] = dispatch
+    df['soc'] = soc_history
+    df['cumulative_revenue'] = revenue_history
+    df['power'] = power_history
+
+    # Store totals for display
+    df.attrs['window_hours'] = window_hours
+    df.attrs['total_charge_cost'] = charge_cost
+    df.attrs['total_discharge_revenue'] = discharge_revenue
+    df.attrs['charge_count'] = (df['dispatch'] == 'charge').sum()
+    df.attrs['discharge_count'] = (df['dispatch'] == 'discharge').sum()
+    df.attrs['hold_count'] = (df['dispatch'] == 'hold').sum()
+
+    return df
+
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -319,7 +443,61 @@ selected_node = st.sidebar.selectbox(
 node_data = price_data[price_data['node'] == selected_node].copy()
 node_data = node_data.sort_values('timestamp').reset_index(drop=True)
 
+# Strategy Selection
+st.sidebar.markdown("---")
+st.sidebar.subheader("Dispatch Strategy")
+
+strategy_type = st.sidebar.radio(
+    "Battery Trading Strategy:",
+    options=[
+        "Threshold-Based",
+        "Rolling Window Optimization",
+        "Perfect Foresight (Theoretical Max)"
+    ],
+    index=0,
+    help="Choose the battery dispatch optimization approach"
+)
+
+# Strategy-specific parameters
+if strategy_type == "Threshold-Based":
+    st.sidebar.markdown("**Threshold Parameters:**")
+    charge_percentile = st.sidebar.slider(
+        "Charge Threshold Percentile:",
+        min_value=10,
+        max_value=40,
+        value=25,
+        step=5,
+        help="Charge when price below this percentile"
+    ) / 100  # Convert to decimal
+
+    discharge_percentile = st.sidebar.slider(
+        "Discharge Threshold Percentile:",
+        min_value=60,
+        max_value=90,
+        value=75,
+        step=5,
+        help="Discharge when price above this percentile"
+    ) / 100  # Convert to decimal
+else:
+    # Use defaults for non-threshold strategies
+    charge_percentile = 0.25
+    discharge_percentile = 0.75
+
+if strategy_type == "Rolling Window Optimization":
+    st.sidebar.markdown("**Optimization Parameters:**")
+    window_hours = st.sidebar.slider(
+        "Lookahead Window (hours):",
+        min_value=2,
+        max_value=12,
+        value=6,
+        step=1,
+        help="Number of hours to look ahead for optimization"
+    )
+else:
+    window_hours = 6  # Default
+
 # Battery Parameters
+st.sidebar.markdown("---")
 st.sidebar.subheader("Battery Specifications")
 
 battery_capacity_mwh = st.sidebar.slider(
@@ -368,36 +546,87 @@ st.sidebar.metric("Date", "July 20, 2025")
 st.sidebar.metric("Hours Available", len(node_data))
 st.sidebar.metric("Extreme Events (>$10 spread)", node_data['extreme_event'].sum())
 
-# Calculate and display dynamic thresholds (baseline uses DA-based thresholds)
-charge_thresh, discharge_thresh = calculate_dynamic_thresholds(node_data, improvement_factor=0.0, use_optimal=False)
-st.sidebar.markdown("---")
-st.sidebar.subheader("Trading Thresholds")
-st.sidebar.metric("Charge Below", f"${charge_thresh:.2f}/MWh",
-                 help="Charge when price is below 25th percentile")
-st.sidebar.metric("Discharge Above", f"${discharge_thresh:.2f}/MWh",
-                 help="Discharge when price is above 75th percentile")
+# Calculate and display dynamic thresholds (for threshold-based strategy)
+if strategy_type == "Threshold-Based":
+    charge_thresh, discharge_thresh = calculate_dynamic_thresholds(
+        node_data, improvement_factor=0.0, use_optimal=False,
+        charge_percentile=charge_percentile, discharge_percentile=discharge_percentile
+    )
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Trading Thresholds")
+    st.sidebar.metric("Charge Below", f"${charge_thresh:.2f}/MWh",
+                     help=f"Charge when price is below {int(charge_percentile*100)}th percentile")
+    st.sidebar.metric("Discharge Above", f"${discharge_thresh:.2f}/MWh",
+                     help=f"Discharge when price is above {int(discharge_percentile*100)}th percentile")
 
 # ============================================================================
 # RUN SIMULATIONS
 # ============================================================================
 
 with st.spinner('Running battery simulations...'):
-    # Simulate different strategies
-    optimal_dispatch = simulate_battery_dispatch(
-        node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-        use_optimal=True
-    )
+    # Run simulations based on selected strategy
+    if strategy_type == "Perfect Foresight (Theoretical Max)":
+        # Perfect foresight strategy (always uses RT prices)
+        optimal_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=True,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
+        # For comparison, also run baseline threshold
+        naive_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=False,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
+        improved_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=False,
+            improvement_factor=forecast_improvement/100,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
 
-    naive_dispatch = simulate_battery_dispatch(
-        node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-        use_optimal=False
-    )
+    elif strategy_type == "Rolling Window Optimization":
+        # Rolling window optimization
+        optimal_dispatch = simulate_rolling_window_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            window_hours=window_hours,
+            improvement_factor=1.0  # Perfect forecast for theoretical max
+        )
+        naive_dispatch = simulate_rolling_window_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            window_hours=window_hours,
+            improvement_factor=0.0  # Baseline (DA only)
+        )
+        improved_dispatch = simulate_rolling_window_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            window_hours=window_hours,
+            improvement_factor=forecast_improvement/100
+        )
 
-    improved_dispatch = simulate_battery_dispatch(
-        node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-        use_optimal=False,
-        improvement_factor=forecast_improvement/100
-    )
+    else:  # Threshold-Based
+        # Threshold-based strategy
+        optimal_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=True,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
+        naive_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=False,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
+        improved_dispatch = simulate_battery_dispatch(
+            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+            use_optimal=False,
+            improvement_factor=forecast_improvement/100,
+            charge_percentile=charge_percentile,
+            discharge_percentile=discharge_percentile
+        )
 
 # ============================================================================
 # KEY METRICS
@@ -485,14 +714,111 @@ st.markdown("---")
 # MAIN VISUALIZATIONS
 # ============================================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "⚡ Strategy Comparison",
     "📈 Price Analysis",
     "🔋 Battery Operations",
     "💰 Revenue Comparison",
-    "🎯 Opportunity Breakdown"
+    "🎯 Opportunity Breakdown",
+    "📊 Decision Timeline",
+    "🎯 Optimization Analysis"
 ])
 
 with tab1:
+    st.subheader("Strategy Performance Comparison")
+
+    # Create three columns for side-by-side comparison
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("### 📉 Baseline (DA Only)")
+        st.metric("Revenue", f"${naive_revenue:,.0f}")
+        st.metric("Charge Events", naive_dispatch.attrs.get('charge_count', 0))
+        st.metric("Discharge Events", naive_dispatch.attrs.get('discharge_count', 0))
+        charge_pct = (naive_dispatch.attrs.get('charge_count', 0) / len(node_data)) * 100
+        discharge_pct = (naive_dispatch.attrs.get('discharge_count', 0) / len(node_data)) * 100
+        st.progress(charge_pct / 100, text=f"Charging: {charge_pct:.1f}% of time")
+        st.progress(discharge_pct / 100, text=f"Discharging: {discharge_pct:.1f}% of time")
+
+    with col2:
+        st.markdown(f"### 📈 Improved (+{forecast_improvement}%)")
+        st.metric("Revenue", f"${improved_revenue:,.0f}",
+                 delta=f"+${opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${opportunity_vs_improved:,.0f}")
+        st.metric("Charge Events", improved_dispatch.attrs.get('charge_count', 0))
+        st.metric("Discharge Events", improved_dispatch.attrs.get('discharge_count', 0))
+        charge_pct = (improved_dispatch.attrs.get('charge_count', 0) / len(node_data)) * 100
+        discharge_pct = (improved_dispatch.attrs.get('discharge_count', 0) / len(node_data)) * 100
+        st.progress(charge_pct / 100, text=f"Charging: {charge_pct:.1f}% of time")
+        st.progress(discharge_pct / 100, text=f"Discharging: {discharge_pct:.1f}% of time")
+
+    with col3:
+        st.markdown("### ⭐ Theoretical Max")
+        st.metric("Revenue", f"${optimal_revenue:,.0f}",
+                 delta=f"+${opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${opportunity_vs_naive:,.0f}")
+        st.metric("Charge Events", optimal_dispatch.attrs.get('charge_count', 0))
+        st.metric("Discharge Events", optimal_dispatch.attrs.get('discharge_count', 0))
+        charge_pct = (optimal_dispatch.attrs.get('charge_count', 0) / len(node_data)) * 100
+        discharge_pct = (optimal_dispatch.attrs.get('discharge_count', 0) / len(node_data)) * 100
+        st.progress(charge_pct / 100, text=f"Charging: {charge_pct:.1f}% of time")
+        st.progress(discharge_pct / 100, text=f"Discharging: {discharge_pct:.1f}% of time")
+
+    st.markdown("---")
+
+    # Revenue comparison bar chart
+    st.markdown("### Revenue Comparison")
+    revenue_data = {
+        'Strategy': ['Baseline\n(DA Only)', f'Improved\n(+{forecast_improvement}%)', 'Theoretical\nMax'],
+        'Revenue': [naive_revenue, improved_revenue, optimal_revenue],
+        'Color': ['#6B7280', '#4A9FB8', '#0A5F7A']
+    }
+
+    fig_revenue_bars = go.Figure()
+    fig_revenue_bars.add_trace(go.Bar(
+        x=revenue_data['Strategy'],
+        y=revenue_data['Revenue'],
+        marker_color=revenue_data['Color'],
+        text=[f"${r:,.0f}" for r in revenue_data['Revenue']],
+        textposition='outside',
+        hovertemplate='%{x}<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+
+    fig_revenue_bars.update_layout(
+        title=f"Strategy Performance - {strategy_type}",
+        yaxis_title="Revenue ($)",
+        height=400,
+        showlegend=False
+    )
+
+    st.plotly_chart(fig_revenue_bars, width='stretch')
+
+    # Show strategy-specific insights
+    st.markdown("### Strategy Insights")
+    if strategy_type == "Rolling Window Optimization":
+        improvement_rate = ((improved_revenue - naive_revenue) / abs(naive_revenue) * 100) if naive_revenue != 0 else 0
+        st.info(f"""
+        **Rolling Window Strategy** with {window_hours}-hour lookahead window:
+        - Achieves {improvement_rate:+.1f}% revenue improvement with {forecast_improvement}% better forecasts
+        - Naturally handles temporal constraints (must charge before discharge)
+        - Avoids threshold crossing sensitivity issues
+        - Makes decisions based on price ranking within lookahead window
+        """)
+    elif strategy_type == "Threshold-Based":
+        st.warning(f"""
+        **Threshold-Based Strategy** using {int(charge_percentile*100)}th/{int(discharge_percentile*100)}th percentiles:
+        - May show non-monotonic improvement (small forecast gains can reduce revenue)
+        - Sensitive to threshold parameter selection
+        - Simple and interpretable but suboptimal for arbitrage
+        - Consider switching to Rolling Window for more consistent gains
+        """)
+    else:
+        st.success("""
+        **Perfect Foresight** represents theoretical maximum:
+        - Uses actual real-time prices for decisions (impossible in practice)
+        - Provides upper bound on revenue potential
+        - Gap between improved and optimal shows remaining opportunity
+        """)
+
+with tab2:
     st.subheader(f"ERCOT Price Dynamics - {selected_node}")
 
     fig_price = go.Figure()
@@ -589,7 +915,7 @@ with tab1:
         mae = node_data['forecast_error'].abs().mean()
         st.metric("Mean Absolute Error", f"${mae:.2f}/MWh")
 
-with tab2:
+with tab3:
     st.subheader("Battery State of Charge")
 
     fig_soc = go.Figure()
@@ -658,7 +984,7 @@ with tab2:
         )
         st.plotly_chart(fig_dispatch_opt, width='stretch')
 
-with tab3:
+with tab4:
     st.subheader("Cumulative Revenue Comparison")
 
     fig_revenue = go.Figure()
@@ -723,54 +1049,107 @@ with tab3:
         st.caption(f"Max opportunity: ${max_gain:,.2f}")
         st.caption(f"Captured: {(opportunity_vs_improved/max_gain*100) if max_gain != 0 else 0:.1f}%")
 
-with tab4:
+with tab5:
     st.subheader("Revenue Opportunity Analysis")
 
-    # Sensitivity analysis
-    st.subheader("Impact of Forecast Accuracy on Revenue")
+    # Sensitivity analysis - compare strategies
+    st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
 
     improvement_range = range(0, 51, 5)
-    revenue_by_improvement = []
+    revenue_threshold = []
+    revenue_rolling_window = []
 
-    for imp in improvement_range:
-        temp_dispatch = simulate_battery_dispatch(
-            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-            use_optimal=False,
-            improvement_factor=imp/100
-        )
-        revenue_by_improvement.append(temp_dispatch['cumulative_revenue'].iloc[-1])
+    with st.spinner("Running sensitivity analysis across forecast improvement range..."):
+        for imp in improvement_range:
+            # Threshold strategy
+            temp_dispatch_threshold = simulate_battery_dispatch(
+                node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+                use_optimal=False,
+                improvement_factor=imp/100,
+                charge_percentile=charge_percentile,
+                discharge_percentile=discharge_percentile
+            )
+            revenue_threshold.append(temp_dispatch_threshold['cumulative_revenue'].iloc[-1])
 
-    sensitivity_df = pd.DataFrame({
-        'Forecast Improvement (%)': list(improvement_range),
-        'Revenue ($)': revenue_by_improvement
-    })
+            # Rolling window strategy
+            temp_dispatch_window = simulate_rolling_window_dispatch(
+                node_data, battery_capacity_mwh, battery_power_mw, efficiency,
+                window_hours=window_hours,
+                improvement_factor=imp/100
+            )
+            revenue_rolling_window.append(temp_dispatch_window['cumulative_revenue'].iloc[-1])
 
-    fig_sensitivity = px.line(
-        sensitivity_df,
-        x='Forecast Improvement (%)',
-        y='Revenue ($)',
-        title="Revenue Sensitivity to Forecast Accuracy Improvement",
-        markers=True
-    )
+    # Create comparison chart
+    fig_sensitivity = go.Figure()
 
+    fig_sensitivity.add_trace(go.Scatter(
+        x=list(improvement_range),
+        y=revenue_threshold,
+        name='Threshold-Based',
+        line=dict(color='#6B7280', width=2),
+        mode='lines+markers',
+        hovertemplate='Threshold<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+
+    fig_sensitivity.add_trace(go.Scatter(
+        x=list(improvement_range),
+        y=revenue_rolling_window,
+        name='Rolling Window',
+        line=dict(color='#0A5F7A', width=3),
+        mode='lines+markers',
+        hovertemplate='Rolling Window<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+
+    # Add reference lines
     fig_sensitivity.add_hline(
         y=optimal_revenue,
         line_dash="dash",
         line_color="green",
-        annotation_text="Theoretical Maximum (Perfect Forecast)"
+        annotation_text="Theoretical Maximum"
     )
 
-    fig_sensitivity.add_hline(
-        y=naive_revenue,
-        line_dash="dash",
-        line_color="red",
-        annotation_text="Baseline (No Improvement)"
+    fig_sensitivity.update_layout(
+        title="Revenue Sensitivity: Threshold vs Rolling Window Strategies",
+        xaxis_title="Forecast Improvement (%)",
+        yaxis_title="Revenue ($)",
+        height=500,
+        hovermode='x unified'
     )
-
-    fig_sensitivity.update_traces(line_color='#0A5F7A', line_width=3)
-    fig_sensitivity.update_layout(height=500)
 
     st.plotly_chart(fig_sensitivity, width='stretch')
+
+    # Show insights about monotonicity
+    st.markdown("### Strategy Comparison Insights")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Threshold-Based Strategy:**")
+        # Check if monotonic
+        threshold_diffs = [revenue_threshold[i+1] - revenue_threshold[i] for i in range(len(revenue_threshold)-1)]
+        negative_changes = sum(1 for d in threshold_diffs if d < 0)
+
+        if negative_changes > 0:
+            st.warning(f"⚠️ Non-monotonic: {negative_changes} instances where improvement REDUCED revenue")
+        else:
+            st.success("✓ Monotonic improvement")
+
+        st.metric("Revenue Range",
+                 f"${min(revenue_threshold):,.0f} to ${max(revenue_threshold):,.0f}")
+
+    with col2:
+        st.markdown("**Rolling Window Strategy:**")
+        # Check if monotonic
+        window_diffs = [revenue_rolling_window[i+1] - revenue_rolling_window[i] for i in range(len(revenue_rolling_window)-1)]
+        negative_changes_window = sum(1 for d in window_diffs if d < 0)
+
+        if negative_changes_window > 0:
+            st.warning(f"⚠️ Non-monotonic: {negative_changes_window} instances where improvement REDUCED revenue")
+        else:
+            st.success("✓ Monotonic improvement")
+
+        st.metric("Revenue Range",
+                 f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
 
     # Key insights
     col1, col2 = st.columns(2)
@@ -819,6 +1198,274 @@ with tab4:
         ))
 
         st.plotly_chart(fig_spread, width='stretch')
+
+with tab6:
+    st.subheader("Decision Timeline - Charge/Discharge Schedule")
+
+    # Create gantt-style chart showing when battery is charging, discharging, or holding
+    st.markdown("### Dispatch Schedule Comparison")
+
+    # Create figure with subplots for each strategy
+    fig_timeline = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=("Baseline (DA Only)", f"Improved (+{forecast_improvement}%)", "Theoretical Maximum"),
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        row_heights=[0.33, 0.33, 0.33]
+    )
+
+    # Define colors for actions
+    action_colors = {'charge': '#28A745', 'discharge': '#DC3545', 'hold': '#6C757D'}
+
+    # Helper function to add dispatch bars
+    def add_dispatch_bars(fig, dispatch_data, row_num):
+        for action, color in action_colors.items():
+            action_data = dispatch_data[dispatch_data['dispatch'] == action].copy()
+            if len(action_data) > 0:
+                fig.add_trace(go.Bar(
+                    x=action_data['timestamp'],
+                    y=[1] * len(action_data),
+                    name=action.capitalize() if row_num == 1 else None,
+                    marker_color=color,
+                    showlegend=(row_num == 1),
+                    hovertemplate=f'{action.capitalize()}<br>%{{x}}<br>Price: $%{{customdata[0]:.2f}}/MWh<extra></extra>',
+                    customdata=action_data[['price_mwh_rt']].values
+                ), row=row_num, col=1)
+
+    # Add data for each strategy
+    add_dispatch_bars(fig_timeline, naive_dispatch, 1)
+    add_dispatch_bars(fig_timeline, improved_dispatch, 2)
+    add_dispatch_bars(fig_timeline, optimal_dispatch, 3)
+
+    fig_timeline.update_layout(
+        height=600,
+        barmode='stack',
+        title_text=f"Battery Dispatch Timeline - {strategy_type}",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    fig_timeline.update_yaxes(visible=False)
+    fig_timeline.update_xaxes(title_text="Time", row=3, col=1)
+
+    st.plotly_chart(fig_timeline, width='stretch')
+
+    # Show price overlay
+    st.markdown("### Price Context for Dispatch Decisions")
+
+    fig_price_dispatch = go.Figure()
+
+    # Add price line
+    fig_price_dispatch.add_trace(go.Scatter(
+        x=node_data['timestamp'],
+        y=node_data['price_mwh_rt'],
+        name='Real-Time Price',
+        line=dict(color='#0A5F7A', width=2),
+        yaxis='y'
+    ))
+
+    # Add dispatch markers for improved strategy
+    charge_times = improved_dispatch[improved_dispatch['dispatch'] == 'charge']
+    discharge_times = improved_dispatch[improved_dispatch['dispatch'] == 'discharge']
+
+    fig_price_dispatch.add_trace(go.Scatter(
+        x=charge_times['timestamp'],
+        y=charge_times['price_mwh_rt'],
+        mode='markers',
+        name='Charge',
+        marker=dict(color='#28A745', size=12, symbol='triangle-down'),
+        hovertemplate='Charge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>'
+    ))
+
+    fig_price_dispatch.add_trace(go.Scatter(
+        x=discharge_times['timestamp'],
+        y=discharge_times['price_mwh_rt'],
+        mode='markers',
+        name='Discharge',
+        marker=dict(color='#DC3545', size=12, symbol='triangle-up'),
+        hovertemplate='Discharge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>'
+    ))
+
+    fig_price_dispatch.update_layout(
+        title=f"Dispatch Decisions Overlaid on Price - Improved Strategy ({forecast_improvement}% improvement)",
+        xaxis_title="Time",
+        yaxis_title="Price ($/MWh)",
+        height=400,
+        hovermode='x unified'
+    )
+
+    st.plotly_chart(fig_price_dispatch, width='stretch')
+
+    # Summary statistics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Charge Count", improved_dispatch.attrs.get('charge_count', 0))
+        avg_charge_price = improved_dispatch[improved_dispatch['dispatch'] == 'charge']['price_mwh_rt'].mean()
+        st.caption(f"Avg charge price: ${avg_charge_price:.2f}/MWh" if not pd.isna(avg_charge_price) else "No charges")
+
+    with col2:
+        st.metric("Discharge Count", improved_dispatch.attrs.get('discharge_count', 0))
+        avg_discharge_price = improved_dispatch[improved_dispatch['dispatch'] == 'discharge']['price_mwh_rt'].mean()
+        st.caption(f"Avg discharge price: ${avg_discharge_price:.2f}/MWh" if not pd.isna(avg_discharge_price) else "No discharges")
+
+    with col3:
+        if not pd.isna(avg_charge_price) and not pd.isna(avg_discharge_price):
+            spread = avg_discharge_price - avg_charge_price
+            st.metric("Avg Price Spread", f"${spread:.2f}/MWh")
+            st.caption(f"Theoretical gain per cycle")
+        else:
+            st.metric("Avg Price Spread", "N/A")
+
+with tab7:
+    st.subheader("Optimization Analysis")
+
+    if strategy_type == "Rolling Window Optimization":
+        st.markdown(f"### Rolling Window Strategy (Lookahead: {window_hours} hours)")
+
+        st.info(f"""
+        **How it works:**
+        - At each hour, look ahead {window_hours} hours into the future
+        - Charge if current price is the MINIMUM in the window (cheap now, might be expensive later)
+        - Discharge if current price is the MAXIMUM in the window (expensive now, might be cheap later)
+        - Hold otherwise (current price is neither min nor max)
+
+        **Advantages:**
+        - No threshold crossing sensitivity issues
+        - Better forecast → better price ranking → better decisions
+        - Naturally handles temporal constraints
+        """)
+
+        # Show example hours where window optimization helped
+        st.markdown("### Example: How Lookahead Window Improves Decisions")
+
+        # Find an interesting hour (where improved made different decision than baseline)
+        different_decisions = improved_dispatch[
+            improved_dispatch['dispatch'] != naive_dispatch['dispatch']
+        ].copy()
+
+        if len(different_decisions) > 0:
+            example_hour = different_decisions.iloc[0]
+            example_idx = different_decisions.index[0]
+            window_end = min(example_idx + window_hours, len(node_data))
+
+            st.markdown(f"**Hour {example_idx}: Improved forecast made DIFFERENT decision than baseline**")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**Baseline Decision:**")
+                st.markdown(f"- Action: **{naive_dispatch.iloc[example_idx]['dispatch'].upper()}**")
+                st.markdown(f"- Price: ${example_hour['price_mwh_rt']:.2f}/MWh")
+
+            with col2:
+                st.markdown("**Improved Decision:**")
+                st.markdown(f"- Action: **{improved_dispatch.iloc[example_idx]['dispatch'].upper()}**")
+                st.markdown(f"- Price: ${example_hour['price_mwh_rt']:.2f}/MWh")
+
+            # Show window prices
+            window_data = node_data.iloc[example_idx:window_end].copy()
+            fig_window = go.Figure()
+
+            fig_window.add_trace(go.Scatter(
+                x=window_data['timestamp'],
+                y=window_data['price_mwh_rt'],
+                mode='lines+markers',
+                name='RT Price',
+                line=dict(color='#0A5F7A')
+            ))
+
+            fig_window.add_vline(
+                x=example_hour['timestamp'],
+                line_dash="dash",
+                line_color="red",
+                annotation_text="Decision Point"
+            )
+
+            fig_window.update_layout(
+                title=f"{window_hours}-Hour Lookahead Window from Hour {example_idx}",
+                xaxis_title="Time",
+                yaxis_title="Price ($/MWh)",
+                height=300
+            )
+
+            st.plotly_chart(fig_window, width='stretch')
+
+        else:
+            st.info("Baseline and improved strategies made identical decisions for all hours with current parameters.")
+
+    elif strategy_type == "Threshold-Based":
+        st.markdown(f"### Threshold-Based Strategy")
+        st.markdown(f"**Charge threshold:** {int(charge_percentile*100)}th percentile")
+        st.markdown(f"**Discharge threshold:** {int(discharge_percentile*100)}th percentile")
+
+        if 'charge_thresh' in locals() and 'discharge_thresh' in locals():
+            st.metric("Charge Below", f"${charge_thresh:.2f}/MWh")
+            st.metric("Discharge Above", f"${discharge_thresh:.2f}/MWh")
+
+        st.warning("""
+        **Known Issues with Threshold Strategy:**
+        - Small forecast improvements can WORSEN revenue (threshold crossing sensitivity)
+        - Thresholds are recalculated based on forecast distribution
+        - Better forecast → different thresholds → potentially different (worse) decisions
+        - Consider using Rolling Window strategy for more consistent gains
+        """)
+
+        # Show price distribution with thresholds
+        fig_price_dist = go.Figure()
+
+        fig_price_dist.add_trace(go.Histogram(
+            x=node_data['price_mwh_rt'],
+            name='RT Price Distribution',
+            nbinsx=20,
+            marker_color='#0A5F7A'
+        ))
+
+        if 'charge_thresh' in locals():
+            fig_price_dist.add_vline(
+                x=charge_thresh,
+                line_dash="dash",
+                line_color="green",
+                annotation_text=f"Charge < ${charge_thresh:.2f}"
+            )
+
+        if 'discharge_thresh' in locals():
+            fig_price_dist.add_vline(
+                x=discharge_thresh,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Discharge > ${discharge_thresh:.2f}"
+            )
+
+        fig_price_dist.update_layout(
+            title="Price Distribution with Trading Thresholds",
+            xaxis_title="Price ($/MWh)",
+            yaxis_title="Frequency",
+            height=400
+        )
+
+        st.plotly_chart(fig_price_dist, width='stretch')
+
+    else:  # Perfect Foresight
+        st.success("""
+        **Perfect Foresight Strategy:**
+        - Uses actual real-time prices for trading decisions
+        - Represents theoretical maximum revenue (impossible in practice)
+        - Shows upper bound on what's achievable with perfect forecasting
+        - Gap between improved and optimal = remaining opportunity
+        """)
+
+        # Analyze where perfect foresight made better decisions
+        better_decisions = optimal_dispatch[
+            optimal_dispatch['dispatch'] != improved_dispatch['dispatch']
+        ]
+
+        st.metric("Hours where perfect foresight made different decision",
+                 len(better_decisions))
+
+        if len(better_decisions) > 0:
+            decision_diff_revenue = optimal_revenue - improved_revenue
+            st.metric("Revenue impact of these decisions",
+                     f"${decision_diff_revenue:,.0f}")
 
 # ============================================================================
 # FOOTER AND EXPORT
