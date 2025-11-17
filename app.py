@@ -268,6 +268,10 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     power_history = []
 
     for idx, row in df.iterrows():
+        # Record SOC at the BEGINNING of this hour (before trading)
+        soc_history.append(soc)
+        revenue_history.append(revenue)
+
         if use_optimal:
             # Perfect foresight - use actual RT prices for decisions
             decision_price = row['price_mwh_rt']
@@ -311,8 +315,6 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
             power = 0
 
         dispatch.append(action)
-        soc_history.append(soc)
-        revenue_history.append(revenue)
         power_history.append(power)
 
     df['dispatch'] = dispatch
@@ -378,6 +380,10 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
     power_history = []
 
     for idx in range(len(df)):
+        # Record SOC at the BEGINNING of this hour (before trading)
+        soc_history.append(soc)
+        revenue_history.append(revenue)
+
         row = df.iloc[idx]
 
         # Calculate decision price (forecast with potential improvement)
@@ -423,8 +429,6 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
             power = 0
 
         dispatch.append(action)
-        soc_history.append(soc)
-        revenue_history.append(revenue)
         power_history.append(power)
 
     df['dispatch'] = dispatch
