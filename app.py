@@ -211,7 +211,8 @@ def calculate_dynamic_thresholds(price_df, improvement_factor=0.0, use_optimal=F
 
 def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
                               efficiency, use_optimal=True, improvement_factor=0.0,
-                              charge_percentile=0.25, discharge_percentile=0.75):
+                              charge_percentile=0.25, discharge_percentile=0.75,
+                              fixed_charge_threshold=None, fixed_discharge_threshold=None):
     """
     Simulate battery dispatch strategy with dynamic thresholds.
 
@@ -233,6 +234,10 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
         Percentile for charge threshold (default: 0.25)
     discharge_percentile : float
         Percentile for discharge threshold (default: 0.75)
+    fixed_charge_threshold : float, optional
+        If provided, use this fixed charge threshold instead of calculating dynamically
+    fixed_discharge_threshold : float, optional
+        If provided, use this fixed discharge threshold instead of calculating dynamically
 
     Returns:
     --------
@@ -240,11 +245,16 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     """
     df = price_df.copy()
 
-    # Calculate thresholds appropriate for this forecast type
-    charge_threshold, discharge_threshold = calculate_dynamic_thresholds(
-        df, improvement_factor=improvement_factor, use_optimal=use_optimal,
-        charge_percentile=charge_percentile, discharge_percentile=discharge_percentile
-    )
+    # Use fixed thresholds if provided, otherwise calculate dynamically
+    if fixed_charge_threshold is not None and fixed_discharge_threshold is not None:
+        charge_threshold = fixed_charge_threshold
+        discharge_threshold = fixed_discharge_threshold
+    else:
+        # Calculate thresholds appropriate for this forecast type
+        charge_threshold, discharge_threshold = calculate_dynamic_thresholds(
+            df, improvement_factor=improvement_factor, use_optimal=use_optimal,
+            charge_percentile=charge_percentile, discharge_percentile=discharge_percentile
+        )
 
     # Start at 50% state of charge
     soc = 0.5 * battery_capacity_mwh
@@ -607,7 +617,8 @@ battery_capacity_mwh = st.sidebar.slider(
     value=default_capacity,
     step=5 if default_capacity < 100 else 10,
     help="Total energy storage capacity of the battery",
-    disabled=(battery_preset != "Custom" and eia_battery_data is not None)
+    disabled=(battery_preset != "Custom" and eia_battery_data is not None),
+    key=f"capacity_{battery_preset}"  # Force update when preset changes
 )
 
 battery_power_mw = st.sidebar.slider(
@@ -617,7 +628,8 @@ battery_power_mw = st.sidebar.slider(
     value=default_power,
     step=5,
     help="Maximum charge/discharge rate",
-    disabled=(battery_preset != "Custom" and eia_battery_data is not None)
+    disabled=(battery_preset != "Custom" and eia_battery_data is not None),
+    key=f"power_{battery_preset}"  # Force update when preset changes
 )
 
 efficiency = st.sidebar.slider(
@@ -635,11 +647,15 @@ st.sidebar.subheader("Forecast Improvement Scenario")
 forecast_improvement = st.sidebar.slider(
     "Forecast Accuracy Improvement (%):",
     min_value=0,
-    max_value=50,
+    max_value=100,
     value=10,
     step=5,
-    help="Simulate the impact of improving forecast accuracy during extreme events"
+    help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
 )
+
+# Display current forecast improvement
+st.sidebar.markdown("---")
+st.sidebar.info(f"**Current Forecast Improvement: {forecast_improvement}%**\n\nThis corrects {forecast_improvement}% of the forecast error toward actual RT prices.")
 
 # Display data summary
 st.sidebar.markdown("---")
@@ -729,24 +745,37 @@ with st.spinner('Running battery simulations...'):
 
     else:  # Threshold-Based
         # Threshold-based strategy
+        # PROPER FIX: Don't use fixed thresholds - let each scenario calculate from its own forecast
+        # But ensure Perfect uses improvement_factor=1.0 so it equals RT
+        # This guarantees: Perfect (RT) >= Improved (partial) >= Baseline (DA)
+
+        # Don't calculate fixed thresholds - let each scenario calculate from its forecast distribution
+        # This ensures each scenario optimizes for its own forecast quality
+
+        # Each scenario calculates thresholds from its own forecast (no fixed thresholds)
         optimal_dispatch = simulate_battery_dispatch(
             node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-            use_optimal=True,
+            use_optimal=False,
+            improvement_factor=1.0,  # 100% improvement = RT prices
             charge_percentile=charge_percentile,
             discharge_percentile=discharge_percentile
+            # No fixed thresholds - will calculate from forecast
         )
         naive_dispatch = simulate_battery_dispatch(
             node_data, battery_capacity_mwh, battery_power_mw, efficiency,
             use_optimal=False,
+            improvement_factor=0.0,  # 0% improvement = DA only
             charge_percentile=charge_percentile,
             discharge_percentile=discharge_percentile
+            # No fixed thresholds - will calculate from forecast
         )
         improved_dispatch = simulate_battery_dispatch(
             node_data, battery_capacity_mwh, battery_power_mw, efficiency,
             use_optimal=False,
-            improvement_factor=forecast_improvement/100,
+            improvement_factor=forecast_improvement/100,  # User-specified improvement
             charge_percentile=charge_percentile,
             discharge_percentile=discharge_percentile
+            # No fixed thresholds - will calculate from forecast
         )
 
 # ============================================================================
@@ -808,6 +837,29 @@ with col4:
         value=f"{improvement_pct:.1f}%",
         help="Percentage improvement over baseline"
     )
+
+# Add detailed scenario comparison
+with st.expander("🔍 Detailed Scenario Comparison (Click to expand)", expanded=False):
+    st.markdown(f"""
+    ### How Each Scenario Works:
+
+    **Each scenario calculates thresholds from its own forecast** (percentile-based):
+    - Charge when forecast < {int(charge_percentile*100)}th percentile of its own distribution
+    - Discharge when forecast > {int(discharge_percentile*100)}th percentile of its own distribution
+
+    The difference is in **forecast quality**:
+
+    | Scenario | Forecast Formula | What It Sees | Trades |
+    |----------|-----------------|--------------|---------|
+    | **Baseline** | DA only | Inaccurate forecast | {naive_dispatch.attrs['charge_count']}C / {naive_dispatch.attrs['discharge_count']}D |
+    | **Improved** | DA + {forecast_improvement}% × (RT-DA) | Partially corrected | **{improved_dispatch.attrs['charge_count']}C / {improved_dispatch.attrs['discharge_count']}D** |
+    | **Perfect** | RT (actual prices) | Perfect forecast | {optimal_dispatch.attrs['charge_count']}C / {optimal_dispatch.attrs['discharge_count']}D |
+
+    💡 **Better forecasts → Better alignment with actual prices → Higher revenue**
+    - At 0%: Improved = Baseline (no correction)
+    - At 100%: Improved = Perfect (full correction)
+    - Better forecast = More accurate trading decisions
+    """)
 
 st.markdown("---")
 
@@ -1181,19 +1233,20 @@ with tab5:
     # Sensitivity analysis - compare strategies
     st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
 
-    improvement_range = range(0, 51, 5)
+    improvement_range = range(0, 101, 5)  # 0 to 100%
     revenue_threshold = []
     revenue_rolling_window = []
 
     with st.spinner("Running sensitivity analysis across forecast improvement range..."):
         for imp in improvement_range:
-            # Threshold strategy
+            # Threshold strategy (each calculates its own thresholds)
             temp_dispatch_threshold = simulate_battery_dispatch(
                 node_data, battery_capacity_mwh, battery_power_mw, efficiency,
                 use_optimal=False,
                 improvement_factor=imp/100,
                 charge_percentile=charge_percentile,
                 discharge_percentile=discharge_percentile
+                # No fixed thresholds
             )
             revenue_threshold.append(temp_dispatch_threshold['cumulative_revenue'].iloc[-1])
 
@@ -1500,8 +1553,9 @@ with tab7:
                 line=dict(color='#0A5F7A')
             ))
 
+            # Add vertical line at decision point (convert timestamp to avoid pandas compatibility issues)
             fig_window.add_vline(
-                x=example_hour['timestamp'],
+                x=str(example_hour['timestamp']),
                 line_dash="dash",
                 line_color="red",
                 annotation_text="Decision Point"
