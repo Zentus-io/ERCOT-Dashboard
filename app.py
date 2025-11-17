@@ -10,6 +10,7 @@ Run with: streamlit run app.py
 
 import streamlit as st
 import pandas as pd
+import polars as pl
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -106,21 +107,46 @@ def get_available_nodes(price_data):
 
 @st.cache_data
 def load_eia_battery_data():
-    """Load EIA-860 battery storage market data for Texas (ERCOT)."""
+    """Load EIA-860 battery storage market data for Texas (ERCOT) from optimized Parquet file."""
     try:
-        file_path = Path(__file__).parent / 'data' / 'eia8602024' / '3_4_Energy_Storage_Y2024.xlsx'
-        df = pd.read_excel(file_path, sheet_name='Operable', header=1)
+        # Try loading preprocessed Parquet file first (20-30x faster than Excel!)
+        parquet_path = Path(__file__).parent / 'data' / 'processed' / 'ercot_batteries.parquet'
 
-        # Filter for Texas batteries
-        texas = df[df['State'] == 'TX'].copy()
+        if parquet_path.exists():
+            # Load with Polars (fastest option)
+            df_polars = pl.read_parquet(parquet_path)
+            # Convert to pandas for compatibility with existing dashboard code
+            df = df_polars.to_pandas()
 
-        # Calculate duration
-        texas['Duration (hours)'] = (
-            texas['Nameplate Energy Capacity (MWh)'] /
-            texas['Nameplate Capacity (MW)']
-        )
+            # Rename columns to match expected format
+            df = df.rename(columns={
+                'nameplate_power_mw': 'Nameplate Capacity (MW)',
+                'nameplate_energy_mwh': 'Nameplate Energy Capacity (MWh)',
+                'duration_hours': 'Duration (hours)',
+                'state': 'State',
+                'use_arbitrage': 'Arbitrage',
+                'use_frequency_regulation': 'Frequency Regulation',
+                'use_ramping_reserve': 'Ramping / Spinning Reserve'
+            })
 
-        return texas
+            return df
+
+        else:
+            # Fallback to Excel if Parquet not available
+            file_path = Path(__file__).parent / 'data' / 'eia8602024' / '3_4_Energy_Storage_Y2024.xlsx'
+            df = pd.read_excel(file_path, sheet_name='Operable', header=1)
+
+            # Filter for Texas batteries
+            texas = df[df['State'] == 'TX'].copy()
+
+            # Calculate duration
+            texas['Duration (hours)'] = (
+                texas['Nameplate Energy Capacity (MWh)'] /
+                texas['Nameplate Capacity (MW)']
+            )
+
+            return texas
+
     except Exception as e:
         # Return None if file not found (graceful degradation)
         return None
@@ -486,11 +512,10 @@ strategy_type = st.sidebar.radio(
     "Battery Trading Strategy:",
     options=[
         "Threshold-Based",
-        "Rolling Window Optimization",
-        "Perfect Foresight (Theoretical Max)"
+        "Rolling Window Optimization"
     ],
     index=0,
-    help="Choose the battery dispatch optimization approach"
+    help="Choose the battery dispatch optimization approach. Each strategy shows 3 scenarios: Baseline (DA only), Improved (DA + forecast improvement), and Theoretical Max (perfect RT prices)"
 )
 
 # Strategy-specific parameters
@@ -684,30 +709,7 @@ if strategy_type == "Threshold-Based":
 
 with st.spinner('Running battery simulations...'):
     # Run simulations based on selected strategy
-    if strategy_type == "Perfect Foresight (Theoretical Max)":
-        # Perfect foresight strategy (always uses RT prices)
-        optimal_dispatch = simulate_battery_dispatch(
-            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-            use_optimal=True,
-            charge_percentile=charge_percentile,
-            discharge_percentile=discharge_percentile
-        )
-        # For comparison, also run baseline threshold
-        naive_dispatch = simulate_battery_dispatch(
-            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-            use_optimal=False,
-            charge_percentile=charge_percentile,
-            discharge_percentile=discharge_percentile
-        )
-        improved_dispatch = simulate_battery_dispatch(
-            node_data, battery_capacity_mwh, battery_power_mw, efficiency,
-            use_optimal=False,
-            improvement_factor=forecast_improvement/100,
-            charge_percentile=charge_percentile,
-            discharge_percentile=discharge_percentile
-        )
-
-    elif strategy_type == "Rolling Window Optimization":
+    if strategy_type == "Rolling Window Optimization":
         # Rolling window optimization
         optimal_dispatch = simulate_rolling_window_dispatch(
             node_data, battery_capacity_mwh, battery_power_mw, efficiency,
@@ -753,6 +755,17 @@ with st.spinner('Running battery simulations...'):
 
 st.header("📊 Revenue Analysis")
 
+# Explanation box
+st.info("""
+**How to use this dashboard:**
+Each strategy is tested with **3 forecast quality scenarios**:
+1. **Baseline (DA Only)** - Uses only day-ahead forecasts (no improvement) ← Never changes
+2. **Improved** - Uses day-ahead + forecast improvement ← **Changes when you adjust the slider**
+3. **Perfect Foresight** - Uses actual real-time prices (theoretical maximum) ← Never changes
+
+💡 **Tip:** Move the "Forecast Accuracy Improvement" slider to see how better forecasts improve Scenario 2!
+""")
+
 col1, col2, col3, col4 = st.columns(4)
 
 naive_revenue = naive_dispatch['cumulative_revenue'].iloc[-1]
@@ -765,27 +778,27 @@ remaining_opportunity = optimal_revenue - improved_revenue
 
 with col1:
     st.metric(
-        label="Baseline Revenue",
+        label="Scenario 1: Baseline (DA Only)",
         value=f"${naive_revenue:,.0f}",
-        help="Revenue with day-ahead forecasting only"
+        help="Revenue using only day-ahead forecasts (no improvement)"
     )
 
 with col2:
     st.metric(
-        label="With Improved Forecast",
+        label=f"Scenario 2: Improved (+{forecast_improvement}%)",
         value=f"${improved_revenue:,.0f}",
         delta=f"+${opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${opportunity_vs_improved:,.0f}",
         delta_color="normal",
-        help=f"Revenue with {forecast_improvement}% forecast improvement"
+        help=f"Revenue with {forecast_improvement}% forecast accuracy improvement (adjust slider to change)"
     )
 
 with col3:
     st.metric(
-        label="Theoretical Maximum",
+        label="Scenario 3: Perfect Foresight",
         value=f"${optimal_revenue:,.0f}",
         delta=f"+${opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${opportunity_vs_naive:,.0f}",
         delta_color="normal",
-        help="Revenue with perfect foresight"
+        help="Theoretical maximum revenue using perfect real-time price knowledge (impossible in practice)"
     )
 
 with col4:
@@ -920,21 +933,15 @@ with tab1:
         - Naturally handles temporal constraints (must charge before discharge)
         - Avoids threshold crossing sensitivity issues
         - Makes decisions based on price ranking within lookahead window
+        - **More robust** to forecast errors than threshold-based
         """)
-    elif strategy_type == "Threshold-Based":
+    else:  # Threshold-Based
         st.warning(f"""
         **Threshold-Based Strategy** using {int(charge_percentile*100)}th/{int(discharge_percentile*100)}th percentiles:
         - May show non-monotonic improvement (small forecast gains can reduce revenue)
         - Sensitive to threshold parameter selection
         - Simple and interpretable but suboptimal for arbitrage
         - Consider switching to Rolling Window for more consistent gains
-        """)
-    else:
-        st.success("""
-        **Perfect Foresight** represents theoretical maximum:
-        - Uses actual real-time prices for decisions (impossible in practice)
-        - Provides upper bound on revenue potential
-        - Gap between improved and optimal shows remaining opportunity
         """)
 
 with tab2:
@@ -1556,13 +1563,14 @@ with tab7:
 
         st.plotly_chart(fig_price_dist, width='stretch')
 
-    else:  # Perfect Foresight
-        st.success("""
-        **Perfect Foresight Strategy:**
-        - Uses actual real-time prices for trading decisions
-        - Represents theoretical maximum revenue (impossible in practice)
-        - Shows upper bound on what's achievable with perfect forecasting
-        - Gap between improved and optimal = remaining opportunity
+    else:  # Threshold-Based
+        st.markdown(f"### Threshold-Based Strategy Analysis")
+
+        st.info("""
+        **Understanding the 3 Scenarios:**
+        - **Scenario 1 (Baseline):** Uses DA forecasts as-is
+        - **Scenario 2 (Improved):** Corrects DA forecasts by the slider percentage toward actual RT prices
+        - **Scenario 3 (Perfect):** Uses actual RT prices (theoretical maximum)
         """)
 
         # Analyze where perfect foresight made better decisions
@@ -1570,13 +1578,14 @@ with tab7:
             optimal_dispatch['dispatch'] != improved_dispatch['dispatch']
         ]
 
-        st.metric("Hours where perfect foresight made different decision",
+        st.metric("Hours where perfect foresight made different decision than improved scenario",
                  len(better_decisions))
 
         if len(better_decisions) > 0:
             decision_diff_revenue = optimal_revenue - improved_revenue
-            st.metric("Revenue impact of these decisions",
+            st.metric("Revenue gap between improved and perfect",
                      f"${decision_diff_revenue:,.0f}")
+            st.caption("This gap represents the remaining opportunity from better forecasting")
 
 # ============================================================================
 # FOOTER AND EXPORT
@@ -1595,7 +1604,8 @@ with col1:
 
     **Key Features:**
     - Real ERCOT price data analysis
-    - Multiple dispatch strategies (Threshold, Rolling Window, Perfect Foresight)
+    - Two dispatch strategies: Threshold-Based and Rolling Window Optimization
+    - Each strategy tested with 3 forecast quality scenarios (DA only, Improved, Perfect)
     - Battery system presets based on 136 real Texas systems
     - Revenue sensitivity analysis
     """)
