@@ -1537,7 +1537,11 @@ with tab6:
                 actual_energy = abs(row['power'])
                 # Fraction represents % of hourly power capacity used
                 # Since power is in MWh for 1 hour, divide by MW power capacity
-                fraction = actual_energy / battery_power_capacity
+                if battery_power_capacity > 0:
+                    fraction = actual_energy / battery_power_capacity
+                else:
+                    st.warning("Battery power capacity is zero or negative. Cannot compute fraction of power capacity used.", icon="⚠️")
+                    fraction = 0.0
 
                 # Bottom: dark color, height = fraction
                 actual_heights.append(fraction)
