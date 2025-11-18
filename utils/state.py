@@ -6,6 +6,7 @@ This module provides centralized session state management for the Streamlit app.
 """
 
 import streamlit as st
+import pandas as pd
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 from core.battery.battery import BatterySpecs
@@ -57,10 +58,10 @@ class AppState:
         'improved': None,
         'optimal': None
     })
-
     # Data caches
-    price_data: Optional[object] = None
-    eia_battery_data: Optional[object] = None
+    price_data: Optional[pd.DataFrame] = None
+    eia_battery_data: Optional[pd.DataFrame] = None
+    available_nodes: Optional[list] = None
     available_nodes: Optional[list] = None
 
 

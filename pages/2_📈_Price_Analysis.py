@@ -46,6 +46,14 @@ if not has_valid_config():
 # Get state
 state = get_state()
 
+if state.price_data is None:
+    st.error("⚠️ Price data not loaded. Please refresh the page or check data availability.")
+    st.stop()
+
+if state.selected_node is None:
+    st.error("⚠️ No settlement point selected. Please select a node in the sidebar.")
+    st.stop()
+
 # Load node data
 loader = DataLoader(Path(__file__).parent.parent / 'data')
 node_data = loader.filter_by_node(state.price_data, state.selected_node)
