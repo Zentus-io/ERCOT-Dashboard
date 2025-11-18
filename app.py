@@ -267,10 +267,18 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     revenue_history = []
     power_history = []
 
+    # For smooth SOC visualization with intermediate points
+    soc_viz_timestamps = []
+    soc_viz_values = []
+
     for idx, row in df.iterrows():
         # Record SOC at the BEGINNING of this hour (before trading)
         soc_history.append(soc)
         revenue_history.append(revenue)
+
+        # Add to visualization data (start of hour)
+        soc_viz_timestamps.append(row['timestamp'])
+        soc_viz_values.append(soc)
 
         if use_optimal:
             # Perfect foresight - use actual RT prices for decisions
@@ -291,6 +299,7 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
         if decision_price < charge_threshold and soc < battery_capacity_mwh * 0.95:
             # Charge
             charge_amount = min(battery_power_mw, battery_capacity_mwh * 0.95 - soc)
+            soc_before = soc
             soc += charge_amount * efficiency
             cost = charge_amount * rt_price
             revenue -= cost
@@ -298,10 +307,20 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
             action = 'charge'
             power = -charge_amount
 
+            # Add intermediate point showing gradual charging (at 50% of the hour)
+            # This creates a sloped line instead of vertical jump
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
+            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+
+            # Add end point
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
+
         # Discharge when price is above 75th percentile and battery not empty
         elif decision_price > discharge_threshold and soc > battery_capacity_mwh * 0.05:
             # Discharge
             discharge_amount = min(battery_power_mw, soc - battery_capacity_mwh * 0.05)
+            soc_before = soc
             soc -= discharge_amount
             revenue_from_sale = discharge_amount * rt_price
             revenue += revenue_from_sale
@@ -309,10 +328,22 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
             action = 'discharge'
             power = discharge_amount
 
+            # Add intermediate point showing gradual discharging
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
+            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+
+            # Add end point
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
+
         else:
-            # Hold
+            # Hold - SOC stays constant
             action = 'hold'
             power = 0
+
+            # Add end point showing constant SOC
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
 
         dispatch.append(action)
         power_history.append(power)
@@ -321,6 +352,10 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     df['soc'] = soc_history
     df['cumulative_revenue'] = revenue_history
     df['power'] = power_history
+
+    # Store smooth SOC visualization data as attributes
+    df.attrs['soc_viz_timestamps'] = soc_viz_timestamps
+    df.attrs['soc_viz_values'] = soc_viz_values
 
     # Store thresholds and totals for display
     df.attrs['charge_threshold'] = charge_threshold
@@ -379,12 +414,20 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
     revenue_history = []
     power_history = []
 
+    # For smooth SOC visualization with intermediate points
+    soc_viz_timestamps = []
+    soc_viz_values = []
+
     for idx in range(len(df)):
         # Record SOC at the BEGINNING of this hour (before trading)
         soc_history.append(soc)
         revenue_history.append(revenue)
 
         row = df.iloc[idx]
+
+        # Add to visualization data (start of hour)
+        soc_viz_timestamps.append(row['timestamp'])
+        soc_viz_values.append(soc)
 
         # Calculate decision price (forecast with potential improvement)
         improved_forecast = row['price_mwh_da'] + (row['forecast_error'] * improvement_factor)
@@ -405,6 +448,7 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
         if decision_price == window_prices.min() and soc < battery_capacity_mwh * 0.95:
             # Charge: this is the cheapest hour in lookahead window
             charge_amount = min(battery_power_mw, battery_capacity_mwh * 0.95 - soc)
+            soc_before = soc
             soc += charge_amount * efficiency
             cost = charge_amount * rt_price
             revenue -= cost
@@ -412,10 +456,19 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
             action = 'charge'
             power = -charge_amount
 
+            # Add intermediate point showing gradual charging
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
+            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+
+            # Add end point
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
+
         # Discharge if current price is maximum in window AND battery not empty
         elif decision_price == window_prices.max() and soc > battery_capacity_mwh * 0.05:
             # Discharge: this is the most expensive hour in lookahead window
             discharge_amount = min(battery_power_mw, soc - battery_capacity_mwh * 0.05)
+            soc_before = soc
             soc -= discharge_amount
             revenue_from_sale = discharge_amount * rt_price
             revenue += revenue_from_sale
@@ -423,10 +476,22 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
             action = 'discharge'
             power = discharge_amount
 
+            # Add intermediate point showing gradual discharging
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
+            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+
+            # Add end point
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
+
         else:
-            # Hold
+            # Hold - SOC stays constant
             action = 'hold'
             power = 0
+
+            # Add end point showing constant SOC
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_viz_values.append(soc)
 
         dispatch.append(action)
         power_history.append(power)
@@ -435,6 +500,10 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
     df['soc'] = soc_history
     df['cumulative_revenue'] = revenue_history
     df['power'] = power_history
+
+    # Store smooth SOC visualization data as attributes
+    df.attrs['soc_viz_timestamps'] = soc_viz_timestamps
+    df.attrs['soc_viz_values'] = soc_viz_values
 
     # Store totals for display
     df.attrs['window_hours'] = window_hours
@@ -1102,28 +1171,32 @@ with tab3:
 
     fig_soc = go.Figure()
 
+    # Use smooth visualization data with intermediate points for gradual ramping
     fig_soc.add_trace(go.Scatter(
-        x=optimal_dispatch['timestamp'],
-        y=optimal_dispatch['soc'],
+        x=optimal_dispatch.attrs['soc_viz_timestamps'],
+        y=optimal_dispatch.attrs['soc_viz_values'],
         name='Optimal Strategy (Perfect Foresight)',
         line=dict(color='#28A745', width=2.5),
-        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>'
+        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
+        mode='lines'
     ))
 
     fig_soc.add_trace(go.Scatter(
-        x=improved_dispatch['timestamp'],
-        y=improved_dispatch['soc'],
+        x=improved_dispatch.attrs['soc_viz_timestamps'],
+        y=improved_dispatch.attrs['soc_viz_values'],
         name=f'Improved Forecast (+{forecast_improvement}%)',
         line=dict(color='#FFC107', width=2),
-        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>'
+        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
+        mode='lines'
     ))
 
     fig_soc.add_trace(go.Scatter(
-        x=naive_dispatch['timestamp'],
-        y=naive_dispatch['soc'],
+        x=naive_dispatch.attrs['soc_viz_timestamps'],
+        y=naive_dispatch.attrs['soc_viz_values'],
         name='Baseline (Day-Ahead Only)',
         line=dict(color='#DC3545', width=2, dash='dash'),
-        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>'
+        hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
+        mode='lines'
     ))
 
     fig_soc.add_hline(y=battery_capacity_mwh, line_dash="dot",
@@ -1557,12 +1630,23 @@ with tab7:
                 line=dict(color='#0A5F7A')
             ))
 
-            # Add vertical line at decision point (convert timestamp to avoid pandas compatibility issues)
-            fig_window.add_vline(
-                x=str(example_hour['timestamp']),
-                line_dash="dash",
-                line_color="red",
-                annotation_text="Decision Point"
+            # Add vertical line at decision point using add_shape (more reliable than add_vline)
+            fig_window.add_shape(
+                type="line",
+                x0=example_hour['timestamp'],
+                x1=example_hour['timestamp'],
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color="red", width=2, dash="dash")
+            )
+            fig_window.add_annotation(
+                x=example_hour['timestamp'],
+                y=1,
+                yref="paper",
+                text="Decision Point",
+                showarrow=False,
+                yshift=10
             )
 
             fig_window.update_layout(
