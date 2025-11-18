@@ -271,14 +271,15 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
     soc_viz_timestamps = []
     soc_viz_values = []
 
+    # Add initial SOC point (before any trading)
+    if len(df) > 0:
+        soc_viz_timestamps.append(df.iloc[0]['timestamp'])
+        soc_viz_values.append(soc)
+
     for idx, row in df.iterrows():
         # Record SOC at the BEGINNING of this hour (before trading)
         soc_history.append(soc)
         revenue_history.append(revenue)
-
-        # Add to visualization data (start of hour)
-        soc_viz_timestamps.append(row['timestamp'])
-        soc_viz_values.append(soc)
 
         if use_optimal:
             # Perfect foresight - use actual RT prices for decisions
@@ -307,14 +308,18 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
             action = 'charge'
             power = -charge_amount
 
-            # Add intermediate point showing gradual charging (at 50% of the hour)
-            # This creates a sloped line instead of vertical jump
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
-            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+            # Calculate actual duration based on power capacity
+            # Duration (hours) = Energy (MWh) / Power (MW)
+            duration_hours = min(charge_amount / battery_power_mw, 1.0)  # Cap at 1 hour
 
-            # Add end point
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            # Add point at end of charging (when ramping completes)
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
             soc_viz_values.append(soc)
+
+            # If charging completes before end of hour, add flat section
+            if duration_hours < 1.0:
+                soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                soc_viz_values.append(soc)
 
         # Discharge when price is above 75th percentile and battery not empty
         elif decision_price > discharge_threshold and soc > battery_capacity_mwh * 0.05:
@@ -328,20 +333,24 @@ def simulate_battery_dispatch(price_df, battery_capacity_mwh, battery_power_mw,
             action = 'discharge'
             power = discharge_amount
 
-            # Add intermediate point showing gradual discharging
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
-            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+            # Calculate actual duration based on power capacity
+            duration_hours = min(discharge_amount / battery_power_mw, 1.0)  # Cap at 1 hour
 
-            # Add end point
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            # Add point at end of discharging (when ramping completes)
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
             soc_viz_values.append(soc)
 
+            # If discharging completes before end of hour, add flat section
+            if duration_hours < 1.0:
+                soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                soc_viz_values.append(soc)
+
         else:
-            # Hold - SOC stays constant
+            # Hold - SOC stays constant, just add end point
             action = 'hold'
             power = 0
 
-            # Add end point showing constant SOC
+            # Add end point showing constant SOC (straight line to next hour)
             soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
             soc_viz_values.append(soc)
 
@@ -418,16 +427,17 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
     soc_viz_timestamps = []
     soc_viz_values = []
 
+    # Add initial SOC point (before any trading)
+    if len(df) > 0:
+        soc_viz_timestamps.append(df.iloc[0]['timestamp'])
+        soc_viz_values.append(soc)
+
     for idx in range(len(df)):
         # Record SOC at the BEGINNING of this hour (before trading)
         soc_history.append(soc)
         revenue_history.append(revenue)
 
         row = df.iloc[idx]
-
-        # Add to visualization data (start of hour)
-        soc_viz_timestamps.append(row['timestamp'])
-        soc_viz_values.append(soc)
 
         # Calculate decision price (forecast with potential improvement)
         improved_forecast = row['price_mwh_da'] + (row['forecast_error'] * improvement_factor)
@@ -456,13 +466,18 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
             action = 'charge'
             power = -charge_amount
 
-            # Add intermediate point showing gradual charging
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
-            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+            # Calculate actual duration based on power capacity
+            # Duration (hours) = Energy (MWh) / Power (MW)
+            duration_hours = min(charge_amount / battery_power_mw, 1.0)  # Cap at 1 hour
 
-            # Add end point
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            # Add point at end of charging (when ramping completes)
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
             soc_viz_values.append(soc)
+
+            # If charging completes before end of hour, add flat section
+            if duration_hours < 1.0:
+                soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                soc_viz_values.append(soc)
 
         # Discharge if current price is maximum in window AND battery not empty
         elif decision_price == window_prices.max() and soc > battery_capacity_mwh * 0.05:
@@ -476,20 +491,24 @@ def simulate_rolling_window_dispatch(price_df, battery_capacity_mwh, battery_pow
             action = 'discharge'
             power = discharge_amount
 
-            # Add intermediate point showing gradual discharging
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(minutes=30))
-            soc_viz_values.append(soc_before + (soc - soc_before) * 0.5)
+            # Calculate actual duration based on power capacity
+            duration_hours = min(discharge_amount / battery_power_mw, 1.0)  # Cap at 1 hour
 
-            # Add end point
-            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            # Add point at end of discharging (when ramping completes)
+            soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
             soc_viz_values.append(soc)
 
+            # If discharging completes before end of hour, add flat section
+            if duration_hours < 1.0:
+                soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                soc_viz_values.append(soc)
+
         else:
-            # Hold - SOC stays constant
+            # Hold - SOC stays constant, just add end point
             action = 'hold'
             power = 0
 
-            # Add end point showing constant SOC
+            # Add end point showing constant SOC (straight line to next hour)
             soc_viz_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
             soc_viz_values.append(soc)
 
@@ -1171,28 +1190,48 @@ with tab3:
 
     fig_soc = go.Figure()
 
-    # Use smooth visualization data with intermediate points for gradual ramping
+    # Create sorted dataframes for each scenario to ensure chronological plotting
+    # This prevents "going back in time" visual artifacts
+
+    # Optimal strategy
+    optimal_soc_df = pd.DataFrame({
+        'timestamp': optimal_dispatch.attrs['soc_viz_timestamps'],
+        'soc': optimal_dispatch.attrs['soc_viz_values']
+    }).sort_values('timestamp')
+
     fig_soc.add_trace(go.Scatter(
-        x=optimal_dispatch.attrs['soc_viz_timestamps'],
-        y=optimal_dispatch.attrs['soc_viz_values'],
+        x=optimal_soc_df['timestamp'],
+        y=optimal_soc_df['soc'],
         name='Optimal Strategy (Perfect Foresight)',
         line=dict(color='#28A745', width=2.5),
         hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
         mode='lines'
     ))
 
+    # Improved forecast
+    improved_soc_df = pd.DataFrame({
+        'timestamp': improved_dispatch.attrs['soc_viz_timestamps'],
+        'soc': improved_dispatch.attrs['soc_viz_values']
+    }).sort_values('timestamp')
+
     fig_soc.add_trace(go.Scatter(
-        x=improved_dispatch.attrs['soc_viz_timestamps'],
-        y=improved_dispatch.attrs['soc_viz_values'],
+        x=improved_soc_df['timestamp'],
+        y=improved_soc_df['soc'],
         name=f'Improved Forecast (+{forecast_improvement}%)',
         line=dict(color='#FFC107', width=2),
         hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
         mode='lines'
     ))
 
+    # Baseline
+    naive_soc_df = pd.DataFrame({
+        'timestamp': naive_dispatch.attrs['soc_viz_timestamps'],
+        'soc': naive_dispatch.attrs['soc_viz_values']
+    }).sort_values('timestamp')
+
     fig_soc.add_trace(go.Scatter(
-        x=naive_dispatch.attrs['soc_viz_timestamps'],
-        y=naive_dispatch.attrs['soc_viz_values'],
+        x=naive_soc_df['timestamp'],
+        y=naive_soc_df['soc'],
         name='Baseline (Day-Ahead Only)',
         line=dict(color='#DC3545', width=2, dash='dash'),
         hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
@@ -1470,32 +1509,83 @@ with tab6:
         row_heights=[0.33, 0.33, 0.33]
     )
 
-    # Define colors for actions
-    action_colors = {'charge': '#28A745', 'discharge': '#DC3545', 'hold': '#6C757D'}
+    # Define colors for actions (light shades for intent, dark shades for actual)
+    action_colors = {
+        'charge': {'light': 'rgba(40, 167, 69, 0.3)', 'dark': '#28A745'},
+        'discharge': {'light': 'rgba(220, 53, 69, 0.3)', 'dark': '#DC3545'},
+        'hold': {'light': '#6C757D', 'dark': '#6C757D'}
+    }
 
-    # Helper function to add dispatch bars
-    def add_dispatch_bars(fig, dispatch_data, row_num):
-        for action, color in action_colors.items():
-            action_data = dispatch_data[dispatch_data['dispatch'] == action].copy()
-            if len(action_data) > 0:
-                fig.add_trace(go.Bar(
-                    x=action_data['timestamp'],
-                    y=[1] * len(action_data),
-                    name=action.capitalize() if row_num == 1 else None,
-                    marker_color=color,
-                    showlegend=(row_num == 1),
-                    hovertemplate=f'{action.capitalize()}<br>%{{x}}<br>Price: $%{{customdata[0]:.2f}}/MWh<extra></extra>',
-                    customdata=action_data[['price_mwh_rt']].values
-                ), row=row_num, col=1)
+    # Helper function to add dispatch bars with proper stacking
+    def add_dispatch_bars(fig, dispatch_data, row_num, battery_capacity):
+        # Prepare data for TWO traces that span ALL hours
+        timestamps = dispatch_data['timestamp'].tolist()
+
+        # Bottom layer (actual energy) - heights and colors
+        actual_heights = []
+        actual_colors = []
+        actual_hovers = []
+
+        # Top layer (constrained) - heights and colors
+        constrained_heights = []
+        constrained_colors = []
+
+        for _, row in dispatch_data.iterrows():
+            action = row['dispatch']
+
+            if action in ['charge', 'discharge']:
+                actual_energy = abs(row['power'])
+                fraction = actual_energy / battery_capacity
+
+                # Bottom: dark color, height = fraction
+                actual_heights.append(fraction)
+                actual_colors.append(action_colors[action]['dark'])
+                actual_hovers.append(f"{action.capitalize()}<br>Energy: {actual_energy:.1f} MWh<br>% of Capacity: {fraction:.1%}")
+
+                # Top: light color, height = remaining
+                constrained_heights.append(1.0 - fraction)
+                constrained_colors.append(action_colors[action]['light'])
+
+            else:  # hold
+                # Bottom: zero height (invisible)
+                actual_heights.append(0)
+                actual_colors.append('rgba(0,0,0,0)')  # Transparent
+                actual_hovers.append('Hold')
+
+                # Top: full height gray
+                constrained_heights.append(1.0)
+                constrained_colors.append(action_colors['hold']['light'])
+
+        # Add bottom layer trace (actual energy)
+        fig.add_trace(go.Bar(
+            x=timestamps,
+            y=actual_heights,
+            marker_color=actual_colors,
+            name='Actual Energy' if row_num == 1 else None,
+            showlegend=(row_num == 1),
+            hovertext=actual_hovers,
+            hoverinfo='text'
+        ), row=row_num, col=1)
+
+        # Add top layer trace (constrained portion)
+        fig.add_trace(go.Bar(
+            x=timestamps,
+            y=constrained_heights,
+            marker_color=constrained_colors,
+            name='Constrained' if row_num == 1 else None,
+            showlegend=(row_num == 1),
+            hoverinfo='skip'
+        ), row=row_num, col=1)
 
     # Add data for each strategy
-    add_dispatch_bars(fig_timeline, naive_dispatch, 1)
-    add_dispatch_bars(fig_timeline, improved_dispatch, 2)
-    add_dispatch_bars(fig_timeline, optimal_dispatch, 3)
+    add_dispatch_bars(fig_timeline, naive_dispatch, 1, battery_capacity_mwh)
+    add_dispatch_bars(fig_timeline, improved_dispatch, 2, battery_capacity_mwh)
+    add_dispatch_bars(fig_timeline, optimal_dispatch, 3, battery_capacity_mwh)
 
     fig_timeline.update_layout(
         height=600,
-        barmode='stack',
+        barmode='stack',  # Stack the two layers (actual + constrained)
+        bargap=0.1,  # Small gap between hours
         title_text=f"Battery Dispatch Timeline - {strategy_type}",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
