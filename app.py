@@ -1517,7 +1517,7 @@ with tab6:
     }
 
     # Helper function to add dispatch bars with proper stacking
-    def add_dispatch_bars(fig, dispatch_data, row_num, battery_capacity):
+    def add_dispatch_bars(fig, dispatch_data, row_num, battery_power_capacity):
         # Prepare data for TWO traces that span ALL hours
         timestamps = dispatch_data['timestamp'].tolist()
 
@@ -1535,12 +1535,14 @@ with tab6:
 
             if action in ['charge', 'discharge']:
                 actual_energy = abs(row['power'])
-                fraction = actual_energy / battery_capacity
+                # Fraction represents % of hourly power capacity used
+                # Since power is in MWh for 1 hour, divide by MW power capacity
+                fraction = actual_energy / battery_power_capacity
 
                 # Bottom: dark color, height = fraction
                 actual_heights.append(fraction)
                 actual_colors.append(action_colors[action]['dark'])
-                actual_hovers.append(f"{action.capitalize()}<br>Energy: {actual_energy:.1f} MWh<br>% of Capacity: {fraction:.1%}")
+                actual_hovers.append(f"{action.capitalize()}<br>Energy: {actual_energy:.1f} MWh<br>% of Power Capacity: {fraction:.1%}")
 
                 # Top: light color, height = remaining
                 constrained_heights.append(1.0 - fraction)
@@ -1578,9 +1580,10 @@ with tab6:
         ), row=row_num, col=1)
 
     # Add data for each strategy
-    add_dispatch_bars(fig_timeline, naive_dispatch, 1, battery_capacity_mwh)
-    add_dispatch_bars(fig_timeline, improved_dispatch, 2, battery_capacity_mwh)
-    add_dispatch_bars(fig_timeline, optimal_dispatch, 3, battery_capacity_mwh)
+    # Pass power capacity (MW) to calculate % of hourly capability used
+    add_dispatch_bars(fig_timeline, naive_dispatch, 1, battery_power_mw)
+    add_dispatch_bars(fig_timeline, improved_dispatch, 2, battery_power_mw)
+    add_dispatch_bars(fig_timeline, optimal_dispatch, 3, battery_power_mw)
 
     fig_timeline.update_layout(
         height=600,
@@ -1593,6 +1596,11 @@ with tab6:
 
     fig_timeline.update_yaxes(visible=False)
     fig_timeline.update_xaxes(title_text="Time", row=3, col=1)
+
+    # Fix y-axis range to [0, 1] for all subplots to ensure accurate visual proportions
+    # This makes the stacked bars fill the full vertical space correctly
+    # autorange=False prevents the autoscale button from changing the range
+    fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True)
 
     st.plotly_chart(fig_timeline, width='stretch')
 
