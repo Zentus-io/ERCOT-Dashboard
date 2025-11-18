@@ -237,12 +237,12 @@ class RollingWindowStrategy(DispatchStrategy):
         )
 
         # Decision logic: charge at minimum, discharge at maximum
-        if decision_price == window_prices.min() and battery.can_charge(battery.specs.power_mw):
+        if np.isclose(decision_price, window_prices.min()) and battery.can_charge(battery.specs.power_mw):
             # Charge: cheapest hour in window
             energy = battery.charge(battery.specs.power_mw)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
 
-        elif decision_price == window_prices.max() and battery.can_discharge(battery.specs.power_mw):
+        elif np.isclose(decision_price, window_prices.max()) and battery.can_discharge(battery.specs.power_mw):
             # Discharge: most expensive hour in window
             energy = battery.discharge(battery.specs.power_mw)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)

@@ -149,10 +149,10 @@ class BatterySimulator:
 
             # Calculate actual duration based on power capacity
             if decision.action != 'hold':
-                duration_hours = min(
-                    abs(decision.energy_mwh) / self.specs.power_mw,
-                    1.0  # Cap at 1 hour
-                )
+                if abs(decision.energy_mwh) >= self.specs.power_mw:
+                    duration_hours = 1.0
+                else:
+                    duration_hours = abs(decision.energy_mwh) / self.specs.power_mw
 
                 # Add point at end of ramping (when operation completes)
                 soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))

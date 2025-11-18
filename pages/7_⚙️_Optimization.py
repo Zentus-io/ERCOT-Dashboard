@@ -131,11 +131,15 @@ if state.strategy_type == "Rolling Window Optimization":
         example_timestamp = example['timestamp']
 
         # Find the index in the original node_data
-        example_idx = node_data[node_data['timestamp'] == example_timestamp].index[0]
-        window_end = min(example_idx + state.window_hours, len(node_data))
+        filtered = node_data[node_data['timestamp'] == example_timestamp]
+        if filtered.empty:
+            st.warning(f"Could not find example timestamp {example_timestamp} in node_data. Skipping example.")
+        else:
+            example_idx = filtered.index[0]
+            window_end = min(example_idx + state.window_hours, len(node_data))
 
-        st.markdown(f"**Example Hour: Improved forecast made DIFFERENT decision than baseline**")
-        st.markdown(f"**Time:** {example_timestamp}")
+            st.markdown(f"**Example Hour: Improved forecast made DIFFERENT decision than baseline**")
+            st.markdown(f"**Time:** {example_timestamp}")
 
         col1, col2 = st.columns(2)
 

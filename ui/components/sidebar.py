@@ -55,7 +55,11 @@ def render_sidebar():
     selected_node = st.sidebar.selectbox(
         "Select Settlement Point:",
         state.available_nodes or [],
-        index=0 if state.selected_node is None or state.available_nodes is None else state.available_nodes.index(state.selected_node),
+        index=0 if (
+            state.selected_node is None
+            or state.available_nodes is None
+            or state.selected_node not in state.available_nodes
+        ) else state.available_nodes.index(state.selected_node),
         help="Choose a wind resource settlement point to analyze"
     )
 

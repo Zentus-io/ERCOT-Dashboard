@@ -62,7 +62,7 @@ class AppState:
     price_data: Optional[pd.DataFrame] = None
     eia_battery_data: Optional[pd.DataFrame] = None
     available_nodes: Optional[list] = None
-    available_nodes: Optional[list] = None
+
 
 
 def init_state():
