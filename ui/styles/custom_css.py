@@ -35,6 +35,7 @@ def apply_custom_styles():
         }}
         .data-note {{
             background-color: #FFF3CD;
+            color: #212529;
             padding: 10px;
             border-radius: 5px;
             border-left: 3px solid {COLORS['warning']};
