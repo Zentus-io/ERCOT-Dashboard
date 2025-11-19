@@ -7,6 +7,7 @@
 DROP TABLE IF EXISTS ercot_prices CASCADE;
 DROP TABLE IF EXISTS eia_batteries CASCADE;
 DROP FUNCTION IF EXISTS get_daily_summary(date, date);
+DROP FUNCTION IF EXISTS get_date_range();
 
 -- Optimized price table for ERCOT market data
 CREATE TABLE ercot_prices (
@@ -63,6 +64,20 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION get_daily_summary(date, date) IS 'Returns the daily record count per market for a given date range.';
+
+-- Function to get the earliest and latest dates in the database
+CREATE OR REPLACE FUNCTION get_date_range()
+RETURNS TABLE(min_date timestamptz, max_date timestamptz) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        MIN(timestamp) as min_date,
+        MAX(timestamp) as max_date
+    FROM ercot_prices;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION get_date_range() IS 'Returns the minimum and maximum timestamp in the ercot_prices table.';
 
 
 -- Enable Row Level Security (RLS) for security
