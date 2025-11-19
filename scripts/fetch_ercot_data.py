@@ -19,6 +19,7 @@ from typing import List
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from postgrest.types import CountMethod
 from gridstatus.ercot import Ercot
 from gridstatus.base import Markets, NoDataFoundException
 from tqdm import tqdm
@@ -103,8 +104,9 @@ def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts
     """Orchestrates fetching, transforming, and storing data for a single day."""
     stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0, 'success': False}
     try:
-        dam_needed = expected_counts.get("DAM", 0) > 0
-        rtm_needed = expected_counts.get("RTM", 0) > 0
+        # If expected_counts is empty, it means we should fetch both markets for the day
+        dam_needed = not expected_counts or expected_counts.get("DAM", 0) > 0
+        rtm_needed = not expected_counts or expected_counts.get("RTM", 0) > 0
 
         dam_prices, rtm_prices = pd.DataFrame(), pd.DataFrame()
 
@@ -141,16 +143,13 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
     Analyzes the database to find which days in the range are missing data.
     """
     print("\n🧐 Analyzing existing data in Supabase to find gaps...")
-    
     # 1. Get the list of unique settlement points to calculate expected counts
     try:
-        nodes_res = supabase.table("ercot_prices").select("settlement_point").execute()
-        if not nodes_res.data:
-            print("   -> No existing settlement points found. Will fetch all days in range.")
-            return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-        
+        nodes_res = supabase.table("ercot_prices").select("settlement_point", count=CountMethod.exact).execute()
+        unique_nodes = set(row['settlement_point'] for row in nodes_res.data if isinstance(row, dict) and row.get('settlement_point'))
         unique_nodes = set(row['settlement_point'] for row in nodes_res.data if isinstance(row, dict) and row.get('settlement_point'))
         num_nodes = len(unique_nodes)
+        
         if num_nodes == 0:
             print("   -> No existing settlement points found. Will fetch all days in range.")
             return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
@@ -162,13 +161,15 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
 
     # 2. Get daily record counts from Supabase
     try:
-        daily_counts_res = supabase.rpc('get_daily_summary', {'start_date': str(start_date), 'end_date': str(end_date)}).execute()
+        daily_counts_res = supabase.rpc('get_daily_summary', {
+            'p_start_date': str(start_date),
+            'p_end_date': str(end_date)
+        }).execute()
         daily_counts_data = daily_counts_res.data
     except Exception as e:
          print(f"   -> Could not get daily summary. Will fetch all days. Error: {e}")
          return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
-    # Validate that daily_counts_data is a valid list
     if not isinstance(daily_counts_data, list):
         print(f"   -> Invalid daily summary data received. Will fetch all days.")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
@@ -258,7 +259,8 @@ def main():
     with tqdm(total=len(days_to_fetch), desc="Overall Progress", unit="day") as pbar:
         for day in days_to_fetch:
             pbar.set_description(f"Processing {day}")
-            # We don't need expected_counts for the fetch, just that the day is incomplete
+            # The find_incomplete_days function already determined what's needed.
+            # Pass an empty dict to signal fetch_and_store_day to try both markets if possible.
             stats = fetch_and_store_day(ercot, supabase, day, {})
             if stats['success']:
                 total_stats['dam_records'] += stats['dam_records']
