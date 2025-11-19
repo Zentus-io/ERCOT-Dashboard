@@ -1,43 +1,29 @@
--- ERCOT Battery Storage Revenue Dashboard
--- Supabase Database Schema
+-- ERCOT Battery Storage Revenue Dashboard - Optimized Schema V2
 -- Zentus - 2025
 
--- Drop existing objects if they exist (for clean reinstall)
-DROP MATERIALIZED VIEW IF EXISTS ercot_prices_merged CASCADE;
+-- This schema is for a fresh database setup.
+-- If you have existing data, run 'migrate_schema_to_v2.sql' instead of this.
+
 DROP TABLE IF EXISTS ercot_prices CASCADE;
 DROP TABLE IF EXISTS eia_batteries CASCADE;
+DROP FUNCTION IF EXISTS get_daily_summary(date, date);
 
--- Main price table for ERCOT market data
+-- Optimized price table for ERCOT market data
 CREATE TABLE ercot_prices (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    interval_start TIMESTAMPTZ NOT NULL,
-    interval_end TIMESTAMPTZ NOT NULL,
-    location TEXT NOT NULL,
-    location_type TEXT NOT NULL,  -- 'Resource Node', 'Hub', 'Load Zone'
+    timestamp TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL,
+    settlement_point TEXT NOT NULL,
     market TEXT NOT NULL,          -- 'DAM' (Day-Ahead) or 'RTM' (Real-Time)
-    price_mwh DECIMAL(10,2) NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    price_mwh DECIMAL(10, 2) NOT NULL,
 
-    -- Unique constraint to prevent duplicate data
-    CONSTRAINT unique_price_record UNIQUE (timestamp, interval_start, location, market)
+    -- Composite primary key to enforce uniqueness and save space
+    PRIMARY KEY (timestamp, settlement_point, market)
 );
 
 -- Indexes for fast querying
--- Primary query pattern: filter by location + market + time range
-CREATE INDEX idx_location_market_time ON ercot_prices (location, market, timestamp DESC);
-
--- Time-based queries (for date range filtering)
-CREATE INDEX idx_timestamp ON ercot_prices (timestamp DESC);
-
--- Market-specific queries
-CREATE INDEX idx_market ON ercot_prices (market);
-
--- Location lookup (for dropdown population)
-CREATE INDEX idx_location ON ercot_prices (location);
+CREATE INDEX idx_settlement_point_market_time ON ercot_prices (settlement_point, market, timestamp DESC);
 
 -- Comment on table
-COMMENT ON TABLE ercot_prices IS 'ERCOT settlement point prices from Day-Ahead and Real-Time markets. Data sourced from ERCOT API via gridstatus library.';
+COMMENT ON TABLE ercot_prices IS 'ERCOT settlement point prices. Optimized for space. Fetched from ERCOT API via gridstatus.';
 
 -- EIA-860 Battery Reference Data
 CREATE TABLE eia_batteries (
@@ -56,84 +42,39 @@ CREATE TABLE eia_batteries (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-COMMENT ON TABLE eia_batteries IS 'Battery storage systems in Texas from EIA-860 data. Used for market context and validation of battery specifications.';
+COMMENT ON TABLE eia_batteries IS 'Battery storage systems in Texas from EIA-860 data. Used for market context.';
 
--- Create materialized view for merged DAM + RTM prices
--- This pre-joins the data and calculates derived metrics for dashboard performance
-CREATE MATERIALIZED VIEW ercot_prices_merged AS
-SELECT
-    d.timestamp,
-    d.location AS node,
-    d.price_mwh AS price_mwh_da,
-    r.price_mwh AS price_mwh_rt,
-    (r.price_mwh - d.price_mwh) AS forecast_error,
-    ABS(r.price_mwh - d.price_mwh) AS price_spread,
-    CASE
-        WHEN ABS(r.price_mwh - d.price_mwh) > 10 THEN TRUE
-        ELSE FALSE
-    END AS extreme_event
-FROM ercot_prices d
-INNER JOIN ercot_prices r
-    ON d.location = r.location
-    AND d.timestamp = r.timestamp
-WHERE d.market = 'DAM'
-    AND r.market = 'RTM';
-
--- Index on materialized view for fast filtering
-CREATE UNIQUE INDEX idx_merged_node_time ON ercot_prices_merged (node, timestamp);
-CREATE INDEX idx_merged_timestamp ON ercot_prices_merged (timestamp DESC);
-
-COMMENT ON MATERIALIZED VIEW ercot_prices_merged IS 'Pre-joined view of DAM and RTM prices with calculated metrics. Refresh periodically after new data ingestion.';
-
--- Function to refresh the materialized view
-CREATE OR REPLACE FUNCTION refresh_prices_merged()
-RETURNS void AS $$
+-- Function to get daily record counts for gap analysis
+CREATE OR REPLACE FUNCTION get_daily_summary(
+    start_date date,
+    end_date date
+)
+RETURNS TABLE(day timestamptz, market text, record_count bigint) AS $$
 BEGIN
-    REFRESH MATERIALIZED VIEW CONCURRENTLY ercot_prices_merged;
+    RETURN QUERY
+    SELECT
+        date_trunc('day', T.timestamp) as day,
+        T.market,
+        count(*) as record_count
+    FROM ercot_prices AS T
+    WHERE T.timestamp >= start_date AND T.timestamp < end_date + interval '1 day'
+    GROUP BY 1, 2;
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION refresh_prices_merged() IS 'Refreshes the ercot_prices_merged materialized view. Call after bulk data ingestion.';
+COMMENT ON FUNCTION get_daily_summary(date, date) IS 'Returns the daily record count per market for a given date range.';
+
 
 -- Enable Row Level Security (RLS) for security
 ALTER TABLE ercot_prices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE eia_batteries ENABLE ROW LEVEL SECURITY;
 
--- Create a permissive policy for data ingestion scripts.
--- WARNING: This allows any client to perform all actions. For a production
--- environment, you should create more restrictive policies.
+-- Create permissive policies for data ingestion and dashboard reading.
 CREATE POLICY "Enable all actions for data ingestion" ON ercot_prices
     FOR ALL
     USING (true)
     WITH CHECK (true);
 
--- Create policies to allow read access for eia_batteries
 CREATE POLICY "Enable read access for all users" ON eia_batteries
     FOR SELECT
     USING (true);
-
--- Helper view to get available date ranges per location
-CREATE OR REPLACE VIEW available_data_summary AS
-SELECT
-    location,
-    market,
-    MIN(timestamp) AS earliest_data,
-    MAX(timestamp) AS latest_data,
-    COUNT(*) AS record_count,
-    MAX(created_at) AS last_updated
-FROM ercot_prices
-GROUP BY location, market
-ORDER BY location, market;
-
-COMMENT ON VIEW available_data_summary IS 'Summary of available data coverage by location and market. Used for dashboard data freshness indicators.';
-
--- Grant permissions (adjust based on your Supabase setup)
--- GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
--- GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO authenticated;
--- GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO authenticated;
-
--- Schema setup complete
--- Next steps:
--- 1. Run this SQL in Supabase SQL Editor
--- 2. Use scripts/migrate_existing_data.py to import CSV data
--- 3. Use scripts/fetch_ercot_data.py to fetch new data from ERCOT API

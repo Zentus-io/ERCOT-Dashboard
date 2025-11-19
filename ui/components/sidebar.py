@@ -25,9 +25,9 @@ from config.settings import (
 @st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading data...")
 def load_app_data(
     source: str = 'csv',
-    node: str = None,
-    start_date: date = None,
-    end_date: date = None
+    node: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None
 ):
     """
     Load price and battery data with caching.
@@ -137,7 +137,15 @@ def render_sidebar():
         if state.available_date_range is None:
             try:
                 db_loader = SupabaseDataLoader()
-                state.available_date_range = db_loader.get_date_range()
+                date_range = db_loader.get_date_range()
+                # Validate that both dates are not None
+                if date_range[0] is not None and date_range[1] is not None:
+                    state.available_date_range = (date_range[0], date_range[1])
+                else:
+                    state.available_date_range = (
+                        date.today() - timedelta(days=DEFAULT_DAYS_BACK),
+                        date.today()
+                    )
             except Exception as e:
                 st.sidebar.error(f"⚠️ Cannot fetch date range: {str(e)}")
                 state.available_date_range = (
