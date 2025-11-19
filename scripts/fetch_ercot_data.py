@@ -34,7 +34,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 # CONFIGURATION
 # ============================================================================
 
-BATCH_SIZE = 1500
+BATCH_SIZE = 250  # Further reduced to avoid timeouts with large datasets
 MAX_RETRIES = 3
 PARALLEL_MARKETS = True
 EXPECTED_RTM_RECORDS_PER_DAY = 96
@@ -65,8 +65,14 @@ def transform_for_database(df: pd.DataFrame) -> list[dict]:
     if df.empty:
         return []
 
-    # Truncate timestamp to the minute
-    df['timestamp'] = pd.to_datetime(df['Time']).dt.floor('min')
+    # Convert to datetime, handling DST ambiguity by keeping US/Central time (ERCOT's timezone)
+    timestamps = pd.to_datetime(df['Time'])
+    # If timezone-aware, convert to Central time then remove tz; if naive, keep as-is
+    if timestamps.dt.tz is not None:
+        # Convert to US/Central (ERCOT's timezone), which handles DST automatically
+        df['timestamp'] = timestamps.dt.tz_convert('US/Central').dt.tz_localize(None).dt.floor('min')
+    else:
+        df['timestamp'] = timestamps.dt.floor('min')
 
     df_transformed = df.rename(columns={
         'Location': 'settlement_point',
@@ -92,14 +98,31 @@ def upsert_to_supabase(supabase: Client, records: list[dict]) -> int:
     """Upserts a list of records to the ercot_prices table in batches."""
     if not records:
         return 0
+
+    # Deduplicate records within this batch to avoid "cannot affect row a second time" error
+    # Keep last occurrence of each (timestamp, settlement_point, market) tuple
+    seen = {}
+    for record in records:
+        key = (record['timestamp'], record['settlement_point'], record['market'])
+        seen[key] = record
+    deduplicated = list(seen.values())
+
+    if len(deduplicated) < len(records):
+        print(f"    ℹ️  Removed {len(records) - len(deduplicated)} duplicate records from batch")
+
+    total_inserted = 0
     try:
-        supabase.table("ercot_prices").upsert(
-            records, on_conflict="timestamp,settlement_point,market"
-        ).execute()
-        return len(records)
+        # Process in smaller batches
+        for i in range(0, len(deduplicated), BATCH_SIZE):
+            batch = deduplicated[i:i + BATCH_SIZE]
+            supabase.table("ercot_prices").upsert(
+                batch, on_conflict="timestamp,settlement_point,market"
+            ).execute()
+            total_inserted += len(batch)
+        return total_inserted
     except Exception as e:
-        print(f"    ✗ Batch insert failed: {str(e)[:100]}...")
-        return 0
+        print(f"    ✗ Batch insert failed at record {total_inserted}: {str(e)[:150]}...")
+        return total_inserted  # Return what was successfully inserted before failure
 
 
 def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, retry_count: int = 0) -> dict:
