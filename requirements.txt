@@ -21,3 +21,6 @@ gridstatus>=0.24.0  # ERCOT market data access via API
 # Database
 supabase>=2.0.0  # Supabase client for database integration
 python-dotenv>=1.0.0  # Environment variable management
+
+# Progress tracking
+tqdm>=4.65.0  # Progress bars for long-running operations

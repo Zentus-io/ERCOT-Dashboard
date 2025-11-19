@@ -1,116 +1,89 @@
 """
-Fetch ERCOT Market Data and Store in Supabase
+Optimized ERCOT Data Fetcher for Supabase
 Zentus - ERCOT Battery Revenue Dashboard
 
-Fetches Day-Ahead (DAM) and Real-Time (RTM) settlement prices from ERCOT API
-using the gridstatus library and stores them in Supabase database.
+This script fetches Day-Ahead (DAM) and Real-Time (RTM) settlement prices
+from the ERCOT API using the gridstatus library and upserts them into a
+Supabase database.
+
+It is optimized for fetching large date ranges by processing data in
+parallel chunks with progress tracking and retry logic.
 
 Usage:
-    # Fetch last 7 days
+    # Fetch last 7 days (default)
     python scripts/fetch_ercot_data.py
 
-    # Fetch specific date range
-    python scripts/fetch_ercot_data.py --start 2025-01-01 --end 2025-01-31
+    # Fetch a specific date range
+    python scripts/fetch_ercot_data.py --start 2025-01-01 --end 2025-12-31
 
-    # Refresh materialized view after fetching
-    python scripts/fetch_ercot_data.py --refresh-view
+    # Just refresh the materialized view
+    python scripts/fetch_ercot_data.py --refresh-view-only
 """
 
 import os
 import sys
 import argparse
 import datetime
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from gridstatus.ercot import Ercot
 from gridstatus.base import Markets, NoDataFoundException
+from tqdm import tqdm
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
+# ============================================================================ 
+# CONFIGURATION
+# ============================================================================ 
 
-def fetch_ercot_prices(
-    iso: Ercot,
-    start_date: datetime.date,
-    end_date: datetime.date
+CHUNK_DAYS = 7       # Fetch data in weekly chunks to avoid API timeouts
+BATCH_SIZE = 1500    # Number of records to upsert in a single Supabase batch
+MAX_RETRIES = 3      # Number of retries for a failed chunk
+PARALLEL_MARKETS = True # Fetch DAM and RTM markets in parallel for each chunk
+
+
+# ============================================================================ 
+# HELPER FUNCTIONS
+# ============================================================================ 
+
+def chunk_date_range(start_date: date, end_date: date, chunk_days: int):
+    """Splits a date range into smaller chunks."""
+    current = start_date
+    while current <= end_date:
+        chunk_end = min(current + timedelta(days=chunk_days - 1), end_date)
+        yield (current, chunk_end)
+        current = chunk_end + timedelta(days=1)
+
+
+def fetch_ercot_prices_chunk(
+    iso: Ercot, start_date: date, end_date: date, market: Markets, market_name: str
 ) -> pd.DataFrame:
-    """
-    Fetch DAM and RTM settlement prices from ERCOT API.
-
-    Args:
-        iso: ERCOT ISO instance
-        start_date: Start date for data fetch
-        end_date: End date for data fetch
-
-    Returns:
-        DataFrame with combined DAM and RTM prices
-    """
-    all_prices = []
-
-    # Fetch DAM prices (hourly)
+    """Fetches ERCOT prices for a specific date chunk and market."""
     try:
-        print(f"📊 Fetching DAM prices from {start_date} to {end_date}...")
-        dam_prices = iso.get_spp(
-            start=start_date,
-            end=end_date,
-            market=Markets.DAY_AHEAD_HOURLY
-        )
-        if not dam_prices.empty:
-            dam_prices["Market"] = "DAM"
-            all_prices.append(dam_prices)
-            print(f"✅ Fetched {len(dam_prices):,} DAM records")
-        else:
-            print("⚠️  No DAM data found for date range")
+        prices = iso.get_spp(start=start_date, end=end_date, market=market)
+        if not prices.empty:
+            prices["Market"] = market_name
+            return prices
     except NoDataFoundException:
-        print("⚠️  No DAM data available for date range")
+        # This is expected for dates where ERCOT has not published data
+        pass
     except Exception as e:
-        print(f"❌ Error fetching DAM prices: {e}")
-
-    # Fetch RTM prices (15-minute intervals)
-    try:
-        print(f"📊 Fetching RTM prices from {start_date} to {end_date}...")
-        rtm_prices = iso.get_spp(
-            start=start_date,
-            end=end_date,
-            market=Markets.REAL_TIME_15_MIN
-        )
-        if not rtm_prices.empty:
-            rtm_prices["Market"] = "RTM"
-            all_prices.append(rtm_prices)
-            print(f"✅ Fetched {len(rtm_prices):,} RTM records")
-        else:
-            print("⚠️  No RTM data found for date range")
-    except NoDataFoundException:
-        print("⚠️  No RTM data available for date range")
-    except Exception as e:
-        print(f"❌ Error fetching RTM prices: {e}")
-
-    if all_prices:
-        combined = pd.concat(all_prices, ignore_index=True)
-        print(f"✅ Total records fetched: {len(combined):,}")
-        return combined
-    else:
-        return pd.DataFrame()
+        # Log other, unexpected errors
+        print(f"    ⚠️  Error fetching {market_name} for {start_date}-{end_date}: {str(e)[:100]}...")
+    return pd.DataFrame()
 
 
 def transform_for_database(df: pd.DataFrame) -> list[dict]:
-    """
-    Transform ERCOT API data to match database schema.
-
-    Args:
-        df: DataFrame from gridstatus API
-
-    Returns:
-        List of dictionaries ready for database insertion
-    """
+    """Transforms a DataFrame from gridstatus to match the Supabase schema."""
     if df.empty:
         return []
 
-    # Rename columns to match database schema
-    # gridstatus columns: Time, Interval Start, Interval End, Location, Location Type, Market, SPP
     df_transformed = df.rename(columns={
         'Time': 'timestamp',
         'Interval Start': 'interval_start',
@@ -121,197 +94,161 @@ def transform_for_database(df: pd.DataFrame) -> list[dict]:
         'SPP': 'price_mwh'
     })
 
-    # Convert to list of dictionaries
-    records = df_transformed[[
-        'timestamp',
-        'interval_start',
-        'interval_end',
-        'location',
-        'location_type',
-        'market',
-        'price_mwh'
-    ]].to_dict('records')
+    # Ensure all required columns are present
+    required_cols = ['timestamp', 'interval_start', 'interval_end', 'location', 'location_type', 'market', 'price_mwh']
+    for col in required_cols:
+        if col not in df_transformed.columns:
+            df_transformed[col] = pd.NaT if 'time' in col else None
+            
+    records = df_transformed[required_cols].to_dict('records')
 
-    # Convert timestamps to ISO format strings
     for record in records:
-        record['timestamp'] = str(record['timestamp'])
-        record['interval_start'] = str(record['interval_start'])
-        record['interval_end'] = str(record['interval_end'])
-
+        for key, value in record.items():
+            if pd.isna(value):
+                record[key] = None
+            elif isinstance(value, (datetime.datetime, pd.Timestamp)):
+                record[key] = value.isoformat()
     return records
 
 
-def upsert_to_supabase(
-    supabase: Client,
-    records: list[dict],
-    batch_size: int = 1000
-) -> int:
-    """
-    Insert records into Supabase using batch upserts.
-
-    Args:
-        supabase: Supabase client
-        records: List of price records
-        batch_size: Number of records per batch
-
-    Returns:
-        Number of records inserted/updated
-    """
+def upsert_to_supabase(supabase: Client, records: list[dict]) -> int:
+    """Upserts a list of records to the ercot_prices table in batches."""
     if not records:
         return 0
 
     total_inserted = 0
-    total_batches = (len(records) + batch_size - 1) // batch_size
-
-    print(f"💾 Inserting {len(records):,} records in {total_batches} batches...")
-
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i + batch_size]
-        batch_num = (i // batch_size) + 1
-
+    for i in range(0, len(records), BATCH_SIZE):
+        batch = records[i:i + BATCH_SIZE]
         try:
-            # Upsert with conflict handling on unique constraint
-            response = (
-                supabase.table("ercot_prices")
-                .upsert(batch, on_conflict="timestamp,interval_start,location,market")
-                .execute()
-            )
-
+            supabase.table("ercot_prices").upsert(
+                batch, on_conflict="timestamp,interval_start,location,market"
+            ).execute()
             total_inserted += len(batch)
-            print(f"  ✓ Batch {batch_num}/{total_batches}: {len(batch)} records")
-
         except Exception as e:
-            print(f"  ✗ Batch {batch_num}/{total_batches} failed: {e}")
+            print(f"    ✗ Batch insert failed: {str(e)[:100]}...")
             continue
-
-    print(f"✅ Successfully upserted {total_inserted:,} records")
     return total_inserted
 
 
-def refresh_materialized_view(supabase: Client):
-    """Refresh the materialized view for merged DAM/RTM prices."""
-    print("🔄 Refreshing materialized view...")
+def fetch_and_store_chunk(
+    iso: Ercot, supabase: Client, chunk_start: date, chunk_end: date, retry_count: int = 0
+) -> dict:
+    """Orchestrates fetching, transforming, and storing data for one chunk."""
+    stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0, 'success': False}
     try:
-        # Call the refresh function
-        supabase.rpc('refresh_prices_merged').execute()
-        print("✅ Materialized view refreshed")
+        if PARALLEL_MARKETS:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_dam = executor.submit(fetch_ercot_prices_chunk, iso, chunk_start, chunk_end, Markets.DAY_AHEAD_HOURLY, "DAM")
+                future_rtm = executor.submit(fetch_ercot_prices_chunk, iso, chunk_start, chunk_end, Markets.REAL_TIME_15_MIN, "RTM")
+                dam_prices, rtm_prices = future_dam.result(), future_rtm.result()
+        else:
+            dam_prices = fetch_ercot_prices_chunk(iso, chunk_start, chunk_end, Markets.DAY_AHEAD_HOURLY, "DAM")
+            rtm_prices = fetch_ercot_prices_chunk(iso, chunk_start, chunk_end, Markets.REAL_TIME_15_MIN, "RTM")
+
+        all_prices = [df for df in [dam_prices, rtm_prices] if not df.empty]
+        stats['dam_records'], stats['rtm_records'] = len(dam_prices), len(rtm_prices)
+        
+        if all_prices:
+            combined = pd.concat(all_prices, ignore_index=True)
+            records = transform_for_database(combined)
+            stats['total_inserted'] = upsert_to_supabase(supabase, records)
+        stats['success'] = True
+        return stats
     except Exception as e:
-        print(f"⚠️  Could not refresh view: {e}")
-        print("    You may need to refresh manually in Supabase SQL Editor:")
+        if retry_count < MAX_RETRIES:
+            return fetch_and_store_chunk(iso, supabase, chunk_start, chunk_end, retry_count + 1)
+        else:
+            print(f"    ❌ Chunk failed after {MAX_RETRIES} retries: {str(e)[:100]}...")
+            return stats
+
+def refresh_materialized_view(supabase: Client):
+    """Refreshes the materialized view for merged DAM/RTM prices."""
+    print("\n🔄 Refreshing materialized view 'ercot_prices_merged'...")
+    try:
+        supabase.rpc('refresh_prices_merged').execute()
+        print("✅ Materialized view refreshed successfully.")
+    except Exception as e:
+        print(f"⚠️  Could not refresh view automatically: {str(e)[:100]}...")
+        print("    Please run this SQL in the Supabase SQL Editor:")
         print("    REFRESH MATERIALIZED VIEW CONCURRENTLY ercot_prices_merged;")
 
 
 def main():
     """Main execution function."""
-    parser = argparse.ArgumentParser(
-        description="Fetch ERCOT price data and store in Supabase"
-    )
-    parser.add_argument(
-        "--start",
-        type=str,
-        help="Start date (YYYY-MM-DD). Default: 7 days ago"
-    )
-    parser.add_argument(
-        "--end",
-        type=str,
-        help="End date (YYYY-MM-DD). Default: today"
-    )
-    parser.add_argument(
-        "--refresh-view",
-        action="store_true",
-        help="Refresh materialized view after fetching"
-    )
-
+    parser = argparse.ArgumentParser(description="Optimized ERCOT data fetcher for Supabase.")
+    parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD). Default: 7 days ago.")
+    parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD). Default: today.")
+    parser.add_argument("--refresh-view-only", action="store_true", help="Only refresh the materialized view and exit.")
     args = parser.parse_args()
 
-    # Load environment variables
     load_dotenv()
-
-    # Determine date range
-    if args.end:
-        end_date = datetime.datetime.strptime(args.end, "%Y-%m-%d").date()
-    else:
-        end_date = datetime.date.today()
-
-    if args.start:
-        start_date = datetime.datetime.strptime(args.start, "%Y-%m-%d").date()
-    else:
-        start_date = end_date - datetime.timedelta(days=7)
-
-    print("="*80)
-    print("ERCOT Data Fetcher - Zentus")
-    print("="*80)
-    print(f"Date range: {start_date} to {end_date}")
-    print()
-
-    # Check Supabase credentials
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
 
     if not supabase_url or not supabase_key:
-        print("❌ ERROR: Supabase credentials not found!")
-        print("Set SUPABASE_URL and SUPABASE_KEY in .env file")
+        print("❌ ERROR: Supabase credentials not found in .env file.")
         return 1
 
-    # Check ERCOT API credentials (optional - gridstatus may work without)
-    ercot_username = os.getenv("ERCOT_API_USERNAME")
-    ercot_password = os.getenv("ERCOT_API_PASSWORD")
-    ercot_key = os.getenv("ERCOT_API_SUBSCRIPTION_KEY")
+    print("="*80)
+    print("Zentus - Optimized ERCOT Data Fetcher")
+    print("="*80)
 
-    if not all([ercot_username, ercot_password, ercot_key]):
-        print("⚠️  WARNING: ERCOT API credentials not fully configured")
-        print("    Data fetching may be limited or fail")
-        print("    Register at: https://apiexplorer.ercot.com/")
-        print()
-
-    # Initialize clients
-    print("🔌 Connecting to Supabase...")
     try:
+        print("\n🔌 Connecting to Supabase...")
         supabase: Client = create_client(supabase_url, supabase_key)
-        print("✅ Supabase connected")
-    except Exception as e:
-        print(f"❌ Supabase connection failed: {e}")
-        return 1
-
-    print("🔌 Initializing ERCOT API client...")
-    try:
+        print("✅ Supabase connected.")
+        
+        if args.refresh_view_only:
+            refresh_materialized_view(supabase)
+            return 0
+        
+        print("\n🔌 Initializing ERCOT API client...")
         ercot = Ercot()
-        print("✅ ERCOT client initialized")
+        print("✅ ERCOT client initialized.")
     except Exception as e:
-        print(f"❌ ERCOT client initialization failed: {e}")
+        print(f"❌ Initialization failed: {e}")
         return 1
 
-    print()
+    end_date = datetime.datetime.strptime(args.end, "%Y-%m-%d").date() if args.end else date.today()
+    start_date = datetime.datetime.strptime(args.start, "%Y-%m-%d").date() if args.start else end_date - timedelta(days=6)
 
-    # Fetch data from ERCOT
-    prices_df = fetch_ercot_prices(ercot, start_date, end_date)
+    chunks = list(chunk_date_range(start_date, end_date, CHUNK_DAYS))
+    print(f"\n📅 Fetching data from {start_date} to {end_date} in {len(chunks)} chunk(s).")
+    
+    total_stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0}
+    failed_chunks_count = 0
 
-    if prices_df.empty:
-        print("❌ No data retrieved from ERCOT API")
-        return 1
+    with tqdm(total=len(chunks), desc="Overall Progress", unit="chunk") as pbar:
+        for chunk_start, chunk_end in chunks:
+            pbar.set_description(f"Processing {chunk_start} to {chunk_end}")
+            stats = fetch_and_store_chunk(ercot, supabase, chunk_start, chunk_end)
+            if stats['success']:
+                total_stats['dam_records'] += stats['dam_records']
+                total_stats['rtm_records'] += stats['rtm_records']
+                total_stats['total_inserted'] += stats['total_inserted']
+                pbar.set_postfix({'Inserted': stats['total_inserted']})
+            else:
+                failed_chunks_count += 1
+                pbar.set_postfix({'Status': 'Failed'})
+            pbar.update(1)
 
-    # Transform data
-    print()
-    print("🔄 Transforming data for database...")
-    records = transform_for_database(prices_df)
-    print(f"✅ Prepared {len(records):,} records")
-
-    # Insert into Supabase
-    print()
-    inserted = upsert_to_supabase(supabase, records)
-
-    # Refresh materialized view if requested
-    if args.refresh_view:
-        print()
+    if total_stats['total_inserted'] > 0:
         refresh_materialized_view(supabase)
 
-    print()
+    print("\n" + "="*80)
+    print("📜 Summary")
     print("="*80)
-    print(f"✅ Data fetch complete! Inserted/updated {inserted:,} records")
+    print(f"✅ Successfully processed {len(chunks) - failed_chunks_count}/{len(chunks)} chunks.")
+    print(f"📈 DAM records fetched: {total_stats['dam_records']:,}")
+    print(f"📈 RTM records fetched: {total_stats['rtm_records']:,}")
+    print(f"💾 Total records inserted/updated: {total_stats['total_inserted']:,}")
+    if failed_chunks_count > 0:
+        print(f"❌ Failed chunks: {failed_chunks_count}")
+
+    print("\n✅ Data fetch complete!")
     print("="*80)
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

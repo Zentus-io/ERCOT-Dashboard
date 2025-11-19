@@ -80,7 +80,7 @@ WHERE d.market = 'DAM'
     AND r.market = 'RTM';
 
 -- Index on materialized view for fast filtering
-CREATE INDEX idx_merged_node_time ON ercot_prices_merged (node, timestamp DESC);
+CREATE UNIQUE INDEX idx_merged_node_time ON ercot_prices_merged (node, timestamp);
 CREATE INDEX idx_merged_timestamp ON ercot_prices_merged (timestamp DESC);
 
 COMMENT ON MATERIALIZED VIEW ercot_prices_merged IS 'Pre-joined view of DAM and RTM prices with calculated metrics. Refresh periodically after new data ingestion.';
@@ -99,19 +99,18 @@ COMMENT ON FUNCTION refresh_prices_merged() IS 'Refreshes the ercot_prices_merge
 ALTER TABLE ercot_prices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE eia_batteries ENABLE ROW LEVEL SECURITY;
 
--- Create policies to allow read access (adjust as needed for your use case)
-CREATE POLICY "Enable read access for all users" ON ercot_prices
-    FOR SELECT
-    USING (true);
+-- Create a permissive policy for data ingestion scripts.
+-- WARNING: This allows any client to perform all actions. For a production
+-- environment, you should create more restrictive policies.
+CREATE POLICY "Enable all actions for data ingestion" ON ercot_prices
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
 
+-- Create policies to allow read access for eia_batteries
 CREATE POLICY "Enable read access for all users" ON eia_batteries
     FOR SELECT
     USING (true);
-
--- If you need write access for the anon key (for data ingestion scripts)
-CREATE POLICY "Enable insert for authenticated users" ON ercot_prices
-    FOR INSERT
-    WITH CHECK (true);
 
 -- Helper view to get available date ranges per location
 CREATE OR REPLACE VIEW available_data_summary AS

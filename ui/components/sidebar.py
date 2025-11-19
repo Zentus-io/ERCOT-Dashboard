@@ -8,22 +8,82 @@ that persists across all pages.
 
 import streamlit as st
 from pathlib import Path
+from datetime import date, timedelta
 import pandas as pd
 from core.battery.battery import BatterySpecs
-from core.data.loaders import DataLoader
-from utils.state import get_state, update_state, clear_simulation_cache
-from config.settings import DEFAULT_BATTERY, BATTERY_PRESETS
+from core.data.loaders import DataLoader, SupabaseDataLoader
+from utils.state import (
+    get_state, update_state, clear_simulation_cache, needs_data_reload,
+    get_cache_key, update_date_range, get_date_range_str, clear_data_cache
+)
+from config.settings import (
+    DEFAULT_BATTERY, BATTERY_PRESETS, SUPABASE_URL, SUPABASE_KEY,
+    DEFAULT_DAYS_BACK, MAX_DAYS_RANGE
+)
 
 
-@st.cache_data
-def load_app_data():
-    """Load price and battery data with caching."""
+@st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading data...")
+def load_app_data(
+    source: str = 'csv',
+    node: str = None,
+    start_date: date = None,
+    end_date: date = None
+):
+    """
+    Load price and battery data with caching.
+
+    Parameters
+    ----------
+    source : str
+        Data source ('csv' or 'database')
+    node : str, optional
+        Settlement point to load (None = all nodes for CSV, required for database)
+    start_date : date, optional
+        Start date for database queries
+    end_date : date, optional
+        End date for database queries
+
+    Returns
+    -------
+    tuple
+        (price_data, eia_data, nodes)
+    """
     data_dir = Path(__file__).parent.parent.parent / 'data'
-    loader = DataLoader(data_dir)
 
-    price_data = loader.load_prices()
-    eia_data = loader.load_eia_batteries()
-    nodes = loader.get_nodes(price_data)
+    if source == 'database':
+        try:
+            # Load from Supabase
+            db_loader = SupabaseDataLoader()
+
+            # Load price data for all nodes within date range
+            # We load all nodes to populate the node selector, then filter later
+            price_data = db_loader.load_prices(
+                node=None,  # Load all nodes
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            # Get available nodes from database
+            nodes = db_loader.get_available_nodes()
+            if not nodes and len(price_data) > 0:
+                # Fallback: extract from loaded data
+                nodes = sorted(price_data['node'].unique().tolist())
+
+        except Exception as e:
+            # Fallback to CSV on database error
+            st.warning(f"⚠️ Database error: {str(e)}. Falling back to CSV demo data.")
+            csv_loader = DataLoader(data_dir)
+            price_data = csv_loader.load_prices()
+            nodes = csv_loader.get_nodes(price_data)
+
+    else:
+        # Load from CSV files (demo mode)
+        csv_loader = DataLoader(data_dir)
+        price_data = csv_loader.load_prices()
+        nodes = csv_loader.get_nodes(price_data)
+
+    # EIA battery data always loaded from local files (rarely changes)
+    eia_data = DataLoader(data_dir).load_eia_batteries()
 
     return price_data, eia_data, nodes
 
@@ -33,6 +93,8 @@ def render_sidebar():
     Render configuration sidebar.
 
     This sidebar is shared across all pages and manages:
+    - Data source selection (CSV/Database)
+    - Date range selection (Database mode)
     - Settlement point selection
     - Battery specifications
     - Dispatch strategy configuration
@@ -40,14 +102,122 @@ def render_sidebar():
     """
     state = get_state()
 
-    # Load data if not already loaded
-    if state.price_data is None:
-        price_data, eia_data, nodes = load_app_data()
-        state.price_data = price_data
-        state.eia_battery_data = eia_data
-        state.available_nodes = nodes
-
     st.sidebar.header("Analysis Configuration")
+
+    # ========================================================================
+    # DATA SOURCE SELECTION
+    # ========================================================================
+    if SUPABASE_URL and SUPABASE_KEY:
+        data_source = st.sidebar.radio(
+            "Data Source:",
+            options=['Database', 'CSV Demo'],
+            index=0 if state.data_source == 'database' else 1,
+            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data"
+        )
+
+        # Map display names to internal values
+        data_source_internal = 'database' if data_source == 'Database' else 'csv'
+
+        if data_source_internal != state.data_source:
+            state.data_source = data_source_internal
+            clear_data_cache()
+    else:
+        # No database credentials - force CSV mode
+        state.data_source = 'csv'
+        st.sidebar.info("📌 **CSV Demo Mode** - Configure Supabase for multi-day data")
+
+    # ========================================================================
+    # DATE RANGE SELECTION (Database mode only)
+    # ========================================================================
+    if state.data_source == 'database':
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Date Range")
+
+        # Get available date range from database if not cached
+        if state.available_date_range is None:
+            try:
+                db_loader = SupabaseDataLoader()
+                state.available_date_range = db_loader.get_date_range()
+            except Exception as e:
+                st.sidebar.error(f"⚠️ Cannot fetch date range: {str(e)}")
+                state.available_date_range = (
+                    date.today() - timedelta(days=DEFAULT_DAYS_BACK),
+                    date.today()
+                )
+
+        earliest, latest = state.available_date_range or (
+            date.today() - timedelta(days=DEFAULT_DAYS_BACK),
+            date.today()
+        )
+
+        # Ensure state dates are within available range
+        if state.start_date < earliest:
+            state.start_date = earliest
+        if state.start_date > latest:
+            state.start_date = latest
+        if state.end_date < earliest:
+            state.end_date = earliest
+        if state.end_date > latest:
+            state.end_date = latest
+
+        # Date range picker
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "Start",
+                value=state.start_date,
+                min_value=earliest,
+                max_value=latest,
+                help=f"Data available from {earliest}"
+            )
+
+        with col2:
+            end_date = st.date_input(
+                "End",
+                value=state.end_date,
+                min_value=earliest,
+                max_value=latest,
+                help=f"Data available until {latest}"
+            )
+
+        # Validate and update date range
+        if end_date < start_date:
+            st.sidebar.error("⚠️ End date must be after start date")
+        else:
+            date_diff = (end_date - start_date).days
+            if date_diff > MAX_DAYS_RANGE:
+                st.sidebar.error(f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
+            elif start_date != state.start_date or end_date != state.end_date:
+                # Update date range
+                try:
+                    update_date_range(start_date, end_date)
+                except ValueError as e:
+                    st.sidebar.error(f"⚠️ {str(e)}")
+
+        # Show date range summary
+        days_selected = (state.end_date - state.start_date).days + 1
+        st.sidebar.caption(f"📅 **{days_selected} days** selected")
+
+    else:
+        # CSV mode - use fixed date from data
+        st.sidebar.markdown("---")
+        st.sidebar.info("📌 **Single-day demo data** (July 20, 2025)")
+
+    # ========================================================================
+    # LOAD DATA (if needed)
+    # ========================================================================
+    if needs_data_reload():
+        with st.spinner('Loading data...'):
+            price_data, eia_data, nodes = load_app_data(
+                source=state.data_source,
+                node=None,  # Load all nodes
+                start_date=state.start_date if state.data_source == 'database' else None,
+                end_date=state.end_date if state.data_source == 'database' else None
+            )
+            state.price_data = price_data
+            state.eia_battery_data = eia_data
+            state.available_nodes = nodes
+            state._data_cache_key = get_cache_key()
 
     # ========================================================================
     # NODE SELECTION
@@ -227,11 +397,34 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Data Summary")
 
-    if state.selected_node:
+    if state.selected_node and state.price_data is not None:
         node_data = state.price_data[state.price_data['node'] == state.selected_node]
-        st.sidebar.metric("Date", "July 20, 2025")
+
+        # Dynamic date range display
+        date_range = get_date_range_str(node_data)
+        st.sidebar.metric("Date Range", date_range)
+
+        # Hours available
         st.sidebar.metric("Hours Available", len(node_data))
-        st.sidebar.metric("Extreme Events (>$10 spread)", node_data['extreme_event'].sum())
+
+        # Extreme events
+        extreme_count = int(node_data['extreme_event'].sum()) if 'extreme_event' in node_data.columns else 0
+        st.sidebar.metric("Extreme Events (>$10 spread)", extreme_count)
+
+        # Data completeness (database mode only)
+        if state.data_source == 'database' and len(node_data) > 0:
+            expected_hours = (state.end_date - state.start_date).days * 24 + 24
+            actual_hours = len(node_data)
+            completeness = (actual_hours / expected_hours) * 100
+
+            if completeness < 95:
+                st.sidebar.warning(f"⚠️ Data coverage: {completeness:.1f}%")
+                missing_hours = expected_hours - actual_hours
+                st.sidebar.caption(f"Missing {missing_hours} hours")
+            elif completeness < 100:
+                st.sidebar.info(f"ℹ️ Data coverage: {completeness:.1f}%")
+            else:
+                st.sidebar.success("✓ Complete data")
 
     # ========================================================================
     # EIA BATTERY MARKET CONTEXT
