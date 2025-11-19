@@ -22,6 +22,7 @@ CREATE TABLE ercot_prices (
 
 -- Indexes for fast querying
 CREATE INDEX idx_settlement_point_market_time ON ercot_prices (settlement_point, market, timestamp DESC);
+CREATE INDEX idx_timestamp_market ON ercot_prices (timestamp, market);  -- For gap detection performance
 
 -- Comment on table
 COMMENT ON TABLE ercot_prices IS 'ERCOT settlement point prices. Optimized for space. Fetched from ERCOT API via gridstatus.';
@@ -47,18 +48,18 @@ COMMENT ON TABLE eia_batteries IS 'Battery storage systems in Texas from EIA-860
 
 -- Function to get daily record counts for gap analysis
 CREATE OR REPLACE FUNCTION get_daily_summary(
-    start_date date,
-    end_date date
+    p_start_date date,
+    p_end_date date
 )
-RETURNS TABLE(day timestamptz, market text, record_count bigint) AS $$
+RETURNS TABLE(day timestamp, market text, record_count bigint) AS $$
 BEGIN
     RETURN QUERY
     SELECT
-        date_trunc('day', T.timestamp) as day,
+        date_trunc('day', T.timestamp)::timestamp as day,
         T.market,
         count(*) as record_count
     FROM ercot_prices AS T
-    WHERE T.timestamp >= start_date AND T.timestamp < end_date + interval '1 day'
+    WHERE T.timestamp >= p_start_date AND T.timestamp < p_end_date + interval '1 day'
     GROUP BY 1, 2;
 END;
 $$ LANGUAGE plpgsql;
@@ -67,7 +68,7 @@ COMMENT ON FUNCTION get_daily_summary(date, date) IS 'Returns the daily record c
 
 -- Function to get the earliest and latest dates in the database
 CREATE OR REPLACE FUNCTION get_date_range()
-RETURNS TABLE(min_date timestamptz, max_date timestamptz) AS $$
+RETURNS TABLE(min_date timestamp, max_date timestamp) AS $$
 BEGIN
     RETURN QUERY
     SELECT
