@@ -137,6 +137,9 @@ fig_price.update_layout(
     hovermode='x unified'
 )
 
+from ui.components.charts import apply_standard_chart_styling
+apply_standard_chart_styling(fig_price)
+
 st.plotly_chart(fig_price, width="stretch")
 
 # ============================================================================

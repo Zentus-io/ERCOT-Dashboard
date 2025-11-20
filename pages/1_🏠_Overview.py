@@ -67,23 +67,14 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
+from utils.simulation_runner import run_or_get_cached_simulation
+
 with st.spinner('Running battery simulations...'):
-    simulator = BatterySimulator(state.battery_specs)
-
-    # Select strategy
-    if state.strategy_type == "Rolling Window Optimization":
-        strategy_baseline = RollingWindowStrategy(state.window_hours)
-        strategy_improved = RollingWindowStrategy(state.window_hours)
-        strategy_optimal = RollingWindowStrategy(state.window_hours)
-    else:  # Threshold-Based
-        strategy_baseline = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_improved = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_optimal = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-
-    # Run simulations for each scenario
-    baseline_result = simulator.run(node_data, strategy_baseline, improvement_factor=0.0)
-    improved_result = simulator.run(node_data, strategy_improved, improvement_factor=state.forecast_improvement/100)
-    optimal_result = simulator.run(node_data, strategy_optimal, improvement_factor=1.0)
+    baseline_result, improved_result, optimal_result = run_or_get_cached_simulation()
+    
+    if baseline_result is None:
+        st.error("⚠️ Failed to run simulations. Please check data availability.")
+        st.stop()
 
 # ============================================================================
 # KEY METRICS

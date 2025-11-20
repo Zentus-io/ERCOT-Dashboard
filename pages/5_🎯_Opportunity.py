@@ -71,31 +71,40 @@ if state.battery_specs is None:
 
 st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
 
-improvement_range = range(0, 101, 5)  # 0 to 100%
+# Reduce points for performance (0, 10, 20... 100)
+improvement_range = range(0, 101, 5)  
 revenue_threshold = []
 revenue_rolling_window = []
 
-with st.spinner("Running sensitivity analysis across forecast improvement range..."):
-    simulator = BatterySimulator(state.battery_specs)
+# Create progress bar
+progress_bar = st.progress(0, text="Running sensitivity analysis...")
+total_steps = len(improvement_range)
 
-    for imp in improvement_range:
-        # Threshold strategy
-        strategy_threshold = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        temp_result_threshold = simulator.run(
-            node_data,
-            strategy_threshold,
-            improvement_factor=imp/100
-        )
-        revenue_threshold.append(temp_result_threshold.total_revenue)
+simulator = BatterySimulator(state.battery_specs)
 
-        # Rolling window strategy
-        strategy_window = RollingWindowStrategy(state.window_hours)
-        temp_result_window = simulator.run(
-            node_data,
-            strategy_window,
-            improvement_factor=imp/100
-        )
-        revenue_rolling_window.append(temp_result_window.total_revenue)
+for i, imp in enumerate(improvement_range):
+    # Update progress
+    progress_bar.progress((i + 1) / total_steps, text=f"Simulating {imp}% improvement scenario...")
+    
+    # Threshold strategy
+    strategy_threshold = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
+    temp_result_threshold = simulator.run(
+        node_data,
+        strategy_threshold,
+        improvement_factor=imp/100
+    )
+    revenue_threshold.append(temp_result_threshold.total_revenue)
+
+    # Rolling window strategy
+    strategy_window = RollingWindowStrategy(state.window_hours)
+    temp_result_window = simulator.run(
+        node_data,
+        strategy_window,
+        improvement_factor=imp/100
+    )
+    revenue_rolling_window.append(temp_result_window.total_revenue)
+
+progress_bar.empty()
 
 # Create comparison chart
 fig_sensitivity = go.Figure()
@@ -194,9 +203,9 @@ with col1:
     - Max spread: ${node_data['price_spread'].max():.2f}/MWh
     - These hours drive significant revenue opportunity
 
-    **Forecast Performance:**
+    # Forecast Performance:
     - Mean Absolute Error: ${node_data['forecast_error'].abs().mean():.2f}/MWh
-    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[state.forecast_improvement//5] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
+    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[state.forecast_improvement//10] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
     """)
 
 with col2:
@@ -237,7 +246,7 @@ st.markdown("---")
 st.subheader("Revenue Capture Potential")
 
 # Current settings revenue
-current_idx = state.forecast_improvement // 5
+current_idx = state.forecast_improvement // 10
 baseline_revenue = revenue_rolling_window[0]
 current_revenue = revenue_rolling_window[current_idx]
 max_revenue = revenue_rolling_window[-1]
