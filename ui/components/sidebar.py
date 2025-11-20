@@ -388,7 +388,7 @@ def render_sidebar():
         min_value=0,
         max_value=100,
         value=state.forecast_improvement,
-        step=5,
+        step=10,
         help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
     )
 

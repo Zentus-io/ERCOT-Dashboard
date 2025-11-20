@@ -96,7 +96,7 @@ def init_state():
     """
     Initialize session state on first load.
 
-    This should be called at the start of app.py and each page.
+    This should be called at the start of Home.py and each page.
     Handles migration from old state schema to new schema.
     """
     if 'app_state' not in st.session_state:

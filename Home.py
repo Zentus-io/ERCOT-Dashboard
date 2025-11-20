@@ -5,7 +5,7 @@ Zentus - Intelligent Forecasting for Renewables
 Author: Juan Manuel Boullosa Novo [jmboullosa@zentus.io]
 Date: November 2025
 
-Run with: streamlit run app.py
+Run with: streamlit run Home.py
 """
 
 import streamlit as st
