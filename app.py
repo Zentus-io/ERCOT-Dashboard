@@ -6,9 +6,6 @@ Author: Juan Manuel Boullosa Novo [jmboullosa@zentus.io]
 Date: November 2025
 
 Run with: streamlit run app.py
-
-NOTE: This is the new refactored version. The original monolithic version
-has been backed up to app_legacy.py
 """
 
 import streamlit as st

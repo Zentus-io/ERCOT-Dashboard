@@ -3,6 +3,13 @@ Application Settings and Constants
 Zentus - ERCOT Battery Revenue Dashboard
 """
 
+import os
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 # App metadata
 APP_TITLE = "Zentus - ERCOT Revenue Opportunity"
 APP_SUBTITLE = "Demonstrating Value Through Intelligent Forecasting"
@@ -91,3 +98,46 @@ DATA_NOTE = """
 This single-day snapshot demonstrates the revenue opportunity concept.
 Additional historical data with extreme price events is being processed.
 """
+
+# =============================================================================
+# Database Configuration (Supabase)
+# =============================================================================
+
+# Supabase credentials from environment variables
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Database connection settings
+DB_TIMEOUT = 10  # seconds
+DB_BATCH_SIZE = 1000  # records per batch for bulk operations
+
+# Data source selection
+# Options: 'csv' (local CSV files) or 'database' (Supabase)
+# Default to CSV if database credentials not configured
+if SUPABASE_URL and SUPABASE_KEY:
+    DEFAULT_DATA_SOURCE = 'database'
+else:
+    DEFAULT_DATA_SOURCE = 'csv'
+
+# Date range defaults for database queries
+DEFAULT_DAYS_BACK = 30  # Default to last 30 days when using database
+MAX_DAYS_RANGE = 365    # Maximum date range for single query
+
+# Query templates
+QUERY_MERGED_PRICES = """
+SELECT * FROM ercot_prices_merged
+WHERE node = :node
+  AND timestamp >= :start_date
+  AND timestamp <= :end_date
+ORDER BY timestamp
+"""
+
+QUERY_AVAILABLE_NODES = """
+SELECT DISTINCT location
+FROM ercot_prices
+ORDER BY location
+"""
+
+# Cache key templates
+CACHE_KEY_PRICES = "prices_{node}_{start}_{end}_{source}"
+CACHE_KEY_NODES = "available_nodes_{source}"

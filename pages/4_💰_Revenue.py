@@ -11,7 +11,7 @@ from config.page_config import configure_page
 from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config
+from utils.state import get_state, has_valid_config, get_date_range_str
 from core.battery.simulator import BatterySimulator
 from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
 from core.data.loaders import DataLoader
@@ -117,8 +117,9 @@ fig_revenue.add_trace(go.Scatter(
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
+hours = len(node_data)
 fig_revenue.update_layout(
-    title="Revenue Accumulation Over 24 Hours",
+    title=f"Revenue Accumulation Over {hours} Hours ({get_date_range_str(node_data)})",
     xaxis_title="Time",
     yaxis_title="Cumulative Revenue ($)",
     height=500,

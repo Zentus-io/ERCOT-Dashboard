@@ -11,7 +11,7 @@ from config.page_config import configure_page
 from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config
+from utils.state import get_state, has_valid_config, get_date_range_str
 from core.battery.simulator import BatterySimulator
 from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
 from core.data.loaders import DataLoader
@@ -177,7 +177,7 @@ with col2:
 # ============================================================================
 
 st.markdown("---")
-st.subheader("Market Insights - July 20, 2025")
+st.subheader(f"Market Insights - {get_date_range_str(node_data)}")
 
 col1, col2 = st.columns(2)
 

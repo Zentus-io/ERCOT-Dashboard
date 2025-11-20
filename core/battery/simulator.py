@@ -105,6 +105,22 @@ class BatterySimulator:
         SimulationResult
             Complete simulation results
         """
+        # Validate input data
+        if price_df.empty:
+            # Return empty result for empty data
+            return SimulationResult(
+                dispatch_df=pd.DataFrame(),
+                total_revenue=0.0,
+                charge_cost=0.0,
+                discharge_revenue=0.0,
+                charge_count=0,
+                discharge_count=0,
+                hold_count=0,
+                soc_timestamps=[],
+                soc_values=[],
+                metadata={}
+            )
+
         # Initialize battery
         battery = Battery(self.specs)
         battery.reset()

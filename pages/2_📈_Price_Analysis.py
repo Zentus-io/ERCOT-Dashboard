@@ -11,7 +11,7 @@ from config.page_config import configure_page
 from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config
+from utils.state import get_state, has_valid_config, get_date_range_str
 from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
@@ -130,7 +130,7 @@ fig_price.add_hline(
 )
 
 fig_price.update_layout(
-    title=f"July 20, 2025 - {state.selected_node}",
+    title=f"{get_date_range_str(node_data)} - {state.selected_node}",
     xaxis_title="Time",
     yaxis_title="Price ($/MWh)",
     height=500,
@@ -146,7 +146,7 @@ st.plotly_chart(fig_price, width="stretch")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Price Statistics (July 20)")
+    st.subheader(f"Price Statistics ({get_date_range_str(node_data)})")
 
     stats_data = {
         'Metric': [
