@@ -22,70 +22,57 @@ from config.settings import (
 )
 
 
-@st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading data...")
-def load_app_data(
-    source: str = 'csv',
-    node: str | None = None,
+@st.cache_data(ttl=3600, show_spinner="Loading node list...")
+def load_node_list(source: str = 'csv'):
+    """
+    Load available settlement points.
+    """
+    data_dir = Path(__file__).parent.parent.parent / 'data'
+    
+    if source == 'database':
+        try:
+            db_loader = SupabaseDataLoader()
+            nodes = db_loader.get_available_nodes()
+            if nodes:
+                return nodes
+        except Exception as e:
+            st.warning(f"⚠️ Database error fetching nodes: {str(e)}")
+            
+    # Fallback to CSV or if DB failed
+    csv_loader = DataLoader(data_dir)
+    price_data = csv_loader.load_prices()
+    return csv_loader.get_nodes(price_data)
+
+
+@st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading price data...")
+def load_node_prices(
+    source: str,
+    node: str,
     start_date: date | None = None,
     end_date: date | None = None
 ):
     """
-    Load price and battery data with caching.
-
-    Parameters
-    ----------
-    source : str
-        Data source ('csv' or 'database')
-    node : str, optional
-        Settlement point to load (None = all nodes for CSV, required for database)
-    start_date : date, optional
-        Start date for database queries
-    end_date : date, optional
-        End date for database queries
-
-    Returns
-    -------
-    tuple
-        (price_data, eia_data, nodes)
+    Load price data for a specific node.
     """
     data_dir = Path(__file__).parent.parent.parent / 'data'
 
     if source == 'database':
         try:
-            # Load from Supabase
             db_loader = SupabaseDataLoader()
-
-            # Load price data for all nodes within date range
-            # We load all nodes to populate the node selector, then filter later
-            price_data = db_loader.load_prices(
-                node=None,  # Load all nodes
-                start_date=start_date,
-                end_date=end_date
-            )
-
-            # Get available nodes from database
-            nodes = db_loader.get_available_nodes()
-            if not nodes and len(price_data) > 0:
-                # Fallback: extract from loaded data
-                nodes = sorted(price_data['node'].unique().tolist())
-
+            return db_loader.load_prices(node=node, start_date=start_date, end_date=end_date)
         except Exception as e:
-            # Fallback to CSV on database error
-            st.warning(f"⚠️ Database error: {str(e)}. Falling back to CSV demo data.")
-            csv_loader = DataLoader(data_dir)
-            price_data = csv_loader.load_prices()
-            nodes = csv_loader.get_nodes(price_data)
+            st.warning(f"⚠️ Database error: {str(e)}. Falling back to CSV.")
+    
+    # CSV fallback (demo mode)
+    csv_loader = DataLoader(data_dir)
+    price_data = csv_loader.load_prices()
+    return csv_loader.filter_by_node(price_data, node)
 
-    else:
-        # Load from CSV files (demo mode)
-        csv_loader = DataLoader(data_dir)
-        price_data = csv_loader.load_prices()
-        nodes = csv_loader.get_nodes(price_data)
 
-    # EIA battery data always loaded from local files (rarely changes)
-    eia_data = DataLoader(data_dir).load_eia_batteries()
-
-    return price_data, eia_data, nodes
+@st.cache_data(ttl=3600)
+def load_eia_data():
+    data_dir = Path(__file__).parent.parent.parent / 'data'
+    return DataLoader(data_dir).load_eia_batteries()
 
 
 def render_sidebar():
@@ -212,21 +199,13 @@ def render_sidebar():
         st.sidebar.info("📌 **Single-day demo data** (July 20, 2025)")
 
     # ========================================================================
-    # LOAD DATA (if needed)
+    # LOAD DATA (Two-step process)
     # ========================================================================
-    if needs_data_reload():
-        with st.spinner('Loading data...'):
-            price_data, eia_data, nodes = load_app_data(
-                source=state.data_source,
-                node=None,  # Load all nodes
-                start_date=state.start_date if state.data_source == 'database' else None,
-                end_date=state.end_date if state.data_source == 'database' else None
-            )
-            state.price_data = price_data
-            state.eia_battery_data = eia_data
-            state.available_nodes = nodes
-            state._data_cache_key = get_cache_key()
-
+    
+    # 1. Load Node List
+    nodes = load_node_list(source=state.data_source)
+    state.available_nodes = nodes
+    
     # ========================================================================
     # NODE SELECTION
     # ========================================================================
@@ -244,6 +223,25 @@ def render_sidebar():
     if selected_node != state.selected_node:
         update_state(selected_node=selected_node)
         clear_simulation_cache()
+        
+    # 2. Load Price Data for Selected Node
+    if needs_data_reload() or state.price_data is None or state.price_data.empty or (state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
+        if state.selected_node:
+            with st.spinner(f'Loading data for {state.selected_node}...'):
+                price_data = load_node_prices(
+                    source=state.data_source,
+                    node=state.selected_node,
+                    start_date=state.start_date if state.data_source == 'database' else None,
+                    end_date=state.end_date if state.data_source == 'database' else None
+                )
+                state.price_data = price_data
+                
+                # Load EIA data once
+                if state.eia_battery_data is None:
+                    state.eia_battery_data = load_eia_data()
+                    
+                state._data_cache_key = get_cache_key()
+
 
     # ========================================================================
     # STRATEGY SELECTION
@@ -405,8 +403,22 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Data Summary")
 
-    if state.selected_node and state.price_data is not None:
-        node_data = state.price_data[state.price_data['node'] == state.selected_node]
+    # Defensive check for empty or invalid data
+    if state.selected_node and state.price_data is not None and not state.price_data.empty:
+        # Check if 'node' column exists, handle both 'node' and 'settlement_point' naming
+        if 'node' in state.price_data.columns:
+            node_data = state.price_data[state.price_data['node'] == state.selected_node]
+        elif 'settlement_point' in state.price_data.columns:
+            # Fallback if data hasn't been renamed yet
+            node_data = state.price_data[state.price_data['settlement_point'] == state.selected_node]
+        else:
+            st.sidebar.error("❌ Price data has unexpected column names")
+            st.sidebar.caption(f"Available columns: {list(state.price_data.columns)}")
+            node_data = None
+    else:
+        node_data = None
+
+    if node_data is not None and not node_data.empty:
 
         # Dynamic date range display
         date_range = get_date_range_str(node_data)
@@ -433,6 +445,16 @@ def render_sidebar():
                 st.sidebar.info(f"ℹ️ Data coverage: {completeness:.1f}%")
             else:
                 st.sidebar.success("✓ Complete data")
+    else:
+        # Show why data isn't available
+        if state.price_data is None:
+            st.sidebar.warning("⚠️ No data loaded")
+        elif state.price_data.empty:
+            st.sidebar.warning("⚠️ Data query returned no results")
+            if state.data_source == 'database':
+                st.sidebar.caption(f"Check date range: {state.start_date} to {state.end_date}")
+        elif not state.selected_node:
+            st.sidebar.info("ℹ️ Select a node to view data")
 
     # ========================================================================
     # EIA BATTERY MARKET CONTEXT

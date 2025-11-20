@@ -199,44 +199,37 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
         print(f"   -> Could not get settlement points. Will fetch all days. Error: {e}")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
+    # Use lightweight get_distinct_days function (much faster than get_daily_summary)
     try:
-        daily_counts_res = supabase.rpc('get_daily_summary', {
+        distinct_days_res = supabase.rpc('get_distinct_days', {
             'p_start_date': str(start_date),
             'p_end_date': str(end_date)
         }).execute()
-        daily_counts_data = daily_counts_res.data
+
+        if not distinct_days_res.data or not isinstance(distinct_days_res.data, list):
+            print(f"   -> Could not get distinct days. Will fetch all days.")
+            return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+
+        # Convert to set of dates for fast lookup
+        existing_days = set()
+        for item in distinct_days_res.data:
+            if isinstance(item, dict) and 'day' in item:
+                day_str = item['day']
+                # Parse the date string (format: YYYY-MM-DD)
+                if isinstance(day_str, str):
+                    existing_days.add(datetime.datetime.strptime(day_str, "%Y-%m-%d").date())
+
+        print(f"   -> Found {len(existing_days)} days with data in the database.")
+
+        # Find days that are missing entirely
+        all_days = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+        days_to_fetch = [day for day in all_days if day not in existing_days]
+
     except Exception as e:
-         print(f"   -> Could not get daily summary. Will fetch all days. Error: {e}")
-         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-
-    if not isinstance(daily_counts_data, list):
-        print(f"   -> Invalid daily summary data received. Will fetch all days.")
+        print(f"   -> Could not get distinct days (function may not exist). Error: {e}")
+        print(f"   -> Run add_fast_gap_detection.sql to add the optimized function.")
+        print(f"   -> Falling back to fetching all days in range.")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-
-    all_days = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-    days_to_fetch = []
-    
-    counts_by_day = {}
-    for item in daily_counts_data:
-        if isinstance(item, dict) and 'day' in item and 'market' in item and 'record_count' in item:
-            day_str = item['day']
-            if isinstance(day_str, str):
-                day_date = datetime.datetime.fromisoformat(day_str).date()
-                market = item['market']
-                if day_date not in counts_by_day:
-                    counts_by_day[day_date] = {}
-                counts_by_day[day_date][market] = item['record_count']
-    
-    expected_dam = num_nodes * EXPECTED_DAM_RECORDS_PER_DAY
-    expected_rtm = num_nodes * EXPECTED_RTM_RECORDS_PER_DAY
-
-    for day in all_days:
-        day_counts = counts_by_day.get(day, {})
-        dam_count = day_counts.get('DAM', 0)
-        rtm_count = day_counts.get('RTM', 0)
-        
-        if dam_count < expected_dam or rtm_count < expected_rtm:
-            days_to_fetch.append(day)
 
     if not days_to_fetch:
         print("   -> ✨ All days in the specified range are complete. No fetching needed.")

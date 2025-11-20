@@ -70,10 +70,26 @@ class DataLoader:
             return None
 
     def get_nodes(self, price_df: pd.DataFrame) -> list:
-        return sorted(price_df['node'].unique())
+        # Handle both 'node' and 'settlement_point' column names
+        if 'node' in price_df.columns:
+            return sorted(price_df['node'].unique())
+        elif 'settlement_point' in price_df.columns:
+            return sorted(price_df['settlement_point'].unique())
+        else:
+            return []
 
     def filter_by_node(self, price_df: pd.DataFrame, node: str) -> pd.DataFrame:
-        node_data = price_df[price_df['node'] == node].copy()
+        # Handle both 'node' and 'settlement_point' column names
+        if price_df.empty:
+            return price_df
+
+        if 'node' in price_df.columns:
+            node_data = price_df[price_df['node'] == node].copy()
+        elif 'settlement_point' in price_df.columns:
+            node_data = price_df[price_df['settlement_point'] == node].copy()
+        else:
+            return pd.DataFrame()
+
         return node_data.sort_values('timestamp').reset_index(drop=True)
 
 
@@ -94,49 +110,81 @@ class SupabaseDataLoader:
         end_date: Optional[date] = None
     ) -> pd.DataFrame:
         """
-        Loads and merges DAM and RTM price data from the Supabase 'ercot_prices' table.
+        Loads DAM and RTM price data from the unified 'ercot_prices' table.
+        Pivots the data so DAM and RTM prices are in separate columns.
         """
         if end_date is None: end_date = date.today()
         if start_date is None: start_date = end_date - timedelta(days=DEFAULT_DAYS_BACK)
 
+        # Optimization: Require node selection for database queries to avoid hitting row limits
+        if not node:
+            return pd.DataFrame()
+
         try:
-            # Fetch DAM data
-            dam_query = self.client.table("ercot_prices").select("timestamp, settlement_point, price_mwh").eq("market", "DAM")
-            if node: dam_query = dam_query.eq("settlement_point", node)
-            dam_query = dam_query.gte("timestamp", start_date.isoformat()).lte("timestamp", (end_date + timedelta(days=1)).isoformat())
-            dam_data = dam_query.execute().data
+            # Fetch data for specific node
+            query = self.client.table("ercot_prices").select("timestamp, settlement_point, market, price_mwh")
+            query = query.eq("settlement_point", node)
+            query = query.gte("timestamp", start_date.isoformat()).lte("timestamp", (end_date + timedelta(days=1)).isoformat())
             
-            # Fetch RTM data
-            rtm_query = self.client.table("ercot_prices").select("timestamp, settlement_point, price_mwh").eq("market", "RTM")
-            if node: rtm_query = rtm_query.eq("settlement_point", node)
-            rtm_query = rtm_query.gte("timestamp", start_date.isoformat()).lte("timestamp", (end_date + timedelta(days=1)).isoformat())
-            rtm_data = rtm_query.execute().data
+            # Increase limit to ensure we get all data for the date range
+            # 30 days * 24 hours * 4 intervals = ~2880 rows per market type
+            # Total ~6000 rows max for one node. Supabase default is 1000.
+            data = query.limit(10000).execute().data
 
-            if not dam_data or not rtm_data:
+            if not data:
                 return pd.DataFrame()
 
-            # Convert to DataFrames
-            dam_df = pd.DataFrame(dam_data).rename(columns={'price_mwh': 'price_mwh_da'})
-            rtm_df = pd.DataFrame(rtm_data).rename(columns={'price_mwh': 'price_mwh_rt'})
-            dam_df['timestamp'] = pd.to_datetime(dam_df['timestamp'])
-            rtm_df['timestamp'] = pd.to_datetime(rtm_df['timestamp'])
+            # Convert to DataFrame
+            df = pd.DataFrame(data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
 
-            # Merge in Python
-            merged = pd.merge(dam_df, rtm_df, on=['timestamp', 'settlement_point'])
-            
-            if merged.empty:
+            # Pivot: market values (DAM/RTM) become columns
+            # Use RTM as the base (more granular 15-min data)
+            rtm_df = df[df['market'] == 'RTM'].copy()
+            dam_df = df[df['market'] == 'DAM'].copy()
+
+            if rtm_df.empty:
                 return pd.DataFrame()
+
+            # Start with RTM data
+            result = rtm_df[['timestamp', 'settlement_point', 'price_mwh']].copy()
+            result.rename(columns={'price_mwh': 'price_mwh_rt'}, inplace=True)
+
+            # Merge DAM data using nearest timestamp (DAM is hourly, RTM is 15-min)
+            # Round RTM timestamps to the hour to match DAM
+            if not dam_df.empty:
+                dam_df = dam_df[['timestamp', 'settlement_point', 'price_mwh']].copy()
+                dam_df.rename(columns={'price_mwh': 'price_mwh_da'}, inplace=True)
+
+                # For each RTM record, find the matching DAM record at the hour
+                result['hour'] = result['timestamp'].dt.floor('H')
+                dam_df['hour'] = dam_df['timestamp'].dt.floor('H')
+
+                # Merge on hour and settlement_point
+                result = result.merge(
+                    dam_df[['hour', 'settlement_point', 'price_mwh_da']],
+                    on=['hour', 'settlement_point'],
+                    how='left'
+                )
+                result.drop('hour', axis=1, inplace=True)
+            else:
+                # No DAM data, fill with NaN
+                result['price_mwh_da'] = float('nan')
 
             # Calculate derived metrics
-            merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
-            merged['price_spread'] = abs(merged['forecast_error'])
-            merged['extreme_event'] = merged['price_spread'] > 10
-            
-            # Rename for app consistency
-            return merged.rename(columns={'settlement_point': 'node'}).sort_values('timestamp').reset_index(drop=True)
+            result['forecast_error'] = result['price_mwh_rt'] - result['price_mwh_da']
+            result['price_spread'] = abs(result['forecast_error'])
+            result['extreme_event'] = result['price_spread'] > 10
+
+            # Rename settlement_point to node for app consistency
+            result = result.rename(columns={'settlement_point': 'node'}).sort_values('timestamp').reset_index(drop=True)
+
+            return result
 
         except Exception as e:
             print(f"Error loading data from Supabase: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def get_available_nodes(self) -> list[str]:
