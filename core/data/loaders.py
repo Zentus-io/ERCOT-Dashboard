@@ -157,8 +157,8 @@ class SupabaseDataLoader:
                 dam_df.rename(columns={'price_mwh': 'price_mwh_da'}, inplace=True)
 
                 # For each RTM record, find the matching DAM record at the hour
-                result['hour'] = result['timestamp'].dt.floor('H')
-                dam_df['hour'] = dam_df['timestamp'].dt.floor('H')
+                result['hour'] = result['timestamp'].dt.floor('h')
+                dam_df['hour'] = dam_df['timestamp'].dt.floor('h')
 
                 # Merge on hour and settlement_point
                 result = result.merge(
