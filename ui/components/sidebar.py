@@ -71,8 +71,11 @@ def load_node_prices(
 
 @st.cache_data(ttl=3600)
 def load_eia_data():
-    data_dir = Path(__file__).parent.parent.parent / 'data'
-    return DataLoader(data_dir).load_eia_batteries()
+    try:
+        return SupabaseDataLoader().load_eia_batteries()
+    except Exception as e:
+        st.warning(f"Could not load battery data: {e}")
+        return pd.DataFrame()
 
 
 def render_sidebar():
@@ -155,25 +158,21 @@ def render_sidebar():
         if state.end_date > latest:
             state.end_date = latest
 
-        # Date range picker
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            start_date = st.date_input(
-                "Start",
-                value=state.start_date,
-                min_value=earliest,
-                max_value=latest,
-                help=f"Data available from {earliest}"
-            )
-
-        with col2:
-            end_date = st.date_input(
-                "End",
-                value=state.end_date,
-                min_value=earliest,
-                max_value=latest,
-                help=f"Data available until {latest}"
-            )
+        # Date range picker (Single input for range to save space and show full dates)
+        date_range_input = st.sidebar.date_input(
+            "Select Date Range",
+            value=(state.start_date, state.end_date),
+            min_value=earliest,
+            max_value=latest,
+            help=f"Data available from {earliest} to {latest}"
+        )
+        
+        # Handle range selection
+        if len(date_range_input) == 2:
+            start_date, end_date = date_range_input
+        else:
+            # Handle case where user is still selecting (only one date picked)
+            start_date, end_date = state.start_date, state.end_date
 
         # Validate and update date range
         if end_date < start_date:

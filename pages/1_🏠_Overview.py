@@ -115,6 +115,8 @@ with col1:
         value=f"${naive_revenue:,.0f}",
         help="Revenue using only day-ahead forecasts (no improvement)"
     )
+    # Add spacer to align with other columns that have delta values
+    st.markdown("<div style='height: 24px'></div>", unsafe_allow_html=True)
 
 with col2:
     st.metric(

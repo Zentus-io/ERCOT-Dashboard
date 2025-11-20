@@ -13,7 +13,11 @@ from config.page_config import configure_page
 from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import init_state
+from ui.components.sidebar import render_sidebar
+from utils.state import init_state, get_state
+from core.data.loaders import SupabaseDataLoader
+from streamlit_calendar import calendar
+import pandas as pd
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -29,6 +33,71 @@ init_state()
 
 render_header()
 render_sidebar()
+
+# ============================================================================
+# DATA AVAILABILITY CALENDAR (Database Mode)
+# ============================================================================
+state = get_state()
+if state.data_source == 'database' and state.selected_node:
+    with st.expander("📅 Data Availability Calendar", expanded=True):
+        st.markdown(f"### Data Availability for **{state.selected_node}**")
+        try:
+            # Fetch availability data
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def get_availability_events(node):
+                db_loader = SupabaseDataLoader()
+                availability_df = db_loader.get_node_availability(node)
+                
+                events = []
+                if not availability_df.empty:
+                    for _, row in availability_df.iterrows():
+                        completeness = row['completeness']
+                        event_date = row['date']
+                        
+                        if completeness >= 95:
+                            color = "#28a745" # Green
+                            title = f"{completeness:.0f}%"
+                        elif completeness > 0:
+                            color = "#ffc107" # Yellow
+                            title = f"{completeness:.0f}%"
+                        else:
+                            continue # Don't show empty days
+                            
+                        events.append({
+                            "title": title,
+                            "start": event_date.isoformat(),
+                            "end": event_date.isoformat(),
+                            "backgroundColor": color,
+                            "borderColor": color,
+                            "allDay": True,
+                            "display": "background" 
+                        })
+                return events
+
+            calendar_events = get_availability_events(state.selected_node)
+            
+            calendar_options = {
+                "headerToolbar": {
+                    "left": "prev,next today",
+                    "center": "title",
+                    "right": "dayGridMonth,timeGridWeek"
+                },
+                "initialView": "dayGridMonth",
+                "height": 600, # Fixed height for better stability
+                "selectable": True,
+            }
+            
+            # Use a stable key to prevent re-mounting issues
+            cal = calendar(
+                events=calendar_events,
+                options=calendar_options,
+                key="main_data_availability_calendar"
+            )
+            
+            st.caption("Green: Complete Data (>95%) | Yellow: Partial Data | Empty: No Data")
+            
+        except Exception as e:
+            st.error(f"Could not load calendar: {str(e)}")
 
 # ============================================================================
 # HOMEPAGE CONTENT
@@ -79,7 +148,7 @@ Each strategy is tested with **3 forecast quality scenarios**:
 Move the "Forecast Accuracy Improvement" slider in the sidebar to see how better
 forecasts improve Scenario 2!
 
-### 🎯 About This Demo
+### 🎯 About This Project
 
 Built for the **Engie Urja AI Challenge 2025**, this dashboard showcases the
 value of intelligent forecasting for renewable energy storage operations in

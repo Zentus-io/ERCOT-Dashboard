@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Optional, Literal
 from datetime import datetime, date, timedelta
 import pandas as pd
-import polars as pl
+
+import streamlit as st
 from supabase import create_client, Client
 from config.settings import (
     SUPABASE_URL,
@@ -48,26 +49,7 @@ class DataLoader:
         merged['extreme_event'] = merged['price_spread'] > 10
         return merged.rename(columns={'settlement_point': 'node'}) # Rename back to node for app consistency
 
-    def load_eia_batteries(self) -> Optional[pd.DataFrame]:
-        """Loads EIA-860 battery market data for Texas."""
-        try:
-            parquet_path = self.data_dir / 'processed' / 'ercot_batteries.parquet'
-            if not parquet_path.exists(): return None
 
-            df = pl.read_parquet(parquet_path).to_pandas()
-            df = df.rename(columns={
-                'nameplate_power_mw': 'Nameplate Capacity (MW)',
-                'nameplate_energy_mwh': 'Nameplate Energy Capacity (MWh)',
-                'duration_hours': 'Duration (hours)',
-                'state': 'State',
-                'use_arbitrage': 'Arbitrage',
-                'use_frequency_regulation': 'Frequency Regulation',
-                'use_ramping_reserve': 'Ramping / Spinning Reserve'
-            })
-            return df
-        except Exception as e:
-            print(f"Warning: Could not load EIA battery data: {e}")
-            return None
 
     def get_nodes(self, price_df: pd.DataFrame) -> list:
         # Handle both 'node' and 'settlement_point' column names
@@ -211,6 +193,88 @@ class SupabaseDataLoader:
         except Exception as e:
             print(f"Error fetching date range: {e}")
             return None, None
+
+    def get_node_availability(self, node: str) -> pd.DataFrame:
+        """
+        Fetches daily data availability for a specific node.
+        Returns a DataFrame with 'date' and 'completeness' (0-100).
+        """
+        try:
+            # Query to get counts per day
+            # Note: This is a simplified approach. For large datasets, 
+            # a database view or RPC would be more performant.
+            # We fetch only timestamps for the node to minimize data transfer.
+            response = self.client.table("ercot_prices") \
+                .select("timestamp") \
+                .eq("settlement_point", node) \
+                .eq("market", "RTM") \
+                .execute()
+
+            if not response.data:
+                return pd.DataFrame(columns=['date', 'completeness'])
+
+            df = pd.DataFrame(response.data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['date'] = df['timestamp'].dt.date
+            
+            # Count records per day
+            daily_counts = df.groupby('date').size().reset_index(name='count')
+            
+            # Calculate completeness (assuming 96 intervals per day for RTM)
+            # Cap at 100%
+            daily_counts['completeness'] = (daily_counts['count'] / 96 * 100).clip(upper=100)
+            
+            return daily_counts
+
+        except Exception as e:
+            print(f"Error fetching node availability: {e}")
+            return pd.DataFrame(columns=['date', 'completeness'])
+
+    @st.cache_data(ttl=36000)
+    def load_eia_batteries(_self) -> pd.DataFrame:
+        """
+        Load EIA-860 battery data from Supabase.
+        Cached for 10 hours.
+        """
+        try:
+            # Fetch all batteries from Supabase
+            response = _self.client.table("eia_batteries").select("*").execute()
+            
+            if not response.data:
+                st.warning("No battery data found in Supabase.")
+                return pd.DataFrame()
+                
+            # Convert to DataFrame
+            df = pd.DataFrame(response.data)
+            
+            # Ensure numeric columns are properly typed
+            numeric_cols = [
+                'plant_code', 'utility_id', 'nameplate_power_mw', 
+                'summer_power_mw', 'winter_power_mw', 'nameplate_energy_mwh',
+                'max_charge_mw', 'max_discharge_mw', 'operating_month', 
+                'operating_year', 'sector_code', 'duration_hours', 'e_to_p_ratio'
+            ]
+            
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Rename columns to match app expectations (legacy parquet format)
+            df = df.rename(columns={
+                'nameplate_power_mw': 'Nameplate Capacity (MW)',
+                'nameplate_energy_mwh': 'Nameplate Energy Capacity (MWh)',
+                'duration_hours': 'Duration (hours)',
+                'state': 'State',
+                'use_arbitrage': 'Arbitrage',
+                'use_frequency_regulation': 'Frequency Regulation',
+                'use_ramping_reserve': 'Ramping / Spinning Reserve'
+            })
+
+            return df
+            
+        except Exception as e:
+            st.error(f"Error loading battery data: {e}")
+            return pd.DataFrame()
 
 
 def load_data(

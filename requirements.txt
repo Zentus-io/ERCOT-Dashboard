@@ -3,6 +3,7 @@
 
 # Core dashboard framework
 streamlit>=1.28.0
+streamlit-calendar
 
 # Data manipulation
 pandas>=2.0.0

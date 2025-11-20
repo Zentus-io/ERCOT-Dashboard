@@ -52,11 +52,16 @@ def render_header():
     if state.eia_battery_data is not None:
         eia_note = " Battery system parameters validated against EIA-860 data (136 operational Texas systems)."
 
+    # Dynamic data note based on source
+    if state.data_source == 'database':
+        date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
+        note_content = f"<strong>Historical Analysis:</strong> Analyzing ERCOT market data for {date_range}."
+    else:
+        note_content = "<strong>Demo Mode:</strong> Currently showing July 20, 2025 data from ERCOT wind resources (Single-day snapshot)."
+
     st.markdown(f"""
     <div class='data-note'>
-        <strong>MVP Demo:</strong> Currently showing July 20, 2025 data from ERCOT wind resources.
-        This single-day snapshot demonstrates the revenue opportunity concept.{eia_note}
-        Additional historical data with extreme price events is being processed.
+        {note_content}{eia_note}
     </div>
     """, unsafe_allow_html=True)
 
