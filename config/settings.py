@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # App metadata
-APP_TITLE = "Zentus - ERCOT Revenue Opportunity"
-APP_SUBTITLE = "Demonstrating Value Through Intelligent Forecasting"
+APP_TITLE = "ERCOT Battery Revenue Dashboard"
+APP_SUBTITLE = "Intelligent Forecasting for Renewable Energy Storage"
 APP_ICON = "⚡"
 
 # Color scheme

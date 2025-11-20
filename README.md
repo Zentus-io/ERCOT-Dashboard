@@ -8,14 +8,18 @@ Interactive Streamlit dashboard demonstrating how improved renewable energy fore
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+1. **Clone the repository**
+2. **Install dependencies**:
 
-```bash
-cd ERCOT-Dashboard
-pip install -r requirements.txt
-```
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-### 2. Configure Environment (Optional - for Database)
+3. **Run the dashboard**:
+
+    ```bash
+    streamlit run Home.py
+    ```
 
 If you want to use the Supabase database integration:
 
@@ -31,7 +35,7 @@ cp .env.example .env
 ### 3. Run the Dashboard
 
 ```bash
-streamlit run app.py
+streamlit run Home.py
 ```
 
 The dashboard will open automatically at `http://localhost:8501`
@@ -65,6 +69,7 @@ The dashboard provides 7 specialized analysis pages:
 ### Three-Scenario Comparison
 
 Every analysis compares:
+
 1. **Baseline**: Day-ahead forecast only (current capability)
 2. **Improved**: With Zentus forecast enhancement (+X%)
 3. **Optimal**: Perfect foresight (theoretical maximum revenue)
@@ -78,12 +83,14 @@ Every analysis compares:
 The dashboard supports two data loading modes:
 
 #### CSV Mode (Default)
+
 - **Location**: `data/da_prices.csv`, `data/rt_prices.csv`
 - **Use case**: Local development, offline analysis
 - **Data**: Single-day snapshot (July 20, 2025)
 - **Nodes**: 5 wind farm settlement points
 
 #### Database Mode (Supabase)
+
 - **Location**: Cloud PostgreSQL database
 - **Use case**: Production, historical analysis, team collaboration
 - **Data**: Years of ERCOT market data
@@ -98,7 +105,7 @@ The system automatically detects Supabase credentials and uses the database if c
 
 ```
 ERCOT-Dashboard/
-├── app.py                          # Streamlit entry point (115 lines - refactored!)
+├── Home.py                         # Streamlit entry point (Main Page)
 │
 ├── pages/                          # Multi-page analysis views
 │   ├── 1_🏠_Overview.py           # Strategy performance comparison
@@ -185,6 +192,7 @@ cp .env.example .env
 3. Run the SQL to create tables, indexes, and views
 
 Alternatively:
+
 ```bash
 python scripts/create_supabase_tables.py
 # Follow the instructions to manually execute SQL
@@ -226,6 +234,7 @@ The dashboard will automatically use the database when credentials are configure
 ## 📈 Current Data
 
 ### CSV Mode (Default)
+
 - **Date**: July 20, 2025 (24 hours)
 - **Nodes**: 5 wind farm settlement points
   - BUFF_GAP_ALL
@@ -238,6 +247,7 @@ The dashboard will automatically use the database when credentials are configure
 - **Negative Prices**: 40 hours with negative RT prices
 
 ### Database Mode (After Setup)
+
 - **Date Range**: Configurable (depends on data ingestion)
 - **Nodes**: All ERCOT resource nodes
 - **Records**: Potentially millions (DAM hourly + RTM 15-min)
@@ -252,6 +262,7 @@ The dashboard will automatically use the database when credentials are configure
 **Revenue Opportunity = Optimal Strategy Revenue - Baseline Strategy Revenue**
 
 This metric quantifies the value of improved forecasting:
+
 - **Baseline**: What's possible with DA forecasts alone
 - **Improved**: What Zentus's enhanced forecasting enables
 - **Optimal**: Theoretical maximum (perfect foresight benchmark)
@@ -271,11 +282,13 @@ The dashboard shows how revenue scales with forecast accuracy improvements.
 ### Dispatch Strategies
 
 **Threshold-Based**:
+
 - Charge when price < 25th percentile
 - Discharge when price > 75th percentile
 - Fast, simple, works well with better forecasts
 
 **Rolling Window Optimization**:
+
 - Looks ahead N hours
 - Solves for optimal charge/discharge pattern
 - More sophisticated, benefits more from accuracy
@@ -300,6 +313,7 @@ All charts use Zentus brand colors and support dark/light mode.
 ### Simulation Engine
 
 The `BatterySimulator` class orchestrates:
+
 1. Price data ingestion (CSV or database)
 2. Strategy selection (Threshold or Rolling Window)
 3. Timestep-by-timestep dispatch decisions
@@ -332,7 +346,7 @@ This simulates having a better forecast that captures X% of the DA-to-RT price m
 python scripts/test_database_connection.py
 
 # Run dashboard in test mode
-streamlit run app.py
+streamlit run Home.py
 
 # Check dependencies
 pip check
@@ -357,7 +371,7 @@ pip check
 **Zentus**
 Stanford Doerr School of Sustainability Accelerator Fellow
 
-**Email**: jmboullosa@zentus.io
+**Email**: <jmboullosa@zentus.io>
 **Website**: [https://zentus.io](https://zentus.io)
 
 ---
@@ -365,18 +379,21 @@ Stanford Doerr School of Sustainability Accelerator Fellow
 ## 📝 License & Data Sources
 
 ### ERCOT Market Data
+
 - **Source**: Electric Reliability Council of Texas (ERCOT)
 - **Access**: Public API via [gridstatus](https://github.com/kmax12/gridstatus) library
 - **Markets**: Day-Ahead Market (DAM), Real-Time Market (RTM)
 - **License**: ERCOT data usage subject to ERCOT protocols
 
 ### EIA Battery Data
+
 - **Source**: U.S. Energy Information Administration (EIA-860)
 - **Dataset**: Form EIA-860 Energy Storage Inventory (2024)
 - **Scope**: 136 operational battery systems in Texas (ERCOT)
 - **License**: Public domain
 
 ### Dashboard Code
+
 - **Author**: Zentus
 - **Purpose**: Engie Urja AI Challenge 2025 submission
 - **Framework**: Streamlit 1.28+
@@ -386,7 +403,7 @@ Stanford Doerr School of Sustainability Accelerator Fellow
 
 ## 🚀 Future Enhancements
 
-Potential additions (not implemented in MVP):
+Potential additions:
 
 - **Real-time data streaming**: WebSocket connection to ERCOT API
 - **Advanced strategies**: Machine learning-based dispatch
