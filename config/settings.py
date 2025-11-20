@@ -94,9 +94,9 @@ CACHE_TTL = 3600  # 1 hour in seconds
 
 # File paths
 DATA_NOTE = """
-**MVP Demo:** Currently showing July 20, 2025 data from ERCOT wind resources.
+**Demo Mode:** Currently showing July 20, 2025 data from ERCOT wind resources.
 This single-day snapshot demonstrates the revenue opportunity concept.
-Additional historical data with extreme price events is being processed.
+Connect to Supabase for full historical analysis.
 """
 
 # =============================================================================
