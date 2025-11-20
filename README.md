@@ -35,7 +35,7 @@ cp .env.example .env
 ### 3. Run the Dashboard
 
 ```bash
-streamlit run app.py
+streamlit run Home.py
 ```
 
 The dashboard will open automatically at `http://localhost:8501`
@@ -105,7 +105,7 @@ The system automatically detects Supabase credentials and uses the database if c
 
 ```
 ERCOT-Dashboard/
-├── app.py                          # Streamlit entry point (115 lines - refactored!)
+├── Home.py                         # Streamlit entry point (Main Page)
 │
 ├── pages/                          # Multi-page analysis views
 │   ├── 1_🏠_Overview.py           # Strategy performance comparison
@@ -346,7 +346,7 @@ This simulates having a better forecast that captures X% of the DA-to-RT price m
 python scripts/test_database_connection.py
 
 # Run dashboard in test mode
-streamlit run app.py
+streamlit run Home.py
 
 # Check dependencies
 pip check
@@ -403,7 +403,7 @@ Stanford Doerr School of Sustainability Accelerator Fellow
 
 ## 🚀 Future Enhancements
 
-Potential additions (not implemented in MVP):
+Potential additions:
 
 - **Real-time data streaming**: WebSocket connection to ERCOT API
 - **Advanced strategies**: Machine learning-based dispatch
