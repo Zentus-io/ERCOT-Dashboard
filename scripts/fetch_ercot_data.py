@@ -46,12 +46,18 @@ DEFAULT_HISTORIC_START = date(2024, 1, 1)  # Fallback if database is empty
 # HELPER FUNCTIONS
 # ============================================================================
 
-def fetch_ercot_prices_for_day(iso: Ercot, day: date, market: Markets, market_name: str) -> pd.DataFrame:
-    """Fetches ERCOT prices for a single day and market."""
+def fetch_ercot_prices_for_day(iso: Ercot, day: date, market: Markets, market_name: str, filter_nodes: set = None) -> pd.DataFrame:
+    """Fetches ERCOT prices for a single day and market, optionally filtering by nodes."""
     try:
         prices = iso.get_spp(date=day, market=market)
         if not prices.empty:
             prices["Market"] = market_name
+            
+            # Apply node filter if provided
+            if filter_nodes:
+                # GridStatus uses 'Location' for settlement point
+                prices = prices[prices['Location'].isin(filter_nodes)]
+                
             return prices
     except NoDataFoundException:
         pass
@@ -125,7 +131,7 @@ def upsert_to_supabase(supabase: Client, records: list[dict]) -> int:
         return total_inserted  # Return what was successfully inserted before failure
 
 
-def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, retry_count: int = 0) -> dict:
+def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, filter_nodes: set = None, retry_count: int = 0) -> dict:
     """Orchestrates fetching, transforming, and storing data for a single day."""
     stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0, 'success': False}
     try:
@@ -135,8 +141,8 @@ def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts
         dam_prices, rtm_prices = pd.DataFrame(), pd.DataFrame()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_dam = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.DAY_AHEAD_HOURLY, "DAM")
-            future_rtm = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.REAL_TIME_15_MIN, "RTM")
+            future_dam = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.DAY_AHEAD_HOURLY, "DAM", filter_nodes)
+            future_rtm = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.REAL_TIME_15_MIN, "RTM", filter_nodes)
             dam_prices, rtm_prices = future_dam.result(), future_rtm.result()
 
         all_prices = [df for df in [dam_prices, rtm_prices] if not df.empty]
@@ -150,7 +156,7 @@ def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts
         return stats
     except Exception as e:
         if retry_count < MAX_RETRIES:
-            return fetch_and_store_day(iso, supabase, day, expected_counts, retry_count + 1)
+            return fetch_and_store_day(iso, supabase, day, expected_counts, filter_nodes, retry_count + 1)
         else:
             print(f"    ❌ Day {day} failed after {MAX_RETRIES} retries: {str(e)[:100]}...")
             return stats
@@ -300,7 +306,23 @@ def main():
     )
     parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD). Default: earliest date in database (or 2024-01-01 if empty).")
     parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD). Default: yesterday (never today to avoid infinite loops).")
+    parser.add_argument("--filter-engie", action="store_true", help="Only fetch data for Engie/Broad Reach Power assets.")
     args = parser.parse_args()
+
+    # Load Engie assets if filter is enabled
+    engie_nodes = None
+    if args.filter_engie:
+        try:
+            # Path to the CSV file
+            csv_path = Path("/home/boujuan/Documents/ZENTUS/ERCOT/DATA/results/engie_asset_mapping_final.csv")
+            if csv_path.exists():
+                df_engie = pd.read_csv(csv_path)
+                engie_nodes = set(df_engie['Settlement Point'].unique())
+                print(f"🎯 Filtering for {len(engie_nodes)} Engie asset settlement points.")
+            else:
+                print(f"⚠️  Warning: Engie asset CSV not found at {csv_path}. Fetching all nodes.")
+        except Exception as e:
+            print(f"⚠️  Error loading Engie assets: {e}. Fetching all nodes.")
 
     load_dotenv()
     supabase_url = os.getenv("SUPABASE_URL")
@@ -369,7 +391,7 @@ def main():
     with tqdm(total=len(days_to_fetch), desc="Overall Progress", unit="day") as pbar:
         for day in days_to_fetch:
             pbar.set_description(f"Processing {day}")
-            stats = fetch_and_store_day(ercot, supabase, day, {})
+            stats = fetch_and_store_day(ercot, supabase, day, {}, engie_nodes)
             if stats['success']:
                 total_stats['dam_records'] += stats['dam_records']
                 total_stats['rtm_records'] += stats['rtm_records']
