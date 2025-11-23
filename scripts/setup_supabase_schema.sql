@@ -94,3 +94,35 @@ CREATE POLICY "Enable all actions for data ingestion" ON ercot_prices
 CREATE POLICY "Enable read access for all users" ON eia_batteries
     FOR SELECT
     USING (true);
+
+-- Engie/Broad Reach Power Assets
+CREATE TABLE engie_storage_assets (
+    id SERIAL PRIMARY KEY,
+    plant_name TEXT,
+    settlement_point TEXT NOT NULL,
+    nameplate_power_mw DECIMAL(10,2),
+    nameplate_energy_mwh DECIMAL(10,2),
+    duration_hours DECIMAL(10,2),
+    county TEXT,
+    inferred_zone TEXT,
+    status_type TEXT,
+    operating_year INTEGER,
+    resource_name TEXT,
+    asset_id TEXT,
+    hsl DECIMAL(10,2),
+    lsl DECIMAL(10,2),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE engie_storage_assets IS 'Engie and Broad Reach Power battery assets in ERCOT.';
+
+ALTER TABLE engie_storage_assets ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Enable read access for all users" ON engie_storage_assets
+    FOR SELECT
+    USING (true);
+
+CREATE POLICY "Enable all actions for data ingestion" ON engie_storage_assets
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);

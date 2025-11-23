@@ -273,7 +273,42 @@ class SupabaseDataLoader:
             return df
             
         except Exception as e:
+            return df
+            
+        except Exception as e:
             st.error(f"Error loading battery data: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=36000)
+    def load_engie_assets(_self) -> pd.DataFrame:
+        """
+        Load Engie/Broad Reach Power asset data from Supabase.
+        Cached for 10 hours.
+        """
+        try:
+            # Fetch all Engie assets from Supabase
+            response = _self.client.table("engie_storage_assets").select("*").execute()
+            
+            if not response.data:
+                return pd.DataFrame()
+                
+            # Convert to DataFrame
+            df = pd.DataFrame(response.data)
+            
+            # Ensure numeric columns are properly typed
+            numeric_cols = [
+                'nameplate_power_mw', 'nameplate_energy_mwh', 
+                'duration_hours', 'operating_year', 'hsl', 'lsl'
+            ]
+            
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error loading Engie asset data: {e}")
             return pd.DataFrame()
 
 
