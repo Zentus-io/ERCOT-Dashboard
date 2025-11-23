@@ -69,23 +69,22 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
+# ============================================================================
+# RUN SIMULATIONS
+# ============================================================================
+
+from utils.simulation_runner import run_or_get_cached_simulation
+
 with st.spinner('Running battery simulations...'):
-    simulator = BatterySimulator(state.battery_specs)
+    baseline_result, improved_result, optimal_result = run_or_get_cached_simulation()
+    
+    if baseline_result is None:
+        st.error("⚠️ Failed to run simulations. Please check data availability.")
+        st.stop()
 
-    # Select strategy
-    if state.strategy_type == "Rolling Window Optimization":
-        strategy_baseline = RollingWindowStrategy(state.window_hours)
-        strategy_improved = RollingWindowStrategy(state.window_hours)
-        strategy_optimal = RollingWindowStrategy(state.window_hours)
-    else:  # Threshold-Based
-        strategy_baseline = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_improved = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_optimal = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-
-    # Run simulations for each scenario
-    baseline_result = simulator.run(node_data, strategy_baseline, improvement_factor=0.0)
-    improved_result = simulator.run(node_data, strategy_improved, improvement_factor=state.forecast_improvement/100)
-    optimal_result = simulator.run(node_data, strategy_optimal, improvement_factor=1.0)
+# ============================================================================
+# DISPATCH TIMELINE CHART
+# ============================================================================
 
 # ============================================================================
 # DISPATCH TIMELINE CHART
@@ -93,105 +92,169 @@ with st.spinner('Running battery simulations...'):
 
 st.subheader("Dispatch Schedule Comparison")
 
-# Create figure with subplots for each strategy
-fig_timeline = make_subplots(
-    rows=3, cols=1,
-    subplot_titles=(
-        "Baseline (DA Only)",
-        f"Improved (+{state.forecast_improvement}%)",
-        "Theoretical Maximum"
-    ),
-    shared_xaxes=True,
-    vertical_spacing=0.1,
-    row_heights=[0.33, 0.33, 0.33]
+# Add view toggle
+view_mode = st.radio(
+    "View Mode",
+    ["Detailed (Hourly)", "Daily Aggregation"],
+    horizontal=True
 )
 
-# Define colors for actions
-action_colors = {
-    'charge': {'light': 'rgba(40, 167, 69, 0.3)', 'dark': '#28A745'},
-    'discharge': {'light': 'rgba(220, 53, 69, 0.3)', 'dark': '#DC3545'},
-    'hold': {'light': '#6C757D', 'dark': '#6C757D'}
-}
+if view_mode == "Detailed (Hourly)":
+    # Create figure with subplots for each strategy
+    fig_timeline = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=(
+            "Baseline (DA Only)",
+            f"Improved (+{state.forecast_improvement}%)",
+            "Theoretical Maximum"
+        ),
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        row_heights=[0.33, 0.33, 0.33]
+    )
 
-def add_dispatch_bars(fig, dispatch_df, row_num, battery_power_mw):
-    """Add dispatch bars with proper stacking to show actual vs constrained power."""
-    timestamps = dispatch_df['timestamp'].tolist()
+    # Define colors for actions
+    action_colors = {
+        'charge': {'light': 'rgba(40, 167, 69, 0.3)', 'dark': '#28A745'},
+        'discharge': {'light': 'rgba(220, 53, 69, 0.3)', 'dark': '#DC3545'},
+        'hold': {'light': '#6C757D', 'dark': '#6C757D'}
+    }
 
-    actual_heights = []
-    actual_colors = []
-    actual_hovers = []
-    constrained_heights = []
-    constrained_colors = []
+    def add_dispatch_bars(fig, dispatch_df, row_num, battery_power_mw):
+        """Add dispatch bars with proper stacking to show actual vs constrained power."""
+        timestamps = dispatch_df['timestamp'].tolist()
 
-    for _, row in dispatch_df.iterrows():
-        action = row['dispatch']
+        actual_heights = []
+        actual_colors = []
+        actual_hovers = []
+        constrained_heights = []
+        constrained_colors = []
 
-        if action in ['charge', 'discharge']:
-            actual_energy = row['energy_mwh']
-            # Fraction represents % of hourly power capacity used
-            fraction = actual_energy / battery_power_mw
+        for _, row in dispatch_df.iterrows():
+            action = row['dispatch']
 
-            # Bottom: dark color, height = fraction
-            actual_heights.append(fraction)
-            actual_colors.append(action_colors[action]['dark'])
-            actual_hovers.append(
-                f"{action.capitalize()}<br>"
-                f"Energy: {actual_energy:.1f} MWh<br>"
-                f"% of Power Capacity: {fraction:.1%}"
-            )
+            if action in ['charge', 'discharge']:
+                actual_energy = row['energy_mwh']
+                # Fraction represents % of hourly power capacity used
+                fraction = actual_energy / battery_power_mw
 
-            # Top: light color, height = remaining
-            constrained_heights.append(1.0 - fraction)
-            constrained_colors.append(action_colors[action]['light'])
+                # Bottom: dark color, height = fraction
+                actual_heights.append(fraction)
+                actual_colors.append(action_colors[action]['dark'])
+                actual_hovers.append(
+                    f"{action.capitalize()}<br>"
+                    f"Energy: {actual_energy:.1f} MWh<br>"
+                    f"% of Power Capacity: {fraction:.1%}"
+                )
 
-        else:  # hold
-            # Bottom: zero height (invisible)
-            actual_heights.append(0)
-            actual_colors.append('rgba(0,0,0,0)')  # Transparent
-            actual_hovers.append('Hold')
+                # Top: light color, height = remaining
+                constrained_heights.append(1.0 - fraction)
+                constrained_colors.append(action_colors[action]['light'])
 
-            # Top: full height gray
-            constrained_heights.append(1.0)
-            constrained_colors.append(action_colors['hold']['light'])
+            else:  # hold
+                # Bottom: zero height (invisible)
+                actual_heights.append(0)
+                actual_colors.append('rgba(0,0,0,0)')  # Transparent
+                actual_hovers.append('Hold')
 
-    # Add bottom layer trace (actual energy)
-    fig.add_trace(go.Bar(
-        x=timestamps,
-        y=actual_heights,
-        marker_color=actual_colors,
-        name='Actual Energy' if row_num == 1 else None,
-        showlegend=(row_num == 1),
-        hovertext=actual_hovers,
-        hoverinfo='text'
-    ), row=row_num, col=1)
+                # Top: full height gray
+                constrained_heights.append(1.0)
+                constrained_colors.append(action_colors['hold']['light'])
 
-    # Add top layer trace (constrained portion)
-    fig.add_trace(go.Bar(
-        x=timestamps,
-        y=constrained_heights,
-        marker_color=constrained_colors,
-        name='Constrained' if row_num == 1 else None,
-        showlegend=(row_num == 1),
-        hoverinfo='skip'
-    ), row=row_num, col=1)
+        # Add bottom layer trace (actual energy)
+        fig.add_trace(go.Bar(
+            x=timestamps,
+            y=actual_heights,
+            marker_color=actual_colors,
+            name='Actual Energy' if row_num == 1 else None,
+            showlegend=(row_num == 1),
+            hovertext=actual_hovers,
+            hoverinfo='text'
+        ), row=row_num, col=1)
 
-# Add data for each strategy
-add_dispatch_bars(fig_timeline, baseline_result.dispatch_df, 1, state.battery_specs.power_mw)
-add_dispatch_bars(fig_timeline, improved_result.dispatch_df, 2, state.battery_specs.power_mw)
-add_dispatch_bars(fig_timeline, optimal_result.dispatch_df, 3, state.battery_specs.power_mw)
+        # Add top layer trace (constrained portion)
+        fig.add_trace(go.Bar(
+            x=timestamps,
+            y=constrained_heights,
+            marker_color=constrained_colors,
+            name='Constrained' if row_num == 1 else None,
+            showlegend=(row_num == 1),
+            hoverinfo='skip'
+        ), row=row_num, col=1)
 
-fig_timeline.update_layout(
-    height=600,
-    barmode='stack',
-    bargap=0.1,
-    title_text=f"Battery Dispatch Timeline - {state.strategy_type}",
-    showlegend=True,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-)
+    # Add data for each strategy
+    add_dispatch_bars(fig_timeline, baseline_result.dispatch_df, 1, state.battery_specs.power_mw)
+    add_dispatch_bars(fig_timeline, improved_result.dispatch_df, 2, state.battery_specs.power_mw)
+    add_dispatch_bars(fig_timeline, optimal_result.dispatch_df, 3, state.battery_specs.power_mw)
 
-# Fix y-axis range to [0, 1] for accurate visual proportions
-fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False)
-fig_timeline.update_xaxes(title_text="Time", row=3, col=1)
+    fig_timeline.update_layout(
+        height=600,
+        barmode='stack',
+        bargap=0.1,
+        title_text=f"Battery Dispatch Timeline - {state.strategy_type}",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    # Fix y-axis range to [0, 1] for accurate visual proportions
+    fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False)
+    fig_timeline.update_xaxes(title_text="Time", row=3, col=1)
+
+else:
+    # Daily Aggregation View
+    fig_timeline = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=(
+            "Baseline (DA Only)",
+            f"Improved (+{state.forecast_improvement}%)",
+            "Theoretical Maximum"
+        ),
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        row_heights=[0.33, 0.33, 0.33]
+    )
+
+    def add_daily_bars(fig, dispatch_df, row_num):
+        # Resample to daily
+        df = dispatch_df.copy()
+        df['date'] = df['timestamp'].dt.date
+        
+        # Calculate daily charge and discharge
+        daily_charge = df[df['dispatch'] == 'charge'].groupby('date')['energy_mwh'].sum()
+        daily_discharge = df[df['dispatch'] == 'discharge'].groupby('date')['energy_mwh'].sum()
+        
+        # Align indexes
+        all_dates = sorted(list(set(daily_charge.index) | set(daily_discharge.index)))
+        
+        # Add traces
+        fig.add_trace(go.Bar(
+            x=all_dates,
+            y=[daily_charge.get(d, 0) for d in all_dates],
+            name='Total Charge' if row_num == 1 else None,
+            marker_color='#28A745',
+            showlegend=(row_num == 1)
+        ), row=row_num, col=1)
+        
+        fig.add_trace(go.Bar(
+            x=all_dates,
+            y=[daily_discharge.get(d, 0) for d in all_dates],
+            name='Total Discharge' if row_num == 1 else None,
+            marker_color='#DC3545',
+            showlegend=(row_num == 1)
+        ), row=row_num, col=1)
+
+    add_daily_bars(fig_timeline, baseline_result.dispatch_df, 1)
+    add_daily_bars(fig_timeline, improved_result.dispatch_df, 2)
+    add_daily_bars(fig_timeline, optimal_result.dispatch_df, 3)
+
+    fig_timeline.update_layout(
+        height=600,
+        barmode='group',
+        title_text=f"Daily Aggregated Dispatch - {state.strategy_type}",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    fig_timeline.update_yaxes(title_text="Energy (MWh)")
 
 st.plotly_chart(fig_timeline, width="stretch")
 
@@ -241,6 +304,9 @@ fig_price_dispatch.update_layout(
     height=400,
     hovermode='x unified'
 )
+
+from ui.components.charts import apply_standard_chart_styling
+apply_standard_chart_styling(fig_price_dispatch)
 
 st.plotly_chart(fig_price_dispatch, width="stretch")
 

@@ -78,6 +78,15 @@ def load_eia_data():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def load_engie_data():
+    try:
+        return SupabaseDataLoader().load_engie_assets()
+    except Exception as e:
+        st.warning(f"Could not load Engie asset data: {e}")
+        return pd.DataFrame()
+
+
 def render_sidebar():
     """
     Render configuration sidebar.
@@ -309,18 +318,43 @@ def render_sidebar():
 
     # Battery presets
     if state.eia_battery_data is not None:
-        preset_options = ["Custom"] + [v['name'] for v in BATTERY_PRESETS.values()]
+        preset_options = ["Custom", "Current Asset"] + [v['name'] for v in BATTERY_PRESETS.values()]
 
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
-            help="Select a preset based on real Texas battery systems (EIA-860 data)"
+            help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."
         )
 
         # Set defaults based on preset
         if battery_preset == "Custom":
             default_capacity = DEFAULT_BATTERY['capacity_mwh']
             default_power = DEFAULT_BATTERY['power_mw']
+        elif battery_preset == "Current Asset":
+            # Load Engie assets
+            engie_data = load_engie_data()
+            
+            # Find asset matching selected node
+            if not engie_data.empty and state.selected_node:
+                # Match on settlement_point
+                asset_match = engie_data[engie_data['settlement_point'] == state.selected_node]
+                
+                if not asset_match.empty:
+                    # Use the first match
+                    asset = asset_match.iloc[0]
+                    default_power = float(asset['nameplate_power_mw']) if pd.notna(asset['nameplate_power_mw']) else DEFAULT_BATTERY['power_mw']
+                    default_capacity = float(asset['nameplate_energy_mwh']) if pd.notna(asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
+                    
+                    st.sidebar.success(f"✅ Matched: {asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
+                else:
+                    st.sidebar.warning(f"⚠️ No asset found for {state.selected_node}")
+                    default_capacity = DEFAULT_BATTERY['capacity_mwh']
+                    default_power = DEFAULT_BATTERY['power_mw']
+            else:
+                st.sidebar.warning("⚠️ No asset data available or node not selected")
+                default_capacity = DEFAULT_BATTERY['capacity_mwh']
+                default_power = DEFAULT_BATTERY['power_mw']
+                
         elif "Small" in battery_preset:
             default_capacity = BATTERY_PRESETS['Small']['capacity_mwh']
             default_power = BATTERY_PRESETS['Small']['power_mw']
@@ -345,7 +379,7 @@ def render_sidebar():
         value=default_capacity,
         step=5 if default_capacity < 100 else 10,
         help="Total energy storage capacity of the battery",
-        disabled=(battery_preset != "Custom" and state.eia_battery_data is not None)
+        disabled=(battery_preset != "Custom")
     )
 
     power = st.sidebar.slider(
@@ -355,7 +389,7 @@ def render_sidebar():
         value=default_power,
         step=5,
         help="Maximum charge/discharge rate",
-        disabled=(battery_preset != "Custom" and state.eia_battery_data is not None)
+        disabled=(battery_preset != "Custom")
     )
 
     efficiency = st.sidebar.slider(
@@ -388,7 +422,7 @@ def render_sidebar():
         min_value=0,
         max_value=100,
         value=state.forecast_improvement,
-        step=5,
+        step=10,
         help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
     )
 
