@@ -1,7 +1,7 @@
 import streamlit as st
 from utils.state import get_state
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
+from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy
 
 def run_or_get_cached_simulation():
     """
@@ -30,7 +30,7 @@ def run_or_get_cached_simulation():
     # To avoid circular dependency or complex data fetching here, let's assume the caller 
     # might want to handle data loading, but for convenience we can try to load it if state has it.
     
-    if state.price_data is None or state.selected_node is None:
+    if state.price_data is None or state.selected_node is None or state.battery_specs is None:
         return None, None, None
         
     # Filter data (logic duplicated from pages, but necessary for centralized runner)
@@ -48,6 +48,10 @@ def run_or_get_cached_simulation():
         strategy_baseline = RollingWindowStrategy(state.window_hours)
         strategy_improved = RollingWindowStrategy(state.window_hours)
         strategy_optimal = RollingWindowStrategy(state.window_hours)
+    elif state.strategy_type == "Linear Optimization":
+        strategy_baseline = LinearOptimizationStrategy()
+        strategy_improved = LinearOptimizationStrategy()
+        strategy_optimal = LinearOptimizationStrategy()
     else:  # Threshold-Based
         strategy_baseline = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
         strategy_improved = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)

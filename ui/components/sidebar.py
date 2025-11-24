@@ -62,7 +62,20 @@ def load_node_prices(
             return db_loader.load_prices(node=node, start_date=start_date, end_date=end_date)
         except Exception as e:
             st.warning(f"⚠️ Database error: {str(e)}. Falling back to CSV.")
-    
+            
+    elif source == 'local_parquet':
+        try:
+            # Import here to avoid circular imports if any, or just use the one from loaders
+            # But we need to make sure ParquetDataLoader is available. 
+            # It is imported from core.data.loaders in the file header? 
+            # No, only DataLoader and SupabaseDataLoader are imported.
+            # Need to fix imports too.
+            from core.data.loaders import ParquetDataLoader
+            loader = ParquetDataLoader(data_dir)
+            return loader.load_prices(node=node)
+        except Exception as e:
+            st.warning(f"⚠️ Parquet error: {str(e)}. Falling back to CSV.")
+
     # CSV fallback (demo mode)
     csv_loader = DataLoader(data_dir)
     price_data = csv_loader.load_prices()
@@ -109,13 +122,22 @@ def render_sidebar():
     if SUPABASE_URL and SUPABASE_KEY:
         data_source = st.sidebar.radio(
             "Data Source:",
-            options=['Database', 'CSV Demo'],
-            index=0 if state.data_source == 'database' else 1,
-            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data"
+            options=['Database', 'CSV Demo', 'Local Parquet'],
+            index={
+                'database': 0,
+                'csv': 1,
+                'local_parquet': 2
+            }.get(state.data_source, 1),
+            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data\n**Local Parquet**: Full year 2025 data"
         )
 
         # Map display names to internal values
-        data_source_internal = 'database' if data_source == 'Database' else 'csv'
+        if data_source == 'Database':
+            data_source_internal = 'database'
+        elif data_source == 'Local Parquet':
+            data_source_internal = 'local_parquet'
+        else:
+            data_source_internal = 'csv'
 
         if data_source_internal != state.data_source:
             state.data_source = data_source_internal
@@ -201,6 +223,10 @@ def render_sidebar():
         days_selected = (state.end_date - state.start_date).days + 1
         st.sidebar.caption(f"📅 **{days_selected} days** selected")
 
+    elif state.data_source == 'local_parquet':
+        st.sidebar.markdown("---")
+        st.sidebar.info("📌 **Local Parquet Mode** - Full Year 2025")
+
     else:
         # CSV mode - use fixed date from data
         st.sidebar.markdown("---")
@@ -259,8 +285,12 @@ def render_sidebar():
 
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
-        options=["Threshold-Based", "Rolling Window Optimization"],
-        index=0 if state.strategy_type == "Threshold-Based" else 1,
+        options=["Threshold-Based", "Rolling Window Optimization", "Linear Optimization"],
+        index={
+            "Threshold-Based": 0,
+            "Rolling Window Optimization": 1,
+            "Linear Optimization": 2
+        }.get(state.strategy_type, 0),
         help="Choose the battery dispatch optimization approach"
     )
 
@@ -342,8 +372,8 @@ def render_sidebar():
                 if not asset_match.empty:
                     # Use the first match
                     asset = asset_match.iloc[0]
-                    default_power = float(asset['nameplate_power_mw']) if pd.notna(asset['nameplate_power_mw']) else DEFAULT_BATTERY['power_mw']
-                    default_capacity = float(asset['nameplate_energy_mwh']) if pd.notna(asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
+                    default_power = int(asset['nameplate_power_mw']) if pd.notna(asset['nameplate_power_mw']) else DEFAULT_BATTERY['power_mw']
+                    default_capacity = int(asset['nameplate_energy_mwh']) if pd.notna(asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
                     
                     st.sidebar.success(f"✅ Matched: {asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
                 else:

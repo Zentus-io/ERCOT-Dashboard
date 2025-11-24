@@ -7,7 +7,6 @@ battery storage system behavior.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -22,7 +21,8 @@ class BatterySpecs:
     power_mw : float
         Maximum charge/discharge rate (MW)
     efficiency : float
-        Round-trip efficiency (0 to 1)
+        Round-trip efficiency (0 to 1). Applied as sqrt(efficiency) on both
+        charge and discharge to model realistic bidirectional losses.
     min_soc : float, optional
         Minimum state of charge as fraction (default: 0.05 = 5%)
     max_soc : float, optional
@@ -36,6 +36,11 @@ class BatterySpecs:
     min_soc: float = 0.05
     max_soc: float = 0.95
     initial_soc: float = 0.5
+
+    @property
+    def one_way_efficiency(self) -> float:
+        """Single-direction efficiency (sqrt of round-trip)."""
+        return self.efficiency ** 0.5
 
     def __post_init__(self):
         """Validate specifications."""
@@ -68,6 +73,11 @@ class Battery:
     This class manages the state of charge and enforces operational constraints
     during charging and discharging operations.
 
+    Time Step Handling:
+    - For DAM (Day-Ahead Market): dt = 1.0 hour
+    - For RTM (Real-Time Market): dt = 0.25 hours (15-minute settlements in ERCOT)
+    - Energy transferred = Power × dt
+
     Attributes
     ----------
     specs : BatterySpecs
@@ -93,14 +103,14 @@ class Battery:
         """Get current SOC as fraction of capacity."""
         return self.soc / self.specs.capacity_mwh
 
-    def can_charge(self, amount_mwh: float) -> bool:
+    def can_charge(self, power_mw: float) -> bool:
         """
         Check if battery can accept charge.
 
         Parameters
         ----------
-        amount_mwh : float
-            Requested charge amount (MWh)
+        power_mw : float
+            Requested charge power (MW)
 
         Returns
         -------
@@ -109,14 +119,14 @@ class Battery:
         """
         return self.soc < self.specs.capacity_mwh * self.specs.max_soc
 
-    def can_discharge(self, amount_mwh: float) -> bool:
+    def can_discharge(self, power_mw: float) -> bool:
         """
         Check if battery can discharge.
 
         Parameters
         ----------
-        amount_mwh : float
-            Requested discharge amount (MWh)
+        power_mw : float
+            Requested discharge power (MW)
 
         Returns
         -------
@@ -125,69 +135,100 @@ class Battery:
         """
         return self.soc > self.specs.capacity_mwh * self.specs.min_soc
 
-    def charge(self, amount_mwh: float) -> float:
+    def charge(self, power_mw: float, dt_hours: float = 1.0) -> float:
         """
-        Charge battery and return actual energy purchased from grid.
+        Charge battery at specified power for specified duration.
 
         The actual charge is limited by:
-        - Requested amount
-        - Power capacity
+        - Requested power
+        - Maximum power capacity
         - Remaining capacity to max SOC
+
+        Efficiency model: Uses sqrt(round_trip_efficiency) for charging,
+        representing realistic bidirectional losses.
 
         Parameters
         ----------
-        amount_mwh : float
-            Requested charge amount (MWh)
+        power_mw : float
+            Requested charge power (MW)
+        dt_hours : float, optional
+            Time step duration in hours (default: 1.0 for hourly/DAM,
+            use 0.25 for 15-minute RTM)
 
         Returns
         -------
         float
-            Actual energy purchased from grid (MWh)
+            Actual energy purchased from grid (MWh) = actual_power × dt
             This is BEFORE efficiency losses.
         """
-        # Calculate maximum chargeable amount
-        max_charge = min(
-            amount_mwh,
-            self.specs.power_mw,
-            (self.specs.capacity_mwh * self.specs.max_soc - self.soc) / self.specs.efficiency
-        )
+        one_way_eff = self.specs.one_way_efficiency
 
-        # Energy stored in battery (after efficiency losses)
-        energy_stored = max_charge * self.specs.efficiency
+        # Calculate maximum chargeable power (limited by power rating)
+        max_power = min(power_mw, self.specs.power_mw)
+
+        # Calculate maximum energy that can be stored (limited by SOC headroom)
+        soc_headroom = self.specs.capacity_mwh * self.specs.max_soc - self.soc
+        max_energy_to_store = soc_headroom  # MWh we can add to SOC
+
+        # To store X MWh, we need X/eff MWh from grid
+        max_grid_energy_from_soc = max_energy_to_store / one_way_eff
+
+        # Actual grid energy is limited by power×dt and SOC headroom
+        grid_energy = min(max_power * dt_hours, max_grid_energy_from_soc)
+
+        # Energy stored in battery (after one-way efficiency loss)
+        energy_stored = grid_energy * one_way_eff
         self.soc += energy_stored
 
         # Return energy purchased from grid (before losses)
-        return max_charge
+        return grid_energy
 
-    def discharge(self, amount_mwh: float) -> float:
+    def discharge(self, power_mw: float, dt_hours: float = 1.0) -> float:
         """
-        Discharge battery and return actual energy delivered to grid.
+        Discharge battery at specified power for specified duration.
 
         The actual discharge is limited by:
-        - Requested amount
-        - Power capacity
+        - Requested power
+        - Maximum power capacity
         - Available capacity above min SOC
+
+        Efficiency model: Uses sqrt(round_trip_efficiency) for discharging,
+        representing realistic bidirectional losses. Energy delivered to grid
+        is less than energy drawn from SOC.
 
         Parameters
         ----------
-        amount_mwh : float
-            Requested discharge amount (MWh)
+        power_mw : float
+            Requested discharge power (MW) - power to deliver to grid
+        dt_hours : float, optional
+            Time step duration in hours (default: 1.0 for hourly/DAM,
+            use 0.25 for 15-minute RTM)
 
         Returns
         -------
         float
-            Actual energy delivered to grid (MWh)
+            Actual energy delivered to grid (MWh) = actual_power × dt
         """
-        # Calculate maximum dischargeable amount
-        max_discharge = min(
-            amount_mwh,
-            self.specs.power_mw,
-            self.soc - self.specs.capacity_mwh * self.specs.min_soc
-        )
+        one_way_eff = self.specs.one_way_efficiency
 
-        # Remove from battery and return
-        self.soc -= max_discharge
-        return max_discharge
+        # Calculate maximum discharge power (limited by power rating)
+        max_power = min(power_mw, self.specs.power_mw)
+
+        # Available energy in SOC above minimum
+        available_soc = self.soc - self.specs.capacity_mwh * self.specs.min_soc
+
+        # Maximum grid energy we can deliver (SOC × efficiency)
+        max_grid_energy_from_soc = available_soc * one_way_eff
+
+        # Actual grid energy is limited by power×dt and available SOC
+        grid_energy = min(max_power * dt_hours, max_grid_energy_from_soc)
+
+        # Energy drawn from SOC (more than delivered due to losses)
+        energy_from_soc = grid_energy / one_way_eff
+        self.soc -= energy_from_soc
+
+        # Return energy delivered to grid (after losses)
+        return grid_energy
 
     def reset(self):
         """Reset battery to initial state of charge."""

@@ -13,6 +13,31 @@ import numpy as np
 from .battery import Battery
 
 
+def calculate_dt(price_df: pd.DataFrame) -> float:
+    """
+    Calculate time step duration from price data timestamps.
+
+    Parameters
+    ----------
+    price_df : pd.DataFrame
+        Price data with 'timestamp' column
+
+    Returns
+    -------
+    float
+        Time step duration in hours:
+        - 1.0 for hourly data (DAM)
+        - 0.25 for 15-minute data (RTM)
+        - Defaults to 1.0 if cannot determine
+    """
+    if 'timestamp' in price_df.columns and len(price_df) > 1:
+        dt = (price_df['timestamp'].iloc[1] - price_df['timestamp'].iloc[0]).total_seconds() / 3600.0
+        return dt
+    else:
+        # Default to hourly if cannot determine
+        return 1.0
+
+
 @dataclass
 class DispatchDecision:
     """
@@ -159,6 +184,9 @@ class ThresholdStrategy(DispatchStrategy):
         if not self._thresholds_calculated:
             self.calculate_thresholds(price_df, improvement_factor)
 
+        # Get time step duration
+        dt = calculate_dt(price_df)
+
         # Get current row
         row = price_df.iloc[current_idx]
 
@@ -168,13 +196,13 @@ class ThresholdStrategy(DispatchStrategy):
 
         # Decision logic
         if decision_price < self.charge_threshold and battery.can_charge(battery.specs.power_mw):
-            # Charge
-            energy = battery.charge(battery.specs.power_mw)
+            # Charge at max power for this time step
+            energy = battery.charge(battery.specs.power_mw, dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
 
         elif decision_price > self.discharge_threshold and battery.can_discharge(battery.specs.power_mw):
-            # Discharge
-            energy = battery.discharge(battery.specs.power_mw)
+            # Discharge at max power for this time step
+            energy = battery.discharge(battery.specs.power_mw, dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
 
         else:
@@ -222,6 +250,9 @@ class RollingWindowStrategy(DispatchStrategy):
                price_df: pd.DataFrame,
                improvement_factor: float) -> DispatchDecision:
         """Make dispatch decision using rolling window logic."""
+        # Get time step duration
+        dt = calculate_dt(price_df)
+
         # Get current row
         row = price_df.iloc[current_idx]
 
@@ -229,8 +260,9 @@ class RollingWindowStrategy(DispatchStrategy):
         decision_price = row['price_mwh_da'] + row['forecast_error'] * improvement_factor
         actual_price = row['price_mwh_rt']
 
-        # Calculate lookahead window
-        window_end = min(current_idx + self.window_hours, len(price_df))
+        # Calculate lookahead window (convert hours to steps based on dt)
+        window_steps = max(1, int(self.window_hours / dt))
+        window_end = min(current_idx + window_steps, len(price_df))
         window_prices = price_df.iloc[current_idx:window_end].apply(
             lambda r: r['price_mwh_da'] + r['forecast_error'] * improvement_factor,
             axis=1
@@ -238,13 +270,13 @@ class RollingWindowStrategy(DispatchStrategy):
 
         # Decision logic: charge at minimum, discharge at maximum
         if np.isclose(decision_price, window_prices.min()) and battery.can_charge(battery.specs.power_mw):
-            # Charge: cheapest hour in window
-            energy = battery.charge(battery.specs.power_mw)
+            # Charge: cheapest period in window
+            energy = battery.charge(battery.specs.power_mw, dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
 
         elif np.isclose(decision_price, window_prices.max()) and battery.can_discharge(battery.specs.power_mw):
-            # Discharge: most expensive hour in window
-            energy = battery.discharge(battery.specs.power_mw)
+            # Discharge: most expensive period in window
+            energy = battery.discharge(battery.specs.power_mw, dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
 
         else:
@@ -256,4 +288,180 @@ class RollingWindowStrategy(DispatchStrategy):
         return {
             'strategy': 'Rolling Window Optimization',
             'window_hours': self.window_hours,
+        }
+
+
+class LinearOptimizationStrategy(DispatchStrategy):
+    """
+    Global linear optimization strategy (Perfect Foresight).
+    Uses linear programming to find the theoretically optimal dispatch.
+
+    Attributes
+    ----------
+    _optimization_run : bool
+        Flag indicating if optimization has been run
+    _dispatch_plan : pd.DataFrame
+        Cached optimization results
+    _dt : float
+        Time step duration in hours (stored from optimization)
+    """
+
+    def __init__(self):
+        self._optimization_run = False
+        self._dispatch_plan = None
+        self._dt = 1.0  # Default, will be updated during optimization
+
+    def _run_optimization(self, battery: Battery, price_df: pd.DataFrame, improvement_factor: float):
+        """
+        Runs the linear optimization problem using a sparse formulation.
+        """
+        from scipy.optimize import linprog
+        from scipy import sparse
+        
+        # Prepare data
+        prices = (price_df['price_mwh_da'] + price_df['forecast_error'] * improvement_factor).values
+        n_steps = len(prices)
+        
+        # Determine time interval (dt) and store for use in decide()
+        dt = calculate_dt(price_df)
+        self._dt = dt
+            
+        # Variables vector x: [Charge_0...N-1, Discharge_0...N-1, SOC_0...N-1]
+        # Total variables = 3 * n_steps
+        
+        # 1. Objective Function: Minimize Cost - Revenue
+        # Minimize: Sum(Price * C * dt) - Sum(Price * D * dt)
+        # Coefficients for C: Price * dt
+        # Coefficients for D: -Price * dt
+        # Coefficients for SOC: 0
+        
+        c_charge = prices * dt
+        c_discharge = -prices * dt
+        c_soc = np.zeros(n_steps)
+        c = np.concatenate([c_charge, c_discharge, c_soc])
+        
+        # 2. Bounds
+        # 0 <= C <= P_max
+        # 0 <= D <= P_max
+        # min_soc * E_max <= SOC <= max_soc * E_max (respect battery SOC limits)
+
+        min_soc_mwh = battery.specs.min_soc * battery.specs.capacity_mwh
+        max_soc_mwh = battery.specs.max_soc * battery.specs.capacity_mwh
+
+        bounds_c = [(0, battery.specs.power_mw)] * n_steps
+        bounds_d = [(0, battery.specs.power_mw)] * n_steps
+        bounds_soc = [(min_soc_mwh, max_soc_mwh)] * n_steps
+        bounds = bounds_c + bounds_d + bounds_soc
+        
+        # 3. Equality Constraints (Dynamics)
+        # Using sqrt(round_trip_eff) on both charge and discharge to match Battery class
+        # Charging:    SOC += C * eff * dt  (grid energy * eff = stored energy)
+        # Discharging: SOC -= D * dt / eff  (grid energy / eff = energy from SOC)
+        # Rearranged:  SOC_t - SOC_{t-1} - C_t * (eff*dt) + D_t * (dt/eff) = 0
+
+        eff = battery.specs.one_way_efficiency  # sqrt(round_trip_efficiency)
+        coeff_c = -(eff * dt)
+        coeff_d = (dt / eff)
+        
+        # We need to construct A_eq matrix (n_steps rows, 3*n_steps cols)
+        # Row t corresponds to time step t
+        
+        # Diagonal elements for SOC_t (coefficient 1)
+        # Index of SOC_t in x is: 2*n_steps + t
+        rows_soc_t = np.arange(n_steps)
+        cols_soc_t = np.arange(2*n_steps, 3*n_steps)
+        vals_soc_t = np.ones(n_steps)
+        
+        # Off-diagonal elements for SOC_{t-1} (coefficient -1)
+        # Only for t > 0
+        rows_soc_prev = np.arange(1, n_steps)
+        cols_soc_prev = np.arange(2*n_steps, 3*n_steps - 1)
+        vals_soc_prev = -np.ones(n_steps - 1)
+        
+        # Elements for C_t (coefficient coeff_c)
+        # Index of C_t is t
+        rows_c = np.arange(n_steps)
+        cols_c = np.arange(n_steps)
+        vals_c = np.full(n_steps, coeff_c)
+        
+        # Elements for D_t (coefficient coeff_d)
+        # Index of D_t is n_steps + t
+        rows_d = np.arange(n_steps)
+        cols_d = np.arange(n_steps, 2*n_steps)
+        vals_d = np.full(n_steps, coeff_d)
+        
+        # Combine all non-zero elements
+        rows = np.concatenate([rows_soc_t, rows_soc_prev, rows_c, rows_d])
+        cols = np.concatenate([cols_soc_t, cols_soc_prev, cols_c, cols_d])
+        vals = np.concatenate([vals_soc_t, vals_soc_prev, vals_c, vals_d])
+        
+        A_eq = sparse.coo_matrix((vals, (rows, cols)), shape=(n_steps, 3*n_steps))
+        
+        # RHS vector b_eq
+        # For t=0: SOC_0 - C_0*... + D_0*... = InitialSOC
+        # For t>0: 0
+        b_eq = np.zeros(n_steps)
+        b_eq[0] = battery.soc
+        
+        # Solve
+        res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+        
+        if res.success:
+            self._dispatch_plan = pd.DataFrame({
+                'charge_mw': res.x[:n_steps],
+                'discharge_mw': res.x[n_steps:2*n_steps],
+                'soc_mwh': res.x[2*n_steps:]
+            })
+        else:
+            print(f"Optimization failed: {res.message}")
+            self._dispatch_plan = pd.DataFrame({
+                'charge_mw': np.zeros(n_steps),
+                'discharge_mw': np.zeros(n_steps)
+            })
+            
+        self._optimization_run = True
+
+    def decide(self,
+               battery: Battery,
+               current_idx: int,
+               price_df: pd.DataFrame,
+               improvement_factor: float) -> DispatchDecision:
+        
+        if not self._optimization_run:
+            # Run optimization for the whole horizon once
+            # Note: This assumes price_df passed in the first call is the full horizon
+            # In the simulator, it usually passes the full df.
+            self._run_optimization(battery, price_df, improvement_factor)
+            
+        # Get planned action
+        if current_idx < len(self._dispatch_plan):
+            charge_mw = self._dispatch_plan.iloc[current_idx]['charge_mw']
+            discharge_mw = self._dispatch_plan.iloc[current_idx]['discharge_mw']
+        else:
+            charge_mw = 0
+            discharge_mw = 0
+            
+        # Get prices
+        row = price_df.iloc[current_idx]
+        decision_price = row['price_mwh_da'] + row['forecast_error'] * improvement_factor
+        actual_price = row['price_mwh_rt']
+        
+        # Execute using stored time step (dt)
+        # Note: The optimization assumes perfect execution, but we still call battery methods
+        # to update the battery state in the simulator.
+        # We prioritize discharge if both are non-zero (shouldn't happen in optimal solution with positive prices)
+
+        if discharge_mw > 0.001:
+            energy = battery.discharge(discharge_mw, self._dt)
+            return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
+        elif charge_mw > 0.001:
+            energy = battery.charge(charge_mw, self._dt)
+            return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
+        else:
+            return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+
+    def get_metadata(self) -> dict:
+        return {
+            'strategy': 'Linear Optimization (Perfect Foresight)',
+            'solver': 'scipy.highs'
         }

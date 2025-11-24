@@ -13,12 +13,14 @@ from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from utils.state import get_state, has_valid_config, get_date_range_str
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
+from core.battery.battery import BatterySpecs
+from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy
 from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -72,39 +74,72 @@ if state.battery_specs is None:
 st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
 
 # Reduce points for performance (0, 10, 20... 100)
-improvement_range = range(0, 101, 5)  
-revenue_threshold = []
-revenue_rolling_window = []
+@st.cache_data(ttl=3600, show_spinner="Running sensitivity analysis...")
+def run_sensitivity_analysis(
+    node_data: pd.DataFrame,
+    battery_specs: BatterySpecs,
+    charge_percentile: float,
+    discharge_percentile: float,
+    window_hours: int
+):
+    """
+    Run sensitivity analysis with caching.
 
-# Create progress bar
-progress_bar = st.progress(0, text="Running sensitivity analysis...")
-total_steps = len(improvement_range)
+    Runs all three strategies (Threshold, Rolling Window, Linear Optimization)
+    across the full range of forecast improvement levels (0-100%).
 
-simulator = BatterySimulator(state.battery_specs)
+    Note: Linear Optimization finds the optimal solution for any given forecast
+    quality. At 100% improvement (perfect foresight), it achieves theoretical max.
+    At lower improvement levels, it optimizes for imperfect forecasts but revenue
+    is still calculated at actual RT prices, so it may underperform its potential.
+    """
+    improvement_range = range(0, 101, 10)  # Reduced resolution for speed
+    revenue_threshold = []
+    revenue_rolling_window = []
+    revenue_linear = []
 
-for i, imp in enumerate(improvement_range):
-    # Update progress
-    progress_bar.progress((i + 1) / total_steps, text=f"Simulating {imp}% improvement scenario...")
-    
-    # Threshold strategy
-    strategy_threshold = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-    temp_result_threshold = simulator.run(
-        node_data,
-        strategy_threshold,
-        improvement_factor=imp/100
-    )
-    revenue_threshold.append(temp_result_threshold.total_revenue)
+    simulator = BatterySimulator(battery_specs)
 
-    # Rolling window strategy
-    strategy_window = RollingWindowStrategy(state.window_hours)
-    temp_result_window = simulator.run(
-        node_data,
-        strategy_window,
-        improvement_factor=imp/100
-    )
-    revenue_rolling_window.append(temp_result_window.total_revenue)
+    for imp in improvement_range:
+        improvement_factor = imp / 100
 
-progress_bar.empty()
+        # Threshold strategy
+        strategy_threshold = ThresholdStrategy(charge_percentile, discharge_percentile)
+        temp_result_threshold = simulator.run(
+            node_data,
+            strategy_threshold,
+            improvement_factor=improvement_factor
+        )
+        revenue_threshold.append(temp_result_threshold.total_revenue)
+
+        # Rolling window strategy
+        strategy_window = RollingWindowStrategy(window_hours)
+        temp_result_window = simulator.run(
+            node_data,
+            strategy_window,
+            improvement_factor=improvement_factor
+        )
+        revenue_rolling_window.append(temp_result_window.total_revenue)
+
+        # Linear Optimization strategy (new instance for each improvement level)
+        strategy_linear = LinearOptimizationStrategy()
+        temp_result_linear = simulator.run(
+            node_data,
+            strategy_linear,
+            improvement_factor=improvement_factor
+        )
+        revenue_linear.append(temp_result_linear.total_revenue)
+
+    return list(improvement_range), revenue_threshold, revenue_rolling_window, revenue_linear
+
+# Run analysis
+improvement_range, revenue_threshold, revenue_rolling_window, revenue_linear = run_sensitivity_analysis(
+    node_data,
+    state.battery_specs,
+    state.charge_percentile,
+    state.discharge_percentile,
+    state.window_hours
+)
 
 # Create comparison chart
 fig_sensitivity = go.Figure()
@@ -127,20 +162,23 @@ fig_sensitivity.add_trace(go.Scatter(
     hovertemplate='Rolling Window<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
 
-# Add reference line for theoretical maximum (100% improvement)
-fig_sensitivity.add_hline(
-    y=revenue_rolling_window[-1],  # 100% improvement
-    line_dash="dash",
-    line_color="green",
-    annotation_text="Theoretical Maximum"
-)
+# Linear Optimization curve (upper bound at each improvement level)
+fig_sensitivity.add_trace(go.Scatter(
+    x=list(improvement_range),
+    y=revenue_linear,
+    name='Linear Optimization',
+    line=dict(color='#28a745', width=3),
+    mode='lines+markers',
+    hovertemplate='Linear Opt<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+))
 
 fig_sensitivity.update_layout(
-    title="Revenue Sensitivity: Threshold vs Rolling Window Strategies",
+    title="Revenue Sensitivity: All Strategies vs Forecast Improvement",
     xaxis_title="Forecast Improvement (%)",
     yaxis_title="Revenue ($)",
     height=500,
-    hovermode='x unified'
+    hovermode='x unified',
+    legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01)
 )
 
 st.plotly_chart(fig_sensitivity, width="stretch")
@@ -151,7 +189,7 @@ st.plotly_chart(fig_sensitivity, width="stretch")
 
 st.markdown("### Strategy Comparison Insights")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("**Threshold-Based Strategy:**")
@@ -180,6 +218,20 @@ with col2:
 
     st.metric("Revenue Range",
              f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
+
+with col3:
+    st.markdown("**Linear Optimization:**")
+    # Check if monotonic
+    linear_diffs = [revenue_linear[i+1] - revenue_linear[i] for i in range(len(revenue_linear)-1)]
+    negative_changes_linear = sum(1 for d in linear_diffs if d < 0)
+
+    if negative_changes_linear > 0:
+        st.warning(f"⚠️ Non-monotonic: {negative_changes_linear} instances where improvement REDUCED revenue")
+    else:
+        st.success("✓ Monotonic improvement")
+
+    st.metric("Revenue Range",
+             f"${min(revenue_linear):,.0f} to ${max(revenue_linear):,.0f}")
 
 # ============================================================================
 # KEY INSIGHTS
@@ -245,11 +297,11 @@ with col2:
 st.markdown("---")
 st.subheader("Revenue Capture Potential")
 
-# Current settings revenue
+# Current settings revenue (using Linear Optimization as the true optimal benchmark)
 current_idx = state.forecast_improvement // 10
-baseline_revenue = revenue_rolling_window[0]
-current_revenue = revenue_rolling_window[current_idx]
-max_revenue = revenue_rolling_window[-1]
+baseline_revenue = revenue_linear[0]  # LP at 0% improvement
+current_revenue = revenue_linear[current_idx]  # LP at current improvement
+max_revenue = revenue_linear[-1]  # LP at 100% (perfect foresight)
 
 captured = current_revenue - baseline_revenue
 remaining = max_revenue - current_revenue
@@ -259,9 +311,9 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Baseline Revenue",
+        "Baseline Revenue (LP)",
         f"${baseline_revenue:,.0f}",
-        help="Revenue with 0% forecast improvement (DA only)"
+        help="Linear Optimization revenue with 0% forecast improvement (DA only)"
     )
 
 with col2:
@@ -269,14 +321,15 @@ with col2:
         f"Current Revenue (+{state.forecast_improvement}%)",
         f"${current_revenue:,.0f}",
         delta=f"+${captured:,.0f}",
-        help=f"Revenue with {state.forecast_improvement}% forecast improvement"
+        help=f"Linear Optimization revenue with {state.forecast_improvement}% forecast improvement"
     )
 
 with col3:
     st.metric(
-        "Remaining Opportunity",
-        f"${remaining:,.0f}",
-        help="Additional revenue possible with perfect forecast"
+        "Perfect Foresight Max",
+        f"${max_revenue:,.0f}",
+        delta=f"+${remaining:,.0f} remaining",
+        help="Linear Optimization at 100% (theoretical maximum)"
     )
 
 with col4:
@@ -284,7 +337,7 @@ with col4:
     st.metric(
         "Capture Rate",
         f"{capture_pct:.1f}%",
-        help="Percentage of total opportunity captured"
+        help="Percentage of total forecast improvement opportunity captured"
     )
 
 # ============================================================================
