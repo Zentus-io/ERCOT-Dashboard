@@ -319,7 +319,7 @@ class LinearOptimizationStrategy(DispatchStrategy):
         from scipy import sparse
         
         # Prepare data
-        prices = (price_df['price_mwh_da'] + price_df['forecast_error'] * improvement_factor).values
+        prices = (price_df['price_mwh_da'] + price_df['forecast_error'] * improvement_factor).to_numpy()
         n_steps = len(prices)
         
         # Determine time interval (dt) and store for use in decide()
@@ -434,7 +434,7 @@ class LinearOptimizationStrategy(DispatchStrategy):
             self._run_optimization(battery, price_df, improvement_factor)
             
         # Get planned action
-        if current_idx < len(self._dispatch_plan):
+        if self._dispatch_plan is not None and current_idx < len(self._dispatch_plan):
             charge_mw = self._dispatch_plan.iloc[current_idx]['charge_mw']
             discharge_mw = self._dispatch_plan.iloc[current_idx]['discharge_mw']
         else:
