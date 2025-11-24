@@ -285,13 +285,12 @@ def render_sidebar():
 
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
-        options=["Threshold-Based", "Rolling Window Optimization", "Linear Optimization"],
+        options=["Threshold-Based", "Rolling Window Optimization"],
         index={
             "Threshold-Based": 0,
-            "Rolling Window Optimization": 1,
-            "Linear Optimization": 2
+            "Rolling Window Optimization": 1
         }.get(state.strategy_type, 0),
-        help="Choose the battery dispatch optimization approach"
+        help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page)."
     )
 
     if strategy_type != state.strategy_type:
@@ -339,6 +338,24 @@ def render_sidebar():
         if window != state.window_hours:
             update_state(window_hours=window)
             clear_simulation_cache()
+
+    # ========================================================================
+    # FORECAST IMPROVEMENT (placed right after strategy parameters)
+    # ========================================================================
+    st.sidebar.markdown("**Forecast Scenario:**")
+
+    forecast_improvement = st.sidebar.slider(
+        "Forecast Accuracy Improvement (%):",
+        min_value=0,
+        max_value=100,
+        value=state.forecast_improvement,
+        step=10,
+        help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
+    )
+
+    if forecast_improvement != state.forecast_improvement:
+        update_state(forecast_improvement=forecast_improvement)
+        clear_simulation_cache()
 
     # ========================================================================
     # BATTERY SPECIFICATIONS
@@ -440,24 +457,6 @@ def render_sidebar():
 
     if state.battery_specs != new_specs:
         update_state(battery_specs=new_specs)
-        clear_simulation_cache()
-
-    # ========================================================================
-    # FORECAST IMPROVEMENT
-    # ========================================================================
-    st.sidebar.subheader("Forecast Improvement Scenario")
-
-    forecast_improvement = st.sidebar.slider(
-        "Forecast Accuracy Improvement (%):",
-        min_value=0,
-        max_value=100,
-        value=state.forecast_improvement,
-        step=10,
-        help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
-    )
-
-    if forecast_improvement != state.forecast_improvement:
-        update_state(forecast_improvement=forecast_improvement)
         clear_simulation_cache()
 
     # ========================================================================

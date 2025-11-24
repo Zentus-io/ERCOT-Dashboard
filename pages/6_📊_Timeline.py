@@ -76,8 +76,8 @@ if state.battery_specs is None:
 from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
-    baseline_result, improved_result, optimal_result = run_or_get_cached_simulation()
-    
+    baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
+
     if baseline_result is None:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
@@ -102,15 +102,16 @@ view_mode = st.radio(
 if view_mode == "Detailed (Hourly)":
     # Create figure with subplots for each strategy
     fig_timeline = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         subplot_titles=(
             "Baseline (DA Only)",
             f"Improved (+{state.forecast_improvement}%)",
-            "Theoretical Maximum"
+            "Strategy Max (100%)",
+            "LP Benchmark (Theoretical Max)"
         ),
         shared_xaxes=True,
-        vertical_spacing=0.1,
-        row_heights=[0.33, 0.33, 0.33]
+        vertical_spacing=0.08,
+        row_heights=[0.25, 0.25, 0.25, 0.25]
     )
 
     # Define colors for actions
@@ -186,32 +187,34 @@ if view_mode == "Detailed (Hourly)":
     add_dispatch_bars(fig_timeline, baseline_result.dispatch_df, 1, state.battery_specs.power_mw)
     add_dispatch_bars(fig_timeline, improved_result.dispatch_df, 2, state.battery_specs.power_mw)
     add_dispatch_bars(fig_timeline, optimal_result.dispatch_df, 3, state.battery_specs.power_mw)
+    add_dispatch_bars(fig_timeline, theoretical_max_result.dispatch_df, 4, state.battery_specs.power_mw)
 
     fig_timeline.update_layout(
-        height=600,
+        height=800,
         barmode='stack',
         bargap=0.1,
-        title_text=f"Battery Dispatch Timeline - {state.strategy_type}",
+        title_text=f"Battery Dispatch Timeline - {state.strategy_type} vs LP Benchmark",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
 
     # Fix y-axis range to [0, 1] for accurate visual proportions
     fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False)
-    fig_timeline.update_xaxes(title_text="Time", row=3, col=1)
+    fig_timeline.update_xaxes(title_text="Time", row=4, col=1)
 
 else:
     # Daily Aggregation View
     fig_timeline = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         subplot_titles=(
             "Baseline (DA Only)",
             f"Improved (+{state.forecast_improvement}%)",
-            "Theoretical Maximum"
+            "Strategy Max (100%)",
+            "LP Benchmark (Theoretical Max)"
         ),
         shared_xaxes=True,
-        vertical_spacing=0.1,
-        row_heights=[0.33, 0.33, 0.33]
+        vertical_spacing=0.08,
+        row_heights=[0.25, 0.25, 0.25, 0.25]
     )
 
     def add_daily_bars(fig, dispatch_df, row_num):
@@ -246,11 +249,12 @@ else:
     add_daily_bars(fig_timeline, baseline_result.dispatch_df, 1)
     add_daily_bars(fig_timeline, improved_result.dispatch_df, 2)
     add_daily_bars(fig_timeline, optimal_result.dispatch_df, 3)
+    add_daily_bars(fig_timeline, theoretical_max_result.dispatch_df, 4)
 
     fig_timeline.update_layout(
-        height=600,
+        height=800,
         barmode='group',
-        title_text=f"Daily Aggregated Dispatch - {state.strategy_type}",
+        title_text=f"Daily Aggregated Dispatch - {state.strategy_type} vs LP Benchmark",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
@@ -317,33 +321,69 @@ st.plotly_chart(fig_price_dispatch, width="stretch")
 st.markdown("---")
 st.subheader("Decision Summary Statistics")
 
-col1, col2, col3 = st.columns(3)
+# Two main sections: Improved Forecast and LP Benchmark
+section1, section2 = st.columns(2)
 
-with col1:
-    st.metric("Charge Count", improved_result.charge_count)
-    if improved_result.charge_count > 0:
-        avg_charge_price = charge_times['actual_price'].mean()
-        st.caption(f"Avg charge price: ${avg_charge_price:.2f}/MWh")
-    else:
-        st.caption("No charges")
+with section1:
+    st.markdown("#### Improved Forecast")
+    col1, col2, col3 = st.columns(3)
 
-with col2:
-    st.metric("Discharge Count", improved_result.discharge_count)
-    if improved_result.discharge_count > 0:
-        avg_discharge_price = discharge_times['actual_price'].mean()
-        st.caption(f"Avg discharge price: ${avg_discharge_price:.2f}/MWh")
-    else:
-        st.caption("No discharges")
+    with col1:
+        st.metric("Charge Count", improved_result.charge_count)
+        if improved_result.charge_count > 0:
+            avg_charge_price = charge_times['actual_price'].mean()
+            st.caption(f"Avg: ${avg_charge_price:.2f}/MWh")
+        else:
+            st.caption("No charges")
 
-with col3:
-    if improved_result.charge_count > 0 and improved_result.discharge_count > 0:
-        avg_charge_price = charge_times['actual_price'].mean()
-        avg_discharge_price = discharge_times['actual_price'].mean()
-        spread = avg_discharge_price - avg_charge_price
-        st.metric("Avg Price Spread", f"${spread:.2f}/MWh")
-        st.caption("Theoretical gain per cycle")
-    else:
-        st.metric("Avg Price Spread", "N/A")
+    with col2:
+        st.metric("Discharge Count", improved_result.discharge_count)
+        if improved_result.discharge_count > 0:
+            avg_discharge_price = discharge_times['actual_price'].mean()
+            st.caption(f"Avg: ${avg_discharge_price:.2f}/MWh")
+        else:
+            st.caption("No discharges")
+
+    with col3:
+        if improved_result.charge_count > 0 and improved_result.discharge_count > 0:
+            avg_charge_price = charge_times['actual_price'].mean()
+            avg_discharge_price = discharge_times['actual_price'].mean()
+            spread = avg_discharge_price - avg_charge_price
+            st.metric("Price Spread", f"${spread:.2f}/MWh")
+        else:
+            st.metric("Price Spread", "N/A")
+
+with section2:
+    st.markdown("#### LP Benchmark")
+    col4, col5, col6 = st.columns(3)
+
+    lp_charge_times = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'charge']
+    lp_discharge_times = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
+
+    with col4:
+        st.metric("Charge Count", theoretical_max_result.charge_count)
+        if len(lp_charge_times) > 0:
+            lp_avg_charge = lp_charge_times['actual_price'].mean()
+            st.caption(f"Avg: ${lp_avg_charge:.2f}/MWh")
+        else:
+            st.caption("No charges")
+
+    with col5:
+        st.metric("Discharge Count", theoretical_max_result.discharge_count)
+        if len(lp_discharge_times) > 0:
+            lp_avg_discharge = lp_discharge_times['actual_price'].mean()
+            st.caption(f"Avg: ${lp_avg_discharge:.2f}/MWh")
+        else:
+            st.caption("No discharges")
+
+    with col6:
+        if len(lp_charge_times) > 0 and len(lp_discharge_times) > 0:
+            lp_avg_charge = lp_charge_times['actual_price'].mean()
+            lp_avg_discharge = lp_discharge_times['actual_price'].mean()
+            lp_spread = lp_avg_discharge - lp_avg_charge
+            st.metric("Price Spread", f"${lp_spread:.2f}/MWh")
+        else:
+            st.metric("Price Spread", "N/A")
 
 # ============================================================================
 # FOOTER

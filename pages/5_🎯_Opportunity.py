@@ -71,7 +71,12 @@ if state.battery_specs is None:
 # SENSITIVITY ANALYSIS
 # ============================================================================
 
-st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
+st.subheader("Impact of Forecast Accuracy on Revenue")
+
+st.info("""
+**Chart Guide:** The green LP Benchmark line represents the **theoretical maximum** achievable with perfect hindsight.
+The gap between your selected strategy and LP shows potential gains from strategy improvements.
+""")
 
 # Reduce points for performance (0, 10, 20... 100)
 @st.cache_data(ttl=3600, show_spinner="Running sensitivity analysis...")
@@ -162,18 +167,18 @@ fig_sensitivity.add_trace(go.Scatter(
     hovertemplate='Rolling Window<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
 
-# Linear Optimization curve (upper bound at each improvement level)
+# LP Benchmark curve (theoretical upper bound at each improvement level)
 fig_sensitivity.add_trace(go.Scatter(
     x=list(improvement_range),
     y=revenue_linear,
-    name='Linear Optimization',
+    name='LP Benchmark (Theoretical Max)',
     line=dict(color='#28a745', width=3),
     mode='lines+markers',
-    hovertemplate='Linear Opt<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+    hovertemplate='LP Benchmark<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
 
 fig_sensitivity.update_layout(
-    title="Revenue Sensitivity: All Strategies vs Forecast Improvement",
+    title="Revenue Sensitivity: Practical Strategies vs LP Benchmark",
     xaxis_title="Forecast Improvement (%)",
     yaxis_title="Revenue ($)",
     height=500,
@@ -220,7 +225,7 @@ with col2:
              f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
 
 with col3:
-    st.markdown("**Linear Optimization:**")
+    st.markdown("**LP Benchmark (Theoretical):**")
     # Check if monotonic
     linear_diffs = [revenue_linear[i+1] - revenue_linear[i] for i in range(len(revenue_linear)-1)]
     negative_changes_linear = sum(1 for d in linear_diffs if d < 0)
@@ -232,6 +237,7 @@ with col3:
 
     st.metric("Revenue Range",
              f"${min(revenue_linear):,.0f} to ${max(revenue_linear):,.0f}")
+    st.caption("Upper bound for any strategy")
 
 # ============================================================================
 # KEY INSIGHTS
@@ -295,49 +301,54 @@ with col2:
 # ============================================================================
 
 st.markdown("---")
-st.subheader("Revenue Capture Potential")
+st.subheader("LP Benchmark Analysis")
 
-# Current settings revenue (using Linear Optimization as the true optimal benchmark)
+st.info("""
+This section shows how revenue improves along the **LP Benchmark curve** as forecast accuracy increases.
+The LP benchmark represents the theoretical maximum at each improvement level.
+""")
+
+# Current settings revenue (using LP Benchmark as the true optimal)
 current_idx = state.forecast_improvement // 10
-baseline_revenue = revenue_linear[0]  # LP at 0% improvement
-current_revenue = revenue_linear[current_idx]  # LP at current improvement
-max_revenue = revenue_linear[-1]  # LP at 100% (perfect foresight)
+baseline_revenue_lp = revenue_linear[0]  # LP at 0% improvement
+current_revenue_lp = revenue_linear[current_idx]  # LP at current improvement
+max_revenue_lp = revenue_linear[-1]  # LP at 100% (perfect foresight)
 
-captured = current_revenue - baseline_revenue
-remaining = max_revenue - current_revenue
-total_opportunity = max_revenue - baseline_revenue
+captured = current_revenue_lp - baseline_revenue_lp
+remaining = max_revenue_lp - current_revenue_lp
+total_opportunity = max_revenue_lp - baseline_revenue_lp
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Baseline Revenue (LP)",
-        f"${baseline_revenue:,.0f}",
-        help="Linear Optimization revenue with 0% forecast improvement (DA only)"
+        "LP @ 0% (DA Only)",
+        f"${baseline_revenue_lp:,.0f}",
+        help="LP Benchmark revenue using only day-ahead forecasts"
     )
 
 with col2:
     st.metric(
-        f"Current Revenue (+{state.forecast_improvement}%)",
-        f"${current_revenue:,.0f}",
+        f"LP @ {state.forecast_improvement}%",
+        f"${current_revenue_lp:,.0f}",
         delta=f"+${captured:,.0f}",
-        help=f"Linear Optimization revenue with {state.forecast_improvement}% forecast improvement"
+        help=f"LP Benchmark revenue with {state.forecast_improvement}% forecast improvement"
     )
 
 with col3:
     st.metric(
-        "Perfect Foresight Max",
-        f"${max_revenue:,.0f}",
+        "LP @ 100% (Perfect)",
+        f"${max_revenue_lp:,.0f}",
         delta=f"+${remaining:,.0f} remaining",
-        help="Linear Optimization at 100% (theoretical maximum)"
+        help="LP Benchmark at 100% (absolute theoretical maximum)"
     )
 
 with col4:
     capture_pct = (captured / total_opportunity * 100) if total_opportunity != 0 else 0
     st.metric(
-        "Capture Rate",
+        "LP Capture Rate",
         f"{capture_pct:.1f}%",
-        help="Percentage of total forecast improvement opportunity captured"
+        help="Percentage of LP improvement potential captured at current forecast level"
     )
 
 # ============================================================================
