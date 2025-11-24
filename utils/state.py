@@ -181,6 +181,22 @@ def clear_data_cache():
     clear_simulation_cache()  # Also clear simulations since data changed
 
 
+def clear_all_caches():
+    """
+    Clear both state caches and Streamlit @st.cache_data decorators.
+
+    This is a comprehensive cache clear that ensures all cached data and
+    simulations are invalidated, forcing fresh data loads and computations.
+    Use this when you need to guarantee a complete refresh.
+    """
+    # Clear state-level caches
+    clear_simulation_cache()
+    clear_data_cache()
+
+    # Force clear all Streamlit @st.cache_data decorated functions
+    st.cache_data.clear()
+
+
 def has_valid_config() -> bool:
     """
     Check if app has valid configuration to run simulations.

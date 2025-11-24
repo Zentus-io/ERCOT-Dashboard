@@ -1,7 +1,37 @@
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor
 from utils.state import get_state
 from core.battery.simulator import BatterySimulator
 from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy
+
+
+def _should_rerun_simulation(scenario: str) -> bool:
+    """
+    Determine if a specific scenario needs to be rerun based on what parameters changed.
+
+    Parameters
+    ----------
+    scenario : str
+        One of: 'baseline', 'improved', 'optimal', 'theoretical_max'
+
+    Returns
+    -------
+    bool
+        True if simulation should be rerun
+    """
+    state = get_state()
+
+    # If not cached at all, needs to run
+    if state.simulation_results.get(scenario) is None:
+        return True
+
+    # Theoretical max (LP) only depends on battery specs and data, not strategy params
+    if scenario == 'theoretical_max':
+        return state.simulation_results['theoretical_max'] is None
+
+    # All other scenarios depend on strategy parameters
+    return False
+
 
 def run_or_get_cached_simulation():
     """
@@ -51,30 +81,65 @@ def run_or_get_cached_simulation():
 
     simulator = BatterySimulator(state.battery_specs)
 
-    # Select practical dispatch strategy (LP is only used as benchmark, not a selectable strategy)
-    if state.strategy_type == "Rolling Window Optimization":
-        strategy_baseline = RollingWindowStrategy(state.window_hours)
-        strategy_improved = RollingWindowStrategy(state.window_hours)
-        strategy_optimal = RollingWindowStrategy(state.window_hours)
-    else:  # Threshold-Based (default)
-        strategy_baseline = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_improved = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_optimal = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
+    # Determine which simulations need to run
+    scenarios_to_run = {}
 
-    # Run simulations for the selected practical strategy
-    baseline_result = simulator.run(node_data, strategy_baseline, improvement_factor=0.0)
-    improved_result = simulator.run(node_data, strategy_improved, improvement_factor=state.forecast_improvement/100)
-    optimal_result = simulator.run(node_data, strategy_optimal, improvement_factor=1.0)
+    # Check each scenario
+    if _should_rerun_simulation('baseline'):
+        scenarios_to_run['baseline'] = ('baseline', 0.0)
+    if _should_rerun_simulation('improved'):
+        scenarios_to_run['improved'] = ('improved', state.forecast_improvement/100)
+    if _should_rerun_simulation('optimal'):
+        scenarios_to_run['optimal'] = ('optimal', 1.0)
+    if _should_rerun_simulation('theoretical_max'):
+        scenarios_to_run['theoretical_max'] = ('theoretical_max', 1.0)
 
-    # Run theoretical maximum benchmark (LP with perfect foresight)
-    # This is always calculated regardless of selected strategy to provide an absolute upper bound
-    strategy_theoretical = LinearOptimizationStrategy()
-    theoretical_max_result = simulator.run(node_data, strategy_theoretical, improvement_factor=1.0)
+    # If nothing needs to run, return cached results
+    if not scenarios_to_run:
+        return (
+            state.simulation_results['baseline'],
+            state.simulation_results['improved'],
+            state.simulation_results['optimal'],
+            state.simulation_results['theoretical_max']
+        )
 
-    # Update cache
-    state.simulation_results['baseline'] = baseline_result
-    state.simulation_results['improved'] = improved_result
-    state.simulation_results['optimal'] = optimal_result
-    state.simulation_results['theoretical_max'] = theoretical_max_result
+    # Define simulation task function
+    def run_single_simulation(scenario_name, improvement_factor):
+        """Run a single simulation scenario."""
+        # Create strategy instance
+        if scenario_name == 'theoretical_max':
+            strategy = LinearOptimizationStrategy()
+        elif state.strategy_type == "Rolling Window Optimization":
+            strategy = RollingWindowStrategy(state.window_hours)
+        else:  # Threshold-Based
+            strategy = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
 
-    return baseline_result, improved_result, optimal_result, theoretical_max_result
+        # Run simulation
+        return simulator.run(node_data, strategy, improvement_factor=improvement_factor)
+
+    # Run simulations in parallel
+    if len(scenarios_to_run) > 1:
+        # Parallel execution for multiple scenarios
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # Submit all tasks
+            futures = {}
+            for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
+                future = executor.submit(run_single_simulation, scenario_name, improvement_factor)
+                futures[scenario_name] = future
+
+            # Collect results
+            for scenario_name, future in futures.items():
+                result = future.result()
+                state.simulation_results[scenario_name] = result
+    else:
+        # Single scenario - run directly (no need for parallel)
+        for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
+            result = run_single_simulation(scenario_name, improvement_factor)
+            state.simulation_results[scenario_name] = result
+
+    return (
+        state.simulation_results['baseline'],
+        state.simulation_results['improved'],
+        state.simulation_results['optimal'],
+        state.simulation_results['theoretical_max']
+    )
