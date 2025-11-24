@@ -60,8 +60,8 @@ class AppState:
     # Battery configuration
     battery_specs: Optional[BatterySpecs] = None
 
-    # Strategy settings
-    strategy_type: str = "Threshold-Based"
+    # Strategy settings (practical dispatch strategies only - LP is used as benchmark, not a strategy)
+    strategy_type: str = "Threshold-Based"  # Options: "Threshold-Based", "Rolling Window Optimization"
     charge_percentile: float = 0.25
     discharge_percentile: float = 0.75
     window_hours: int = 6
@@ -76,10 +76,15 @@ class AppState:
     data_source: str = DEFAULT_DATA_SOURCE  # 'csv' or 'database'
 
     # Simulation results (cached)
+    # - baseline: selected strategy @ 0% forecast improvement (DA only)
+    # - improved: selected strategy @ X% forecast improvement (slider value)
+    # - optimal: selected strategy @ 100% forecast improvement (perfect forecast for that strategy)
+    # - theoretical_max: LP @ 100% (absolute theoretical maximum - hindsight benchmark)
     simulation_results: Dict[str, Optional[SimulationResult]] = field(default_factory=lambda: {
         'baseline': None,
         'improved': None,
-        'optimal': None
+        'optimal': None,
+        'theoretical_max': None
     })
     # Data caches
     price_data: Optional[pd.DataFrame] = None
@@ -89,6 +94,7 @@ class AppState:
 
     # Cache tracking
     _data_cache_key: Optional[str] = None  # Track what data is currently cached
+    _dates_auto_selected: bool = False  # Track if dates were auto-selected (vs manually set)
 
 
 
@@ -158,7 +164,8 @@ def clear_simulation_cache():
     state.simulation_results = {
         'baseline': None,
         'improved': None,
-        'optimal': None
+        'optimal': None,
+        'theoretical_max': None
     }
 
 

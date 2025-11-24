@@ -74,8 +74,8 @@ if state.battery_specs is None:
 from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
-    baseline_result, improved_result, optimal_result = run_or_get_cached_simulation()
-    
+    baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
+
     if baseline_result is None:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
@@ -88,11 +88,21 @@ st.subheader("Cumulative Revenue Comparison")
 
 fig_revenue = go.Figure()
 
+# LP Benchmark (theoretical max)
+fig_revenue.add_trace(go.Scatter(
+    x=theoretical_max_result.dispatch_df['timestamp'],
+    y=theoretical_max_result.dispatch_df['cumulative_revenue'],
+    name='LP Benchmark (Theoretical Max)',
+    line=dict(color='#28A745', width=3),
+    hovertemplate='$%{y:,.0f}<extra></extra>'
+))
+
+# Strategy Max (selected strategy with perfect forecast)
 fig_revenue.add_trace(go.Scatter(
     x=optimal_result.dispatch_df['timestamp'],
     y=optimal_result.dispatch_df['cumulative_revenue'],
-    name='Optimal (Perfect Foresight)',
-    line=dict(color='#28A745', width=3),
+    name='Strategy Max (100% Forecast)',
+    line=dict(color='#0A5F7A', width=2.5),
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -100,7 +110,7 @@ fig_revenue.add_trace(go.Scatter(
     x=improved_result.dispatch_df['timestamp'],
     y=improved_result.dispatch_df['cumulative_revenue'],
     name=f'Improved Forecast (+{state.forecast_improvement}%)',
-    line=dict(color='#FFC107', width=2.5),
+    line=dict(color='#FFC107', width=2),
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -136,12 +146,14 @@ st.subheader("Revenue Breakdown")
 baseline_revenue = baseline_result.total_revenue
 improved_revenue = improved_result.total_revenue
 optimal_revenue = optimal_result.total_revenue
+theoretical_max_revenue = theoretical_max_result.total_revenue
 
 opportunity_vs_baseline = improved_revenue - baseline_revenue
 improvement_pct = (opportunity_vs_baseline / abs(baseline_revenue)) * 100 if baseline_revenue != 0 else 0
 max_opportunity = optimal_revenue - baseline_revenue
+strategy_capture_pct = (optimal_revenue / theoretical_max_revenue * 100) if theoretical_max_revenue > 0 else 0
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric("Baseline (DA only)", f"${baseline_revenue:,.2f}")
@@ -159,13 +171,24 @@ with col2:
 
 with col3:
     st.metric(
-        "Optimal (Perfect)",
+        "Strategy Max (100%)",
         f"${optimal_revenue:,.2f}",
         delta=f"+${max_opportunity:,.2f}" if max_opportunity >= 0 else f"${max_opportunity:,.2f}"
     )
     st.caption(f"Max opportunity: ${max_opportunity:,.2f}")
     captured_pct = (opportunity_vs_baseline / max_opportunity * 100) if max_opportunity != 0 else 0
     st.caption(f"Captured: {captured_pct:.1f}%")
+
+with col4:
+    gap_to_theoretical = theoretical_max_revenue - optimal_revenue
+    st.metric(
+        "LP Benchmark",
+        f"${theoretical_max_revenue:,.2f}",
+        delta=f"{strategy_capture_pct:.1f}% captured",
+        delta_color="off"
+    )
+    st.caption(f"Strategy gap: ${gap_to_theoretical:,.2f}")
+    st.caption("Theoretical maximum")
 
 # ============================================================================
 # DETAILED METRICS
@@ -174,10 +197,10 @@ with col3:
 st.markdown("---")
 st.subheader("Detailed Financial Metrics")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.markdown("**Baseline Scenario**")
+    st.markdown("**Baseline (DA Only)**")
     st.metric("Total Charge Cost", f"${baseline_result.charge_cost:,.0f}")
     st.metric("Total Discharge Revenue", f"${baseline_result.discharge_revenue:,.0f}")
     st.metric("Net Revenue", f"${baseline_revenue:,.0f}")
@@ -195,7 +218,7 @@ with col1:
         st.metric("Avg Discharge Price", f"${avg_discharge_price:.2f}/MWh")
 
 with col2:
-    st.markdown(f"**Improved Scenario (+{state.forecast_improvement}%)**")
+    st.markdown(f"**Improved (+{state.forecast_improvement}%)**")
     st.metric("Total Charge Cost", f"${improved_result.charge_cost:,.0f}")
     st.metric("Total Discharge Revenue", f"${improved_result.discharge_revenue:,.0f}")
     st.metric("Net Revenue", f"${improved_revenue:,.0f}")
@@ -213,7 +236,7 @@ with col2:
         st.metric("Avg Discharge Price", f"${avg_discharge_price:.2f}/MWh")
 
 with col3:
-    st.markdown("**Optimal Scenario (Perfect)**")
+    st.markdown("**Strategy Max (100%)**")
     st.metric("Total Charge Cost", f"${optimal_result.charge_cost:,.0f}")
     st.metric("Total Discharge Revenue", f"${optimal_result.discharge_revenue:,.0f}")
     st.metric("Net Revenue", f"${optimal_revenue:,.0f}")
@@ -228,6 +251,24 @@ with col3:
 
     if len(optimal_discharge_df) > 0:
         avg_discharge_price = optimal_discharge_df['actual_price'].mean()
+        st.metric("Avg Discharge Price", f"${avg_discharge_price:.2f}/MWh")
+
+with col4:
+    st.markdown("**LP Benchmark**")
+    st.metric("Total Charge Cost", f"${theoretical_max_result.charge_cost:,.0f}")
+    st.metric("Total Discharge Revenue", f"${theoretical_max_result.discharge_revenue:,.0f}")
+    st.metric("Net Revenue", f"${theoretical_max_revenue:,.0f}")
+
+    # Calculate average prices
+    theoretical_charge_df = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'charge']
+    theoretical_discharge_df = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
+
+    if len(theoretical_charge_df) > 0:
+        avg_charge_price = theoretical_charge_df['actual_price'].mean()
+        st.metric("Avg Charge Price", f"${avg_charge_price:.2f}/MWh")
+
+    if len(theoretical_discharge_df) > 0:
+        avg_discharge_price = theoretical_discharge_df['actual_price'].mean()
         st.metric("Avg Discharge Price", f"${avg_discharge_price:.2f}/MWh")
 
 # ============================================================================

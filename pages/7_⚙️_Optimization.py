@@ -13,7 +13,10 @@ from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from utils.state import get_state, has_valid_config
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
+from core.battery.strategies import (
+    ThresholdStrategy,
+    RollingWindowStrategy
+)
 from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
@@ -68,23 +71,23 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
+from utils.simulation_runner import run_or_get_cached_simulation
+
 with st.spinner('Running battery simulations...'):
-    simulator = BatterySimulator(state.battery_specs)
+    baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
 
-    # Select strategy
-    if state.strategy_type == "Rolling Window Optimization":
-        strategy_baseline = RollingWindowStrategy(state.window_hours)
-        strategy_improved = RollingWindowStrategy(state.window_hours)
-        strategy_optimal = RollingWindowStrategy(state.window_hours)
-    else:  # Threshold-Based
-        strategy_baseline = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_improved = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-        strategy_optimal = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
+    if baseline_result is None:
+        st.error("⚠️ Failed to run simulations. Please check data availability.")
+        st.stop()
 
-    # Run simulations for each scenario
-    baseline_result = simulator.run(node_data, strategy_baseline, improvement_factor=0.0)
-    improved_result = simulator.run(node_data, strategy_improved, improvement_factor=state.forecast_improvement/100)
-    optimal_result = simulator.run(node_data, strategy_optimal, improvement_factor=1.0)
+# Strategy Selection (from Sidebar)
+strategy_name = state.strategy_type
+st.info(f"**Current Strategy:** {strategy_name} | **LP Benchmark** always shown as theoretical maximum")
+
+if strategy_name == "Threshold-Based":
+    st.markdown("Simple logic: Charge when price < Xth percentile, Discharge when price > Yth percentile.")
+elif strategy_name == "Rolling Window Optimization":
+    st.markdown(f"Looks ahead {state.window_hours} hours to find local minima/maxima.")
 
 # ============================================================================
 # STRATEGY-SPECIFIC ANALYSIS
@@ -310,16 +313,44 @@ else:
         st.caption("This gap represents the remaining opportunity from better forecasting")
 
 # ============================================================================
+# LP BENCHMARK COMPARISON
+# ============================================================================
+
+st.markdown("---")
+st.subheader("LP Benchmark (Theoretical Maximum)")
+
+st.info("""
+**Linear Programming Benchmark** uses perfect hindsight to find the mathematically optimal dispatch.
+This is NOT a deployable strategy - it requires knowing all future prices. It serves as a **theoretical upper bound**
+to evaluate how well your practical strategies perform.
+""")
+
+# Show LP benchmark details
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown("#### LP Mathematical Formulation")
+    st.latex(r"\text{Maximize: } \sum_{t} \left( P_t^{discharge} - P_t^{charge} \right) \times price_t \times \Delta t")
+    st.markdown("**Subject to:** SOC limits, power limits, energy balance with efficiency")
+
+with col2:
+    st.markdown("#### LP Benchmark Results")
+    strategy_capture = (optimal_result.total_revenue / theoretical_max_result.total_revenue * 100) if theoretical_max_result.total_revenue > 0 else 0
+    gap = theoretical_max_result.total_revenue - optimal_result.total_revenue
+    st.metric("LP Max Revenue", f"${theoretical_max_result.total_revenue:,.0f}")
+    st.metric("Your Strategy Captures", f"{strategy_capture:.1f}%")
+    st.metric("Gap to Theoretical Max", f"${gap:,.0f}")
+
+# ============================================================================
 # COMPARATIVE PERFORMANCE METRICS
 # ============================================================================
 
 st.markdown("---")
 st.subheader("Comparative Performance Metrics")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.markdown("**Baseline Performance**")
+    st.markdown("**Baseline (DA Only)**")
     st.metric("Revenue", f"${baseline_result.total_revenue:,.0f}")
     st.metric("Total Actions", baseline_result.charge_count + baseline_result.discharge_count)
     efficiency_baseline = (baseline_result.total_revenue / baseline_result.discharge_revenue * 100) if baseline_result.discharge_revenue > 0 else 0
@@ -327,7 +358,7 @@ with col1:
     st.caption("Revenue / Discharge Revenue")
 
 with col2:
-    st.markdown(f"**Improved Performance (+{state.forecast_improvement}%)**")
+    st.markdown(f"**Improved (+{state.forecast_improvement}%)**")
     st.metric("Revenue", f"${improved_result.total_revenue:,.0f}")
     st.metric("Total Actions", improved_result.charge_count + improved_result.discharge_count)
     efficiency_improved = (improved_result.total_revenue / improved_result.discharge_revenue * 100) if improved_result.discharge_revenue > 0 else 0
@@ -335,12 +366,20 @@ with col2:
     st.caption("Revenue / Discharge Revenue")
 
 with col3:
-    st.markdown("**Optimal Performance**")
+    st.markdown("**Strategy Max (100%)**")
     st.metric("Revenue", f"${optimal_result.total_revenue:,.0f}")
     st.metric("Total Actions", optimal_result.charge_count + optimal_result.discharge_count)
     efficiency_optimal = (optimal_result.total_revenue / optimal_result.discharge_revenue * 100) if optimal_result.discharge_revenue > 0 else 0
     st.metric("Efficiency", f"{efficiency_optimal:.1f}%")
     st.caption("Revenue / Discharge Revenue")
+
+with col4:
+    st.markdown("**LP Benchmark**")
+    st.metric("Revenue", f"${theoretical_max_result.total_revenue:,.0f}")
+    st.metric("Total Actions", theoretical_max_result.charge_count + theoretical_max_result.discharge_count)
+    efficiency_lp = (theoretical_max_result.total_revenue / theoretical_max_result.discharge_revenue * 100) if theoretical_max_result.discharge_revenue > 0 else 0
+    st.metric("Efficiency", f"{efficiency_lp:.1f}%")
+    st.caption("Theoretical maximum")
 
 # ============================================================================
 # FOOTER

@@ -76,8 +76,8 @@ if state.battery_specs is None:
 from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
-    baseline_result, improved_result, optimal_result = run_or_get_cached_simulation()
-    
+    baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
+
     if baseline_result is None:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
@@ -91,7 +91,22 @@ st.subheader("Battery State of Charge")
 fig_soc = go.Figure()
 
 # Create sorted dataframes for each scenario to ensure chronological plotting
-# Optimal strategy
+# LP Benchmark (theoretical max)
+theoretical_soc_df = pd.DataFrame({
+    'timestamp': theoretical_max_result.soc_timestamps,
+    'soc': theoretical_max_result.soc_values
+}).sort_values('timestamp')
+
+fig_soc.add_trace(go.Scatter(
+    x=theoretical_soc_df['timestamp'],
+    y=theoretical_soc_df['soc'],
+    name='LP Benchmark (Theoretical Max)',
+    line=dict(color='#28A745', width=2.5),
+    hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
+    mode='lines'
+))
+
+# Strategy Max (selected strategy with perfect forecast)
 optimal_soc_df = pd.DataFrame({
     'timestamp': optimal_result.soc_timestamps,
     'soc': optimal_result.soc_values
@@ -100,8 +115,8 @@ optimal_soc_df = pd.DataFrame({
 fig_soc.add_trace(go.Scatter(
     x=optimal_soc_df['timestamp'],
     y=optimal_soc_df['soc'],
-    name='Optimal Strategy (Perfect Foresight)',
-    line=dict(color='#28A745', width=2.5),
+    name='Strategy Max (100% Forecast)',
+    line=dict(color='#0A5F7A', width=2),
     hovertemplate='SOC: %{y:.1f} MWh<extra></extra>',
     mode='lines'
 ))
@@ -166,37 +181,62 @@ st.plotly_chart(fig_soc, width="stretch")
 
 st.subheader("Dispatch Action Distribution")
 
+# Color map for consistency
+dispatch_colors = {
+    'charge': '#28A745',
+    'discharge': '#DC3545',
+    'hold': '#6C757D'
+}
+
+# Row 1: Baseline and Improved
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### Baseline Dispatch Actions")
+    st.markdown("### Baseline (DA Only)")
     dispatch_counts_baseline = baseline_result.dispatch_df['dispatch'].value_counts()
     fig_dispatch_baseline = px.pie(
         values=dispatch_counts_baseline.values,
         names=dispatch_counts_baseline.index,
         title="Distribution of Actions (Baseline)",
-        color_discrete_map={
-            'charge': '#28A745',
-            'discharge': '#DC3545',
-            'hold': '#6C757D'
-        }
+        color_discrete_map=dispatch_colors
     )
     st.plotly_chart(fig_dispatch_baseline, width="stretch")
 
 with col2:
-    st.markdown("### Optimal Dispatch Actions")
+    st.markdown(f"### Improved (+{state.forecast_improvement}%)")
+    dispatch_counts_improved = improved_result.dispatch_df['dispatch'].value_counts()
+    fig_dispatch_improved = px.pie(
+        values=dispatch_counts_improved.values,
+        names=dispatch_counts_improved.index,
+        title="Distribution of Actions (Improved)",
+        color_discrete_map=dispatch_colors
+    )
+    st.plotly_chart(fig_dispatch_improved, width="stretch")
+
+# Row 2: Strategy Max and LP Benchmark
+col3, col4 = st.columns(2)
+
+with col3:
+    st.markdown("### Strategy Max (100%)")
     dispatch_counts_optimal = optimal_result.dispatch_df['dispatch'].value_counts()
     fig_dispatch_optimal = px.pie(
         values=dispatch_counts_optimal.values,
         names=dispatch_counts_optimal.index,
-        title="Distribution of Actions (Optimal)",
-        color_discrete_map={
-            'charge': '#28A745',
-            'discharge': '#DC3545',
-            'hold': '#6C757D'
-        }
+        title="Distribution of Actions (Strategy Max)",
+        color_discrete_map=dispatch_colors
     )
     st.plotly_chart(fig_dispatch_optimal, width="stretch")
+
+with col4:
+    st.markdown("### LP Benchmark")
+    dispatch_counts_lp = theoretical_max_result.dispatch_df['dispatch'].value_counts()
+    fig_dispatch_lp = px.pie(
+        values=dispatch_counts_lp.values,
+        names=dispatch_counts_lp.index,
+        title="Distribution of Actions (LP Benchmark)",
+        color_discrete_map=dispatch_colors
+    )
+    st.plotly_chart(fig_dispatch_lp, width="stretch")
 
 # ============================================================================
 # OPERATIONS SUMMARY
@@ -205,7 +245,7 @@ with col2:
 st.markdown("---")
 st.subheader("Operations Summary")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.markdown("**Baseline (DA Only)**")
@@ -224,11 +264,19 @@ with col2:
     st.metric("Utilization Rate", f"{utilization:.1f}%")
 
 with col3:
-    st.markdown("**Optimal (Perfect)**")
+    st.markdown("**Strategy Max (100%)**")
     st.metric("Charge Events", optimal_result.charge_count)
     st.metric("Discharge Events", optimal_result.discharge_count)
     st.metric("Hold Periods", optimal_result.hold_count)
     utilization = ((optimal_result.charge_count + optimal_result.discharge_count) / len(node_data)) * 100
+    st.metric("Utilization Rate", f"{utilization:.1f}%")
+
+with col4:
+    st.markdown("**LP Benchmark**")
+    st.metric("Charge Events", theoretical_max_result.charge_count)
+    st.metric("Discharge Events", theoretical_max_result.discharge_count)
+    st.metric("Hold Periods", theoretical_max_result.hold_count)
+    utilization = ((theoretical_max_result.charge_count + theoretical_max_result.discharge_count) / len(node_data)) * 100
     st.metric("Utilization Rate", f"{utilization:.1f}%")
 
 # ============================================================================

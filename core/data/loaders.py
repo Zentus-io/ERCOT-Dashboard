@@ -273,9 +273,6 @@ class SupabaseDataLoader:
             return df
             
         except Exception as e:
-            return df
-            
-        except Exception as e:
             st.error(f"Error loading battery data: {e}")
             return pd.DataFrame()
 
@@ -312,14 +309,153 @@ class SupabaseDataLoader:
             return pd.DataFrame()
 
 
+class ParquetDataLoader:
+    """
+    Data loader for local Parquet files with specific schema.
+    """
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        # Hardcoded paths based on user request, but could be dynamic
+        self.dam_path = self.data_dir / 'DAM_Prices' / 'dam_consolidated_2025-01-01_2025-11-23.parquet'
+        self.rtm_path = self.data_dir / 'RTM_Prices' / 'rtm_consolidated_2025-01-01_2025-11-23.parquet'
+
+    def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
+        """Loads and merges DA and RT prices from local Parquet files."""
+        if not self.dam_path.exists() or not self.rtm_path.exists():
+            st.error(f"Parquet files not found in {self.data_dir}")
+            return pd.DataFrame()
+
+        # Load DAM
+        try:
+            dam_df = pd.read_parquet(self.dam_path)
+            if node:
+                dam_df = dam_df[dam_df['SettlementPoint'] == node].copy()
+            else:
+                dam_df = dam_df.copy()
+            
+            # Ensure numeric types for time calculations
+            # Use a new column to avoid any in-place update issues
+            # Handle "HH:MM" format if present
+            dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
+            # Extract hour part (works for "1", "01", "01:00")
+            dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
+            
+            # Drop rows with invalid HourEnding
+            dam_df = dam_df.dropna(subset=['HE_num'])
+            
+            # Convert to integer
+            dam_df['HE_num'] = dam_df['HE_num'].astype(int)
+            
+            # Create timestamp
+            # Convert DeliveryDate to datetime first
+            dam_df['date_dt'] = pd.to_datetime(dam_df['DeliveryDate'], errors='coerce')
+            dam_df = dam_df.dropna(subset=['date_dt'])
+            
+            # Add timedelta (HE 1 -> 00:00, so subtract 1 hour)
+            # Use timedelta arithmetic to be safe
+            dam_df['timestamp'] = dam_df['date_dt'] + pd.to_timedelta(dam_df['HE_num'], unit='h') - pd.Timedelta(hours=1)
+            
+            dam_df = dam_df.rename(columns={
+                'SettlementPoint': 'node',
+                'SettlementPointPrice': 'price_mwh_da'
+            })
+            dam_df = dam_df[['timestamp', 'node', 'price_mwh_da']]
+        except Exception as e:
+            st.error(f"Error loading DAM parquet: {e}")
+            return pd.DataFrame()
+
+        # Load RTM
+        try:
+            rtm_df = pd.read_parquet(self.rtm_path)
+            if node:
+                rtm_df = rtm_df[rtm_df['SettlementPointName'] == node].copy()
+            else:
+                rtm_df = rtm_df.copy()
+            
+            # Ensure numeric types for time calculations
+            rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
+            rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')
+            
+            # Drop rows with invalid time info
+            rtm_df = rtm_df.dropna(subset=['DH_num', 'DI_num'])
+            
+            rtm_df['DH_num'] = rtm_df['DH_num'].astype(int)
+            rtm_df['DI_num'] = rtm_df['DI_num'].astype(int)
+
+            # Create timestamp for RTM
+            rtm_df['date_dt'] = pd.to_datetime(rtm_df['DeliveryDate'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['date_dt'])
+            
+            # DH 1 -> 00:xx, so subtract 1 hour
+            # DI 1 -> xx:00, DI 2 -> xx:15, so subtract 1 interval * 15 min
+            rtm_df['timestamp'] = rtm_df['date_dt'] + \
+                                  pd.to_timedelta(rtm_df['DH_num'], unit='h') - pd.Timedelta(hours=1) + \
+                                  pd.to_timedelta(rtm_df['DI_num'] * 15, unit='min') - pd.Timedelta(minutes=15)
+
+            rtm_df = rtm_df.rename(columns={
+                'SettlementPointName': 'node',
+                'SettlementPointPrice': 'price_mwh_rt'
+            })
+            rtm_df = rtm_df[['timestamp', 'node', 'price_mwh_rt']]
+        except Exception as e:
+            st.error(f"Error loading RTM parquet: {e}")
+            return pd.DataFrame()
+
+        # Merge
+        # RTM is 15-min, DAM is hourly.
+        # We want to keep RTM granularity.
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+        
+        merged = pd.merge(
+            rtm_df,
+            dam_df,
+            left_on=['hour_start', 'node'],
+            right_on=['timestamp', 'node'],
+            suffixes=('', '_dam_drop'),
+            how='left'
+        )
+        
+        # Clean up
+        merged = merged.drop(columns=['hour_start', 'timestamp_dam_drop'], errors='ignore')
+        
+        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
+        merged['price_spread'] = abs(merged['forecast_error'])
+        merged['extreme_event'] = merged['price_spread'] > 10
+        
+        return merged.sort_values(['node', 'timestamp']).reset_index(drop=True)
+
+    def get_available_nodes(self) -> list[str]:
+        """Reads unique nodes from the DAM file (faster than RTM)."""
+        if not self.dam_path.exists():
+            return []
+        try:
+            # Read only the SettlementPoint column to get unique values
+            df = pd.read_parquet(self.dam_path, columns=['SettlementPoint'])
+            return sorted(df['SettlementPoint'].unique().tolist())
+        except Exception as e:
+            st.error(f"Error getting nodes from parquet: {e}")
+            return []
+            
+    def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
+        """Reads min/max date from DAM file."""
+        if not self.dam_path.exists():
+            return None, None
+        try:
+            df = pd.read_parquet(self.dam_path, columns=['DeliveryDate'])
+            dates = pd.to_datetime(df['DeliveryDate'])
+            return dates.min().date(), dates.max().date()
+        except Exception as e:
+            return None, None
+
+
 def load_data(
-    source: Literal['csv', 'database'] = DEFAULT_DATA_SOURCE,
+    source: Literal['csv', 'database', 'local_parquet'] = DEFAULT_DATA_SOURCE,
     node: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     data_dir: Optional[Path] = None
 ) -> pd.DataFrame:
-    """Unified data loading function supporting both CSV and database sources."""
+    """Unified data loading function supporting CSV, database, and local parquet."""
     if source == 'csv':
         if data_dir is None:
             data_dir = Path(__file__).parent.parent.parent / 'data'
@@ -330,7 +466,18 @@ def load_data(
         return df
     elif source == 'database':
         loader = SupabaseDataLoader()
-        # In DB mode, the node filter is applied in the SQL query itself
         return loader.load_prices(node=node, start_date=start_date, end_date=end_date)
+    elif source == 'local_parquet':
+        if data_dir is None:
+            data_dir = Path(__file__).parent.parent.parent / 'data'
+        loader = ParquetDataLoader(data_dir)
+        df = loader.load_prices(node=node)
+        # Filter by date if provided
+        if not df.empty and (start_date or end_date):
+            if start_date:
+                df = df[df['timestamp'].dt.date >= start_date]
+            if end_date:
+                df = df[df['timestamp'].dt.date <= end_date]
+        return df
     else:
-        raise ValueError(f"Invalid data source: {source}. Must be 'csv' or 'database'")
+        raise ValueError(f"Invalid data source: {source}. Must be 'csv', 'database', or 'local_parquet'")
