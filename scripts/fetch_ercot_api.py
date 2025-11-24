@@ -35,7 +35,7 @@ from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from tqdm import tqdm
-import pandas as pd
+import polars as pl
 
 # ============================================================================
 # CONFIGURATION
@@ -55,7 +55,7 @@ REPORTS = {
         "name": "Settlement Point Prices at Resource Nodes, Hubs and Load Zones",
         "description": "Real-time 15-minute settlement point prices",
         "output_dir": "RTM_Prices",
-        "bulk_limit": 500,  # Files per bulk download request
+        "bulk_limit": 200,  # Reduced to avoid rate limiting (was 500)
         "file_pattern": "SPPHLZNP6905",  # Pattern to identify already downloaded files
     },
     "RTM_HISTORICAL": {
@@ -84,9 +84,10 @@ REPORTS = {
     },
 }
 
-# Rate limiting
-REQUEST_DELAY = 0.5  # seconds between API calls
-MAX_RETRIES = 3
+# Rate limiting - ERCOT API has strict limits, be conservative
+REQUEST_DELAY = 2.0  # seconds between API calls (increased to avoid 429s)
+REQUEST_DELAY_ON_429 = 30  # seconds to wait after a 429 error
+MAX_RETRIES = 5  # Increased retries for rate limiting
 TOKEN_EXPIRY_BUFFER = 300  # Refresh token 5 min before expiry
 
 
@@ -181,21 +182,37 @@ class ERCOTAPIClient:
             "size": page_size,
         }
 
-        try:
-            response = requests.get(url, headers=self._get_headers(), params=params, timeout=60)
-            response.raise_for_status()
-            data = response.json()
+        for retry in range(MAX_RETRIES):
+            try:
+                response = requests.get(url, headers=self._get_headers(), params=params, timeout=60)
 
-            return {
-                "archives": data.get("archives", []),
-                "total": data.get("_meta", {}).get("totalRecords", 0),
-                "total_pages": data.get("_meta", {}).get("totalPages", 1),
-                "current_page": data.get("_meta", {}).get("currentPage", 1),
-            }
+                # Handle rate limiting specifically
+                if response.status_code == 429:
+                    wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
+                    print(f"   Rate limited (429). Waiting {wait_time}s before retry {retry + 1}/{MAX_RETRIES}...")
+                    time.sleep(wait_time)
+                    continue
 
-        except requests.exceptions.RequestException as e:
-            print(f"   Error listing archives: {e}")
-            return {"archives": [], "total": 0}
+                response.raise_for_status()
+                data = response.json()
+
+                return {
+                    "archives": data.get("archives", []),
+                    "total": data.get("_meta", {}).get("totalRecords", 0),
+                    "total_pages": data.get("_meta", {}).get("totalPages", 1),
+                    "current_page": data.get("_meta", {}).get("currentPage", 1),
+                }
+
+            except requests.exceptions.RequestException as e:
+                if retry < MAX_RETRIES - 1:
+                    wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
+                    print(f"   Error listing archives: {e}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"   Error listing archives after {MAX_RETRIES} retries: {e}")
+                    return {"archives": [], "total": 0}
+
+        return {"archives": [], "total": 0}
 
     def download_single_archive(self, emil_id: str, doc_id: int) -> Optional[bytes]:
         """Download a single archive file by document ID."""
@@ -217,7 +234,7 @@ class ERCOTAPIClient:
             return None
 
     def download_bulk_archives(
-        self, emil_id: str, doc_ids: List[int]
+        self, emil_id: str, doc_ids: List[int], retry_count: int = 0
     ) -> Optional[bytes]:
         """Download multiple archive files in a single request (returns ZIP)."""
         if not self._ensure_authenticated():
@@ -230,6 +247,18 @@ class ERCOTAPIClient:
             response = requests.post(
                 url, headers=self._get_headers(), json=payload, timeout=300
             )
+
+            # Handle rate limiting specifically
+            if response.status_code == 429:
+                if retry_count < MAX_RETRIES:
+                    wait_time = REQUEST_DELAY_ON_429 * (retry_count + 1)
+                    print(f"   Rate limited (429). Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    return self.download_bulk_archives(emil_id, doc_ids, retry_count + 1)
+                else:
+                    print(f"   Rate limit exceeded after {MAX_RETRIES} retries")
+                    return None
+
             response.raise_for_status()
             return response.content
 
@@ -287,21 +316,44 @@ def consolidate_csv_files(
     input_dir: Path,
     output_file: Path,
     date_filter: Optional[tuple] = None,
+    output_format: str = "csv",
 ) -> int:
-    """Consolidate multiple CSV files into a single file."""
-    csv_files = list(input_dir.glob("*.csv"))
+    """Consolidate multiple CSV files into a single file using Polars (fast!).
+
+    Args:
+        input_dir: Directory containing CSV files
+        output_file: Output file path (extension will be adjusted based on format)
+        date_filter: Optional date range filter (not implemented yet)
+        output_format: "csv" or "parquet"
+    """
+    # Exclude any existing consolidated files from the list
+    csv_files = [f for f in input_dir.glob("*.csv") if "_consolidated_" not in f.name]
 
     if not csv_files:
         print(f"   No CSV files found in {input_dir}")
         return 0
 
-    print(f"   Consolidating {len(csv_files)} CSV files...")
+    # Delete old consolidated files first (both csv and parquet)
+    for pattern in ["*_consolidated_*.csv", "*_consolidated_*.parquet"]:
+        old_consolidated = list(input_dir.glob(pattern))
+        for old_file in old_consolidated:
+            print(f"   Removing old consolidated file: {old_file.name}")
+            old_file.unlink()
+
+    print(f"   Consolidating {len(csv_files)} CSV files with Polars...")
+
+    # Schema overrides to ensure consistent types across all files
+    # SettlementPointPrice can be integer or float depending on the file
+    schema_overrides = {
+        "SettlementPointPrice": pl.Float64,
+        "SettlementPointName": pl.Utf8,
+        "SettlementPoint": pl.Utf8,
+    }
 
     dfs = []
     for csv_file in tqdm(csv_files, desc="Reading CSVs", unit="file"):
         try:
-            df = pd.read_csv(csv_file)
-            df['source_file'] = csv_file.name
+            df = pl.read_csv(csv_file, schema_overrides=schema_overrides, infer_schema_length=1000)
             dfs.append(df)
         except Exception as e:
             print(f"   Warning: Could not read {csv_file.name}: {e}")
@@ -309,23 +361,36 @@ def consolidate_csv_files(
     if not dfs:
         return 0
 
-    combined = pd.concat(dfs, ignore_index=True)
+    # Concatenate all dataframes
+    combined = pl.concat(dfs)
 
     # Remove duplicates if any
     if 'DeliveryDate' in combined.columns and 'SettlementPoint' in combined.columns:
         before = len(combined)
-        combined = combined.drop_duplicates(
-            subset=['DeliveryDate', 'HourEnding', 'SettlementPoint']
+        subset_cols = (
+            ['DeliveryDate', 'HourEnding', 'SettlementPoint']
             if 'HourEnding' in combined.columns
-            else ['DeliveryDate', 'DeliveryHour', 'DeliveryInterval', 'SettlementPointName'],
-            keep='last'
+            else ['DeliveryDate', 'DeliveryHour', 'DeliveryInterval', 'SettlementPointName']
         )
+        combined = combined.unique(subset=subset_cols, keep='last')
         after = len(combined)
         if before != after:
             print(f"   Removed {before - after} duplicate records")
 
-    combined.to_csv(output_file, index=False)
-    print(f"   Saved consolidated file: {output_file} ({len(combined):,} records)")
+    # Drop source_file column if it exists from previous runs
+    if 'source_file' in combined.columns:
+        combined = combined.drop('source_file')
+
+    # Save in requested format
+    if output_format == "parquet":
+        output_file = output_file.with_suffix(".parquet")
+        combined.write_parquet(output_file, compression="snappy")
+        file_size_mb = output_file.stat().st_size / (1024 * 1024)
+        print(f"   Saved consolidated file: {output_file} ({len(combined):,} records, {file_size_mb:.1f} MB)")
+    else:
+        combined.write_csv(output_file)
+        file_size_mb = output_file.stat().st_size / (1024 * 1024)
+        print(f"   Saved consolidated file: {output_file} ({len(combined):,} records, {file_size_mb:.1f} MB)")
 
     return len(combined)
 
@@ -354,6 +419,7 @@ def fetch_report(
     output_base: Path,
     consolidate: bool = True,
     skip_existing: bool = True,
+    output_format: str = "csv",
 ) -> Dict[str, Any]:
     """Fetch all archives for a report within the date range."""
 
@@ -423,9 +489,9 @@ def fetch_report(
         # Still consolidate if requested
         total_records = 0
         if consolidate:
-            print("\n3. Consolidating existing CSV files...")
+            print(f"\n3. Consolidating existing CSV files to {output_format}...")
             consolidated_file = output_dir / f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
-            total_records = consolidate_csv_files(output_dir, consolidated_file)
+            total_records = consolidate_csv_files(output_dir, consolidated_file, output_format=output_format)
         return {"success": True, "files_downloaded": 0, "records": total_records, "output_dir": str(output_dir), "skipped": True}
 
     # Step 2: Download archives in bulk batches
@@ -439,6 +505,7 @@ def fetch_report(
     batches = [doc_ids[i:i + bulk_limit] for i in range(0, len(doc_ids), bulk_limit)]
 
     for batch_idx, batch_ids in enumerate(tqdm(batches, desc="Downloading batches", unit="batch")):
+        batch_success = False
         for retry in range(MAX_RETRIES):
             try:
                 zip_content = client.download_bulk_archives(emil_id, batch_ids)
@@ -446,16 +513,23 @@ def fetch_report(
                 if zip_content:
                     saved = extract_and_save_files(zip_content, output_dir)
                     total_files_saved.extend(saved)
+                    batch_success = True
                     break
                 else:
                     if retry < MAX_RETRIES - 1:
-                        print(f"   Retry {retry + 1} for batch {batch_idx + 1}...")
-                        time.sleep(2 ** retry)  # Exponential backoff
+                        wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
+                        print(f"   Retry {retry + 1}/{MAX_RETRIES} for batch {batch_idx + 1} in {wait_time}s...")
+                        time.sleep(wait_time)
 
             except Exception as e:
                 print(f"   Error in batch {batch_idx + 1}: {e}")
                 if retry < MAX_RETRIES - 1:
-                    time.sleep(2 ** retry)
+                    wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
+                    time.sleep(wait_time)
+
+        if not batch_success:
+            failed_count = len(batch_ids)
+            print(f"   WARNING: Batch {batch_idx + 1} failed after {MAX_RETRIES} retries ({failed_count} files)")
 
         time.sleep(REQUEST_DELAY)
 
@@ -464,9 +538,9 @@ def fetch_report(
     # Step 3: Optionally consolidate CSVs
     total_records = 0
     if consolidate and total_files_saved:
-        print("\n3. Consolidating CSV files...")
+        print(f"\n3. Consolidating CSV files to {output_format}...")
         consolidated_file = output_dir / f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
-        total_records = consolidate_csv_files(output_dir, consolidated_file)
+        total_records = consolidate_csv_files(output_dir, consolidated_file, output_format=output_format)
 
     return {
         "success": True,
@@ -550,6 +624,13 @@ Environment Variables (or use .env file):
         "--force",
         action="store_true",
         help="Force re-download of all files (don't skip existing)",
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=["csv", "parquet"],
+        default="parquet",
+        help="Output format for consolidated file (default: parquet - 5-10x smaller)",
     )
     parser.add_argument(
         "--username",
@@ -647,6 +728,7 @@ Environment Variables (or use .env file):
             output_base,
             consolidate=not args.no_consolidate,
             skip_existing=not args.force,
+            output_format=args.format,
         )
         results[report_key] = result
 
