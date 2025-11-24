@@ -59,3 +59,9 @@ docs/
 # Temporary files
 *.tmp
 *.bak
+
+# Data
+data/RTM_Prices/*
+data/RTM_Historical/*
+data/DAM_Prices/*
+data/DAM_AS_Prices/*
