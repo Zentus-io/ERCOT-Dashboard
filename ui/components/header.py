@@ -57,7 +57,8 @@ def render_header():
         date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
         note_content = f"<strong>Historical Analysis:</strong> Analyzing Engie assets in ERCOT market for {date_range}."
     elif state.data_source == 'local_parquet':
-        note_content = "<strong>Local Data:</strong> Full Year 2025 ERCOT data from local parquet files."
+        date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
+        note_content = f"<strong>Local Data:</strong> Analyzing ERCOT data from local parquet files for {date_range}."
     else:
         note_content = "<strong>Demo Mode:</strong> Currently showing July 20, 2025 data from ERCOT wind resources (Single-day snapshot)."
 

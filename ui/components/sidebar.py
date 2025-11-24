@@ -305,7 +305,56 @@ def render_sidebar():
 
     elif state.data_source == 'local_parquet':
         st.sidebar.markdown("---")
-        st.sidebar.info("📌 **Local Parquet Mode** - Full Year 2025")
+        st.sidebar.subheader("Date Range")
+
+        # Parquet data date range (hardcoded for local files)
+        parquet_earliest = date(2025, 1, 1)
+        parquet_latest = date(2025, 11, 23)
+
+        st.sidebar.info(f"📌 Local parquet data: {parquet_earliest} to {parquet_latest}")
+
+        # Ensure state dates are within parquet range
+        if state.start_date < parquet_earliest:
+            state.start_date = parquet_earliest
+        if state.start_date > parquet_latest:
+            state.start_date = parquet_latest
+        if state.end_date < parquet_earliest:
+            state.end_date = parquet_earliest
+        if state.end_date > parquet_latest:
+            state.end_date = parquet_latest
+
+        # Date range picker
+        date_range_input = st.sidebar.date_input(
+            "Select Date Range",
+            value=(state.start_date, state.end_date),
+            min_value=parquet_earliest,
+            max_value=parquet_latest,
+            help="Filter parquet data by date range"
+        )
+
+        # Handle range selection
+        if len(date_range_input) == 2:
+            start_date, end_date = date_range_input
+        else:
+            # Handle case where user is still selecting
+            start_date, end_date = state.start_date, state.end_date
+
+        # Validate and update date range
+        if end_date < start_date:
+            st.sidebar.error("⚠️ End date must be after start date")
+        else:
+            date_diff = (end_date - start_date).days
+            if date_diff > MAX_DAYS_RANGE:
+                st.sidebar.error(f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
+            elif start_date != state.start_date or end_date != state.end_date:
+                try:
+                    update_date_range(start_date, end_date)
+                except ValueError as e:
+                    st.sidebar.error(f"⚠️ {str(e)}")
+
+        # Show date range summary
+        days_selected = (state.end_date - state.start_date).days + 1
+        st.sidebar.caption(f"📅 **{days_selected} days** selected")
 
     else:
         # CSV mode - use fixed date from data
@@ -357,8 +406,8 @@ def render_sidebar():
                 price_data = load_node_prices(
                     source=state.data_source,
                     node=state.selected_node,
-                    start_date=state.start_date if state.data_source == 'database' else None,
-                    end_date=state.end_date if state.data_source == 'database' else None
+                    start_date=state.start_date,
+                    end_date=state.end_date
                 )
                 state.price_data = price_data
                 

@@ -448,6 +448,167 @@ class ParquetDataLoader:
             return None, None
 
 
+class UploadedFileLoader:
+    """
+    Data loader for user-uploaded CSV or Parquet files.
+    Handles both file formats dynamically based on file extension.
+    """
+    def __init__(self, dam_file, rtm_file):
+        """
+        Parameters
+        ----------
+        dam_file : BytesIO | UploadedFile
+            Uploaded DAM file from st.file_uploader
+        rtm_file : BytesIO | UploadedFile
+            Uploaded RTM file from st.file_uploader
+        """
+        self.dam_file = dam_file
+        self.rtm_file = rtm_file
+        self.dam_filename = getattr(dam_file, 'name', 'dam_file')
+        self.rtm_filename = getattr(rtm_file, 'name', 'rtm_file')
+
+    def _load_file(self, uploaded_file, filename: str) -> pd.DataFrame:
+        """Load file based on extension (CSV or Parquet)"""
+        try:
+            if filename.endswith('.parquet'):
+                return pd.read_parquet(uploaded_file)
+            elif filename.endswith('.csv'):
+                return pd.read_csv(uploaded_file)
+            else:
+                raise ValueError(f"Unsupported file type: {filename}")
+        except Exception as e:
+            st.error(f"Error loading {filename}: {e}")
+            return pd.DataFrame()
+
+    def _validate_dam_schema(self, df: pd.DataFrame) -> bool:
+        """Validate DAM file has required columns"""
+        required = ['SettlementPoint', 'HourEnding', 'DeliveryDate', 'SettlementPointPrice']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.error(f"DAM file missing required columns: {', '.join(missing)}")
+            return False
+        return True
+
+    def _validate_rtm_schema(self, df: pd.DataFrame) -> bool:
+        """Validate RTM file has required columns"""
+        required = ['SettlementPointName', 'DeliveryHour', 'DeliveryInterval',
+                    'DeliveryDate', 'SettlementPointPrice']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.error(f"RTM file missing required columns: {', '.join(missing)}")
+            return False
+        return True
+
+    def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
+        """Loads and merges uploaded DAM and RTM price files"""
+        # Load DAM file
+        dam_df = self._load_file(self.dam_file, self.dam_filename)
+        if dam_df.empty or not self._validate_dam_schema(dam_df):
+            return pd.DataFrame()
+
+        # Load RTM file
+        rtm_df = self._load_file(self.rtm_file, self.rtm_filename)
+        if rtm_df.empty or not self._validate_rtm_schema(rtm_df):
+            return pd.DataFrame()
+
+        # Process DAM (same logic as ParquetDataLoader)
+        try:
+            if node:
+                dam_df = dam_df[dam_df['SettlementPoint'] == node].copy()
+            else:
+                dam_df = dam_df.copy()
+
+            dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
+            dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
+            dam_df = dam_df.dropna(subset=['HE_num'])
+            dam_df['HE_num'] = dam_df['HE_num'].astype(int)
+
+            dam_df['date_dt'] = pd.to_datetime(dam_df['DeliveryDate'], errors='coerce')
+            dam_df = dam_df.dropna(subset=['date_dt'])
+
+            dam_df['timestamp'] = dam_df['date_dt'] + pd.to_timedelta(dam_df['HE_num'], unit='h') - pd.Timedelta(hours=1)
+
+            dam_df = dam_df.rename(columns={
+                'SettlementPoint': 'node',
+                'SettlementPointPrice': 'price_mwh_da'
+            })
+            dam_df = dam_df[['timestamp', 'node', 'price_mwh_da']]
+        except Exception as e:
+            st.error(f"Error processing DAM file: {e}")
+            return pd.DataFrame()
+
+        # Process RTM (same logic as ParquetDataLoader)
+        try:
+            if node:
+                rtm_df = rtm_df[rtm_df['SettlementPointName'] == node].copy()
+            else:
+                rtm_df = rtm_df.copy()
+
+            rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
+            rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['DH_num', 'DI_num'])
+            rtm_df['DH_num'] = rtm_df['DH_num'].astype(int)
+            rtm_df['DI_num'] = rtm_df['DI_num'].astype(int)
+
+            rtm_df['date_dt'] = pd.to_datetime(rtm_df['DeliveryDate'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['date_dt'])
+
+            rtm_df['timestamp'] = rtm_df['date_dt'] + \
+                                  pd.to_timedelta(rtm_df['DH_num'], unit='h') - pd.Timedelta(hours=1) + \
+                                  pd.to_timedelta(rtm_df['DI_num'] * 15, unit='min') - pd.Timedelta(minutes=15)
+
+            rtm_df = rtm_df.rename(columns={
+                'SettlementPointName': 'node',
+                'SettlementPointPrice': 'price_mwh_rt'
+            })
+            rtm_df = rtm_df[['timestamp', 'node', 'price_mwh_rt']]
+        except Exception as e:
+            st.error(f"Error processing RTM file: {e}")
+            return pd.DataFrame()
+
+        # Merge DAM and RTM
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+
+        merged = pd.merge(
+            rtm_df,
+            dam_df,
+            left_on=['hour_start', 'node'],
+            right_on=['timestamp', 'node'],
+            suffixes=('', '_dam_drop'),
+            how='left'
+        )
+
+        merged = merged.drop(columns=['hour_start', 'timestamp_dam_drop'], errors='ignore')
+
+        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
+        merged['price_spread'] = abs(merged['forecast_error'])
+        merged['extreme_event'] = merged['price_spread'] > 10
+
+        return merged.sort_values(['node', 'timestamp']).reset_index(drop=True)
+
+    def get_available_nodes(self) -> list[str]:
+        """Get list of unique nodes from uploaded DAM file"""
+        dam_df = self._load_file(self.dam_file, self.dam_filename)
+        if dam_df.empty or 'SettlementPoint' not in dam_df.columns:
+            return []
+        try:
+            return sorted(dam_df['SettlementPoint'].unique().tolist())
+        except Exception as e:
+            st.error(f"Error getting nodes from uploaded files: {e}")
+            return []
+
+    def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
+        """Get min/max date from uploaded DAM file"""
+        dam_df = self._load_file(self.dam_file, self.dam_filename)
+        if dam_df.empty or 'DeliveryDate' not in dam_df.columns:
+            return None, None
+        try:
+            dates = pd.to_datetime(dam_df['DeliveryDate'])
+            return dates.min().date(), dates.max().date()
+        except Exception:
+            return None, None
+
+
 def load_data(
     source: Literal['csv', 'database', 'local_parquet'] = DEFAULT_DATA_SOURCE,
     node: Optional[str] = None,
