@@ -534,10 +534,10 @@ def render_sidebar():
     efficiency = st.sidebar.slider(
         "Round-trip Efficiency:",
         min_value=0.7,
-        max_value=0.95,
+        max_value=1.0,
         value=DEFAULT_BATTERY['efficiency'],
         step=0.05,
-        help="Energy efficiency for charge/discharge cycle"
+        help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)"
     )
 
     # Update battery specs if changed
