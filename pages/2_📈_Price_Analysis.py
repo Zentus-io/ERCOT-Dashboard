@@ -17,6 +17,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+import numpy as np
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -177,15 +178,35 @@ with col1:
 
 with col2:
     st.subheader("Forecast Error Distribution")
-    fig_error_hist = px.histogram(
-        node_data,
-        x='forecast_error',
-        nbins=20,
-        title="DA Forecast Error (RT - DA)",
-        labels={'forecast_error': 'Forecast Error ($/MWh)'},
-        color_discrete_sequence=['#0A5F7A']
+
+    # Calculate optimal bins using Sturges' rule
+    forecast_data = node_data['forecast_error'].dropna()
+    n = len(forecast_data)
+    optimal_bins = int(np.ceil(np.log2(n) + 1))
+
+    # Add reasonable bounds (min 10, max 50)
+    optimal_bins = max(10, min(50, optimal_bins))
+
+    # Manually calculate histogram with exact bin count
+    counts, bin_edges = np.histogram(forecast_data, bins=optimal_bins)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_width = bin_edges[1] - bin_edges[0]
+
+    # Create bar chart with exact bins
+    fig_error_hist = go.Figure(data=[go.Bar(
+        x=bin_centers,
+        y=counts,
+        width=bin_width * 0.9,
+        marker_color='#0A5F7A',
+        hovertemplate='Error: %{x:.2f} $/MWh<br>Count: %{y}<extra></extra>'
+    )])
+
+    fig_error_hist.update_layout(
+        title=f"DA Forecast Error Distribution ({optimal_bins} bins, Sturges' rule)",
+        xaxis_title='Forecast Error ($/MWh)',
+        yaxis_title='Count',
+        showlegend=False
     )
-    fig_error_hist.update_layout(showlegend=False)
     st.plotly_chart(fig_error_hist, width="stretch")
 
     mae = node_data['forecast_error'].abs().mean()
