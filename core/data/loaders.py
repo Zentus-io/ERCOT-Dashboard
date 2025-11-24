@@ -407,17 +407,58 @@ class UploadedFileLoader:
             elif filename.endswith('.csv'):
                 return pd.read_csv(uploaded_file)
             else:
-                raise ValueError(f"Unsupported file type: {filename}")
+                # Try to detect by content or default to CSV if unknown
+                try:
+                    return pd.read_parquet(uploaded_file)
+                except:
+                    uploaded_file.seek(0)
+                    return pd.read_csv(uploaded_file)
         except Exception as e:
             st.error(f"Error loading {filename}: {e}")
             return pd.DataFrame()
 
+    def _normalize_columns(self, df: pd.DataFrame, file_type: str) -> pd.DataFrame:
+        """
+        Normalize column names to standard expected format.
+        file_type: 'dam' or 'rtm'
+        """
+        df.columns = df.columns.str.strip()
+        
+        # Common mappings
+        mappings = {
+            'Settlement Point': 'SettlementPoint',
+            'Settlement Point Name': 'SettlementPointName',
+            'Settlement Point Price': 'SettlementPointPrice',
+            'Price': 'SettlementPointPrice',
+            'LMP': 'SettlementPointPrice',
+            'Hour Ending': 'HourEnding',
+            'Delivery Date': 'DeliveryDate',
+            'Delivery Hour': 'DeliveryHour',
+            'Delivery Interval': 'DeliveryInterval',
+            'Repeated Hour Flag': 'RepeatedHourFlag'
+        }
+        
+        # Apply mappings
+        df = df.rename(columns=mappings)
+        
+        # Specific fix for DAM vs RTM naming confusion
+        if file_type == 'dam':
+            if 'SettlementPointName' in df.columns and 'SettlementPoint' not in df.columns:
+                df = df.rename(columns={'SettlementPointName': 'SettlementPoint'})
+        elif file_type == 'rtm':
+            if 'SettlementPoint' in df.columns and 'SettlementPointName' not in df.columns:
+                df = df.rename(columns={'SettlementPoint': 'SettlementPointName'})
+                
+        return df
+
     def _validate_dam_schema(self, df: pd.DataFrame) -> bool:
         """Validate DAM file has required columns"""
         required = ['SettlementPoint', 'HourEnding', 'DeliveryDate', 'SettlementPointPrice']
+        # Check if columns exist (case-insensitive check handled by normalization)
         missing = [col for col in required if col not in df.columns]
         if missing:
             st.error(f"DAM file missing required columns: {', '.join(missing)}")
+            st.caption(f"Found columns: {list(df.columns)}")
             return False
         return True
 
@@ -428,6 +469,7 @@ class UploadedFileLoader:
         missing = [col for col in required if col not in df.columns]
         if missing:
             st.error(f"RTM file missing required columns: {', '.join(missing)}")
+            st.caption(f"Found columns: {list(df.columns)}")
             return False
         return True
 
@@ -447,12 +489,13 @@ class UploadedFileLoader:
             
             if self.dam_filename.endswith('.parquet'):
                 dam_df = pd.read_parquet(self.dam_file, filters=dam_filters)
-            elif self.dam_filename.endswith('.csv'):
-                dam_df = pd.read_csv(self.dam_file)
+                dam_df = self._normalize_columns(dam_df, 'dam')
+            else:
+                # CSV or other
+                dam_df = self._load_file(self.dam_file, self.dam_filename)
+                dam_df = self._normalize_columns(dam_df, 'dam')
                 if node and 'SettlementPoint' in dam_df.columns:
                     dam_df = dam_df[dam_df['SettlementPoint'] == node]
-            else:
-                return pd.DataFrame()
                 
             if dam_df.empty or not self._validate_dam_schema(dam_df):
                 return pd.DataFrame()
@@ -467,12 +510,13 @@ class UploadedFileLoader:
                 
             if self.rtm_filename.endswith('.parquet'):
                 rtm_df = pd.read_parquet(self.rtm_file, filters=rtm_filters)
-            elif self.rtm_filename.endswith('.csv'):
-                rtm_df = pd.read_csv(self.rtm_file)
+                rtm_df = self._normalize_columns(rtm_df, 'rtm')
+            else:
+                # CSV or other
+                rtm_df = self._load_file(self.rtm_file, self.rtm_filename)
+                rtm_df = self._normalize_columns(rtm_df, 'rtm')
                 if node and 'SettlementPointName' in rtm_df.columns:
                     rtm_df = rtm_df[rtm_df['SettlementPointName'] == node]
-            else:
-                return pd.DataFrame()
 
             if rtm_df.empty or not self._validate_rtm_schema(rtm_df):
                 return pd.DataFrame()
@@ -554,6 +598,7 @@ class UploadedFileLoader:
     def get_available_nodes(self) -> list[str]:
         """Get list of unique nodes from uploaded DAM file"""
         dam_df = self._load_file(self.dam_file, self.dam_filename)
+        dam_df = self._normalize_columns(dam_df, 'dam')
         if dam_df.empty or 'SettlementPoint' not in dam_df.columns:
             return []
         try:
@@ -565,6 +610,7 @@ class UploadedFileLoader:
     def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
         """Get min/max date from uploaded DAM file"""
         dam_df = self._load_file(self.dam_file, self.dam_filename)
+        dam_df = self._normalize_columns(dam_df, 'dam')
         if dam_df.empty or 'DeliveryDate' not in dam_df.columns:
             return None, None
         try:

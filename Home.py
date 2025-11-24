@@ -108,14 +108,41 @@ st.markdown("""
 
 This dashboard demonstrates how improved renewable energy forecasting increases
 battery storage revenue in ERCOT markets.
+""")
 
+with st.expander("📂 Data File Format Guide"):
+    st.markdown("""
+    When uploading custom data files, please ensure they follow these formats:
+    
+    **DAM Prices (Day-Ahead Market)**
+    - **Format:** CSV or Parquet
+    - **Required Columns:**
+        - `SettlementPoint` (or `SettlementPointName`): Name of the node
+        - `DeliveryDate`: Date of delivery (YYYY-MM-DD)
+        - `HourEnding`: Hour ending (1-24)
+        - `SettlementPointPrice` (or `Price`, `LMP`): Price in $/MWh
+        
+    **RTM Prices (Real-Time Market)**
+    - **Format:** CSV or Parquet
+    - **Required Columns:**
+        - `SettlementPointName` (or `SettlementPoint`): Name of the node
+        - `DeliveryDate`: Date of delivery (YYYY-MM-DD)
+        - `DeliveryHour`: Hour of delivery (0-23 or 1-24)
+        - `DeliveryInterval`: Interval (1-4 for 15-min markets)
+        - `SettlementPointPrice` (or `Price`, `LMP`): Price in $/MWh
+        
+    **Notes:**
+    - Column names are case-insensitive and flexible (e.g., 'Price' works for 'SettlementPointPrice').
+    - Timestamps will be automatically constructed from Date + Hour + Interval.
+    """)
+
+st.markdown("""
 ### 🚀 Get Started
 
 1. **Configure your battery system** in the sidebar
 2. **Select a settlement point** from available wind resources
 3. **Choose a dispatch strategy** (Threshold-Based or Rolling Window)
 4. **Navigate to analysis pages** using the sidebar menu
-
 ### 📊 Available Analysis Pages
 
 Use the sidebar navigation to explore different aspects of battery revenue optimization:

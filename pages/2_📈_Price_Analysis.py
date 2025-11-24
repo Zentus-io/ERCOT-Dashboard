@@ -134,7 +134,9 @@ fig_price.update_layout(
     xaxis_title="Time",
     yaxis_title="Price ($/MWh)",
     height=500,
-    hovermode='x unified'
+    hovermode='x unified',
+    yaxis=dict(fixedrange=False),
+    xaxis=dict(fixedrange=False)
 )
 
 from ui.components.charts import apply_standard_chart_styling

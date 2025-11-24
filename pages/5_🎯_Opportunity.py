@@ -78,7 +78,6 @@ The gap between your selected strategy and LP shows potential gains from strateg
 """)
 
 # Reduce points for performance (0, 10, 20... 100)
-@st.cache_data(ttl=3600, show_spinner="Running sensitivity analysis...")
 def run_sensitivity_analysis(
     node_data: pd.DataFrame,
     battery_specs: BatterySpecs,
@@ -87,15 +86,7 @@ def run_sensitivity_analysis(
     window_hours: int
 ):
     """
-    Run sensitivity analysis with caching.
-
-    Runs all three strategies (Threshold, Rolling Window, Linear Optimization)
-    across the full range of forecast improvement levels (0-100%).
-
-    Note: Linear Optimization finds the optimal solution for any given forecast
-    quality. At 100% improvement (perfect foresight), it achieves theoretical max.
-    At lower improvement levels, it optimizes for imperfect forecasts but revenue
-    is still calculated at actual RT prices, so it may underperform its potential.
+    Run sensitivity analysis with progress bar.
     """
     improvement_range = range(0, 101, 10)  # Reduced resolution for speed
     revenue_threshold = []
@@ -103,8 +94,13 @@ def run_sensitivity_analysis(
     revenue_linear = []
 
     simulator = BatterySimulator(battery_specs)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_steps = len(improvement_range)
 
-    for imp in improvement_range:
+    for i, imp in enumerate(improvement_range):
+        status_text.text(f"Simulating forecast improvement: {imp}%...")
         improvement_factor = imp / 100
 
         # Threshold strategy
@@ -133,10 +129,48 @@ def run_sensitivity_analysis(
             improvement_factor=improvement_factor
         )
         revenue_linear.append(temp_result_linear.total_revenue)
+        
+        progress_bar.progress((i + 1) / total_steps)
+        
+    status_text.empty()
+    progress_bar.empty()
 
     return list(improvement_range), revenue_threshold, revenue_rolling_window, revenue_linear
 
-# Run analysis
+def run_window_sensitivity_analysis(
+    node_data: pd.DataFrame,
+    battery_specs: BatterySpecs,
+    improvement_factor: float
+):
+    """
+    Run sensitivity analysis for Rolling Window strategy varying window size.
+    """
+    window_range = range(2, 49, 2)  # 2 to 48 hours
+    revenue_window = []
+    
+    simulator = BatterySimulator(battery_specs)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_steps = len(window_range)
+    
+    for i, window in enumerate(window_range):
+        status_text.text(f"Simulating window size: {window} hours...")
+        strategy = RollingWindowStrategy(window_hours=window)
+        result = simulator.run(
+            node_data,
+            strategy,
+            improvement_factor=improvement_factor
+        )
+        revenue_window.append(result.total_revenue)
+        progress_bar.progress((i + 1) / total_steps)
+        
+    status_text.empty()
+    progress_bar.empty()
+        
+    return list(window_range), revenue_window
+
+# Run forecast sensitivity analysis
 improvement_range, revenue_threshold, revenue_rolling_window, revenue_linear = run_sensitivity_analysis(
     node_data,
     state.battery_specs,
@@ -182,10 +216,62 @@ fig_sensitivity.update_layout(
     yaxis_title="Revenue ($)",
     height=500,
     hovermode='x unified',
-    legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01)
+    legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01),
+    yaxis=dict(fixedrange=False), # Allow Y-axis zooming
+    xaxis=dict(fixedrange=False)
 )
 
 st.plotly_chart(fig_sensitivity, width="stretch")
+
+# Window Sensitivity (Only for Rolling Window Strategy)
+if state.strategy_type == "Rolling Window Optimization":
+    st.markdown("---")
+    st.subheader(f"Window Size Sensitivity (at {state.forecast_improvement}% Improvement)")
+    
+    window_range, revenue_window_sens = run_window_sensitivity_analysis(
+        node_data,
+        state.battery_specs,
+        state.forecast_improvement / 100.0
+    )
+        
+    fig_window = go.Figure()
+    
+    fig_window.add_trace(go.Scatter(
+        x=window_range,
+        y=revenue_window_sens,
+        name='Revenue',
+        line=dict(color='#0A5F7A', width=3),
+        mode='lines+markers',
+        hovertemplate='Window: %{x}h<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+    
+    # Add marker for current selection
+    current_rev = revenue_window_sens[window_range.index(state.window_hours)] if state.window_hours in window_range else 0
+    if state.window_hours in window_range:
+        fig_window.add_trace(go.Scatter(
+            x=[state.window_hours],
+            y=[current_rev],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Current Selection',
+            hoverinfo='skip'
+        ))
+    
+    fig_window.update_layout(
+        title="Revenue vs. Lookahead Window Size",
+        xaxis_title="Lookahead Window (Hours)",
+        yaxis_title="Revenue ($)",
+        height=400,
+        hovermode='x unified',
+        yaxis=dict(fixedrange=False),
+        xaxis=dict(fixedrange=False)
+    )
+    
+    st.plotly_chart(fig_window, width="stretch")
+    
+    # Find optimal window
+    best_window = window_range[revenue_window_sens.index(max(revenue_window_sens))]
+    st.info(f"💡 Optimal lookahead window for this scenario appears to be **{best_window} hours**.")
 
 # ============================================================================
 # STRATEGY COMPARISON INSIGHTS
