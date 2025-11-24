@@ -34,6 +34,13 @@ init_state()
 render_header()
 render_sidebar()
 
+st.markdown("""
+## Welcome to the ERCOT Battery Revenue Dashboard
+
+This dashboard demonstrates how improved renewable energy forecasting increases
+battery storage revenue in ERCOT markets.
+""")
+
 # ============================================================================
 # DATA AVAILABILITY CALENDAR (Database Mode)
 # ============================================================================
@@ -102,13 +109,6 @@ if state.data_source == 'database' and state.selected_node:
 # ============================================================================
 # HOMEPAGE CONTENT
 # ============================================================================
-
-st.markdown("""
-## Welcome to the ERCOT Battery Revenue Dashboard
-
-This dashboard demonstrates how improved renewable energy forecasting increases
-battery storage revenue in ERCOT markets.
-""")
 
 with st.expander("📂 Data File Format Guide"):
     st.markdown("""

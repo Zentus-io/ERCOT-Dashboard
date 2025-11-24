@@ -56,7 +56,21 @@ if state.selected_node is None:
 
 # Load node data
 # Load node data
-node_data = state.price_data[state.price_data['node'] == state.selected_node].copy()
+if state.price_data.empty:
+    st.warning("⚠️ No price data available. Please check your data source or date range.")
+    st.stop()
+
+if 'node' in state.price_data.columns:
+    node_col = 'node'
+elif 'settlement_point' in state.price_data.columns:
+    node_col = 'settlement_point'
+elif 'SettlementPoint' in state.price_data.columns:
+    node_col = 'SettlementPoint'
+else:
+    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
+    st.stop()
+
+node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
 
 # Calculate dynamic thresholds for threshold-based strategy
 if state.strategy_type == "Threshold-Based":
@@ -142,7 +156,7 @@ fig_price.update_layout(
 from ui.components.charts import apply_standard_chart_styling
 apply_standard_chart_styling(fig_price)
 
-st.plotly_chart(fig_price, width="stretch")
+st.plotly_chart(fig_price, width="stretch", config={'scrollZoom': True})
 
 # ============================================================================
 # PRICE STATISTICS AND FORECAST ERROR
