@@ -117,23 +117,38 @@ def run_or_get_cached_simulation():
         # Run simulation
         return simulator.run(node_data, strategy, improvement_factor=improvement_factor)
 
-    # Run simulations in parallel
+    # Run simulations with progress indication
+    num_to_run = len(scenarios_to_run)
+
     if len(scenarios_to_run) > 1:
         # Parallel execution for multiple scenarios
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            # Submit all tasks
-            futures = {}
-            for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
-                future = executor.submit(run_single_simulation, scenario_name, improvement_factor)
-                futures[scenario_name] = future
+        with st.spinner(f'Running {num_to_run} simulations in parallel...'):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
-            # Collect results
-            for scenario_name, future in futures.items():
-                result = future.result()
-                state.simulation_results[scenario_name] = result
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # Submit all tasks
+                futures = {}
+                for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
+                    future = executor.submit(run_single_simulation, scenario_name, improvement_factor)
+                    futures[scenario_name] = future
+
+                # Collect results and update progress
+                completed = 0
+                for scenario_name, future in futures.items():
+                    result = future.result()
+                    state.simulation_results[scenario_name] = result
+                    completed += 1
+                    progress_bar.progress(completed / num_to_run)
+                    status_text.text(f"Completed {completed}/{num_to_run} simulations")
+
+            # Clear progress indicators
+            progress_bar.empty()
+            status_text.empty()
     else:
         # Single scenario - run directly (no need for parallel)
-        for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
+        scenario_name, (_, improvement_factor) = list(scenarios_to_run.items())[0]
+        with st.spinner(f'Running {scenario_name} simulation...'):
             result = run_single_simulation(scenario_name, improvement_factor)
             state.simulation_results[scenario_name] = result
 
