@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import date, timedelta
 import pandas as pd
 from core.battery.battery import BatterySpecs
-from core.data.loaders import DataLoader, SupabaseDataLoader
+from core.data.loaders import DataLoader, SupabaseDataLoader, UploadedFileLoader, ParquetDataLoader
 from utils.state import (
     get_state, update_state, clear_simulation_cache, needs_data_reload,
     get_cache_key, update_date_range, get_date_range_str, clear_data_cache
@@ -38,7 +38,19 @@ def load_node_list(source: str = 'csv'):
         except Exception as e:
             st.warning(f"⚠️ Database error fetching nodes: {str(e)}")
             
-    # Fallback to CSV or if DB failed
+    elif source == 'local_parquet':
+        try:
+            state = get_state()
+            if state.uploaded_dam_file and state.uploaded_rtm_file:
+                loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
+                nodes = loader.get_available_nodes()
+                if nodes:
+                    return nodes
+            return []
+        except Exception as e:
+            st.warning(f"⚠️ Error fetching nodes from uploaded files: {str(e)}")
+
+    # Fallback to CSV or if DB/Parquet failed
     csv_loader = DataLoader(data_dir)
     price_data = csv_loader.load_prices()
     return csv_loader.get_nodes(price_data)
@@ -49,7 +61,8 @@ def load_node_prices(
     source: str,
     node: str,
     start_date: date | None = None,
-    end_date: date | None = None
+    end_date: date | None = None,
+    file_signature: str | None = None
 ):
     """
     Load price data for a specific node.
@@ -75,6 +88,25 @@ def load_node_prices(
             return loader.load_prices(node=node)
         except Exception as e:
             st.warning(f"⚠️ Parquet error: {str(e)}. Falling back to CSV.")
+
+    elif source == 'uploaded':
+        try:
+            state = get_state()
+            if state.uploaded_dam_file and state.uploaded_rtm_file:
+                loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
+                # Apply date filtering if specified
+                df = loader.load_prices(node=node)
+                
+                if not df.empty and (start_date or end_date):
+                    if start_date:
+                        df = df[df['timestamp'].dt.date >= start_date]
+                    if end_date:
+                        df = df[df['timestamp'].dt.date <= end_date]
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            st.warning(f"⚠️ Upload error: {str(e)}")
+
 
     # CSV fallback (demo mode)
     csv_loader = DataLoader(data_dir)
@@ -198,7 +230,7 @@ def render_sidebar():
     # DATA SOURCE SELECTION
     # ========================================================================
     if SUPABASE_URL and SUPABASE_KEY:
-        data_source = st.sidebar.radio(
+        data_source_ui = st.sidebar.radio(
             "Data Source:",
             options=['Database', 'CSV Demo', 'Local Parquet'],
             index={
@@ -206,20 +238,35 @@ def render_sidebar():
                 'csv': 1,
                 'local_parquet': 2
             }.get(state.data_source, 1),
-            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data\n**Local Parquet**: Full year 2025 data"
+            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data\n**Local Parquet**: Upload your own DAM/RTM parquet files"
         )
 
         # Map display names to internal values
-        if data_source == 'Database':
+        if data_source_ui == 'Database':
             data_source_internal = 'database'
-        elif data_source == 'Local Parquet':
+        elif data_source_ui == 'Local Parquet':
             data_source_internal = 'local_parquet'
         else:
             data_source_internal = 'csv'
 
-        if data_source_internal != state.data_source:
-            state.data_source = data_source_internal
-            clear_data_cache()
+        # Logic: Only switch to local_parquet if files are ready
+        if data_source_internal == 'local_parquet':
+            # Check if files are uploaded
+            if state.uploaded_dam_file and state.uploaded_rtm_file:
+                if state.data_source != 'local_parquet':
+                    state.data_source = 'local_parquet'
+                    state.using_uploaded_files = True
+                    clear_data_cache()
+            else:
+                # Files not ready - keep previous source
+                # But we still show the upload UI below because data_source_ui is 'Local Parquet'
+                pass
+        else:
+            # For Database or CSV, switch immediately
+            if data_source_internal != state.data_source:
+                state.data_source = data_source_internal
+                state.using_uploaded_files = False
+                clear_data_cache()
     else:
         # No database credentials - force CSV mode
         state.data_source = 'csv'
@@ -304,14 +351,25 @@ def render_sidebar():
         st.sidebar.caption(f"📅 **{days_selected} days** selected{auto_indicator}")
 
     elif state.data_source == 'local_parquet':
+        # Only show date picker if we are actually IN parquet mode (files uploaded)
         st.sidebar.markdown("---")
         st.sidebar.subheader("Date Range")
 
-        # Parquet data date range (hardcoded for local files)
-        parquet_earliest = date(2025, 1, 1)
-        parquet_latest = date(2025, 11, 23)
+        # Get date range from uploaded files
+        try:
+            loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
+            date_range = loader.get_date_range()
+            
+            if date_range[0] and date_range[1]:
+                parquet_earliest, parquet_latest = date_range
+            else:
+                parquet_earliest = date(2025, 1, 1)
+                parquet_latest = date(2025, 12, 31)
+        except:
+            parquet_earliest = date(2025, 1, 1)
+            parquet_latest = date(2025, 12, 31)
 
-        st.sidebar.info(f"📌 Local parquet data: {parquet_earliest} to {parquet_latest}")
+        st.sidebar.info(f"📌 Data available: {parquet_earliest} to {parquet_latest}")
 
         # Ensure state dates are within parquet range
         if state.start_date < parquet_earliest:
@@ -356,16 +414,68 @@ def render_sidebar():
         days_selected = (state.end_date - state.start_date).days + 1
         st.sidebar.caption(f"📅 **{days_selected} days** selected")
 
-    else:
+    elif state.data_source == 'csv':
         # CSV mode - use fixed date from data
         st.sidebar.markdown("---")
         st.sidebar.info("📌 **Single-day demo data** (July 20, 2025)")
+
+    # ========================================================================
+    # PARQUET FILE UPLOAD (Show if UI selected Local Parquet)
+    # ========================================================================
+    # We use data_source_ui (the radio button value) to decide visibility
+    # This allows showing the upload UI even if state.data_source is still 'csv'/'database'
+    if 'data_source_ui' in locals() and data_source_ui == 'Local Parquet':
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📁 Custom Data Upload")
+        
+        st.sidebar.markdown("**Upload ERCOT Price Files**")
+
+        dam_file = st.sidebar.file_uploader(
+            "DAM Prices",
+            type=['parquet', 'csv'],
+            help="Day-Ahead Market price file (.parquet or .csv)",
+            key='dam_upload'
+        )
+
+        rtm_file = st.sidebar.file_uploader(
+            "RTM Prices",
+            type=['parquet', 'csv'],
+            help="Real-Time Market price file (.parquet or .csv)",
+            key='rtm_upload'
+        )
+        
+        # Update state with uploaded files
+        if dam_file:
+            state.uploaded_dam_file = dam_file
+        if rtm_file:
+            state.uploaded_rtm_file = rtm_file
+            
+        # File Status Indicators
+        if state.uploaded_dam_file:
+            st.sidebar.success(f"✅ DAM: {state.uploaded_dam_file.name}")
+        else:
+            st.sidebar.warning("⚠️ Waiting for DAM file...")
+            
+        if state.uploaded_rtm_file:
+            st.sidebar.success(f"✅ RTM: {state.uploaded_rtm_file.name}")
+        else:
+            st.sidebar.warning("⚠️ Waiting for RTM file...")
+            
+        # Global status
+        if not (state.uploaded_dam_file and state.uploaded_rtm_file):
+             st.sidebar.info("ℹ️ Using previous data until both files are uploaded.")
 
     # ========================================================================
     # LOAD DATA (Two-step process)
     # ========================================================================
     
     # 1. Load Node List
+    # Determine actual source for node list
+    # If pending upload, we might not have nodes yet. 
+    # But if we are in 'local_parquet' mode (files uploaded), we load from files.
+    # If we are pending (files missing), state.data_source is still the OLD source (csv/db).
+    # So we just load from state.data_source.
+    
     nodes = load_node_list(source=state.data_source)
     state.available_nodes = nodes
     
@@ -403,11 +513,25 @@ def render_sidebar():
     if needs_data_reload() or state.price_data is None or state.price_data.empty or (state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
         if state.selected_node:
             with st.spinner(f'Loading data for {state.selected_node}...'):
+                # Determine actual source to use
+                # For local_parquet, we now ALWAYS use uploaded files
+                actual_source = state.data_source
+                file_sig = None
+                
+                if state.data_source == 'local_parquet':
+                    actual_source = 'uploaded'
+                    # Generate signature to invalidate cache when files change
+                    if state.uploaded_dam_file and state.uploaded_rtm_file:
+                        dam_sig = f"{state.uploaded_dam_file.name}_{state.uploaded_dam_file.size}"
+                        rtm_sig = f"{state.uploaded_rtm_file.name}_{state.uploaded_rtm_file.size}"
+                        file_sig = f"{dam_sig}_{rtm_sig}"
+                    
                 price_data = load_node_prices(
-                    source=state.data_source,
+                    source=actual_source,
                     node=state.selected_node,
                     start_date=state.start_date,
-                    end_date=state.end_date
+                    end_date=state.end_date,
+                    file_signature=file_sig
                 )
                 state.price_data = price_data
                 

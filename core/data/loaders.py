@@ -320,39 +320,34 @@ class ParquetDataLoader:
         self.rtm_path = self.data_dir / 'RTM_Prices' / 'rtm_consolidated_2025-01-01_2025-11-23.parquet'
 
     def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
-        """Loads and merges DA and RT prices from local Parquet files."""
+        """
+        Loads and merges DA and RT prices from local Parquet files.
+        Uses predicate pushdown (filters) to only load data for the selected node.
+        """
         if not self.dam_path.exists() or not self.rtm_path.exists():
             st.error(f"Parquet files not found in {self.data_dir}")
             return pd.DataFrame()
 
         # Load DAM
         try:
-            dam_df = pd.read_parquet(self.dam_path)
-            if node:
-                dam_df = dam_df[dam_df['SettlementPoint'] == node].copy()
-            else:
-                dam_df = dam_df.copy()
+            # Use filters to only load data for the specific node
+            # This is "lazy loading" - we only read the row groups we need
+            filters = [('SettlementPoint', '==', node)] if node else None
+            
+            dam_df = pd.read_parquet(self.dam_path, filters=filters)
+            
+            if dam_df.empty:
+                return pd.DataFrame()
             
             # Ensure numeric types for time calculations
-            # Use a new column to avoid any in-place update issues
-            # Handle "HH:MM" format if present
             dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
-            # Extract hour part (works for "1", "01", "01:00")
             dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
-            
-            # Drop rows with invalid HourEnding
             dam_df = dam_df.dropna(subset=['HE_num'])
-            
-            # Convert to integer
             dam_df['HE_num'] = dam_df['HE_num'].astype(int)
             
-            # Create timestamp
-            # Convert DeliveryDate to datetime first
             dam_df['date_dt'] = pd.to_datetime(dam_df['DeliveryDate'], errors='coerce')
             dam_df = dam_df.dropna(subset=['date_dt'])
             
-            # Add timedelta (HE 1 -> 00:00, so subtract 1 hour)
-            # Use timedelta arithmetic to be safe
             dam_df['timestamp'] = dam_df['date_dt'] + pd.to_timedelta(dam_df['HE_num'], unit='h') - pd.Timedelta(hours=1)
             
             dam_df = dam_df.rename(columns={
@@ -366,28 +361,22 @@ class ParquetDataLoader:
 
         # Load RTM
         try:
-            rtm_df = pd.read_parquet(self.rtm_path)
-            if node:
-                rtm_df = rtm_df[rtm_df['SettlementPointName'] == node].copy()
-            else:
-                rtm_df = rtm_df.copy()
+            filters = [('SettlementPointName', '==', node)] if node else None
             
-            # Ensure numeric types for time calculations
+            rtm_df = pd.read_parquet(self.rtm_path, filters=filters)
+            
+            if rtm_df.empty:
+                return pd.DataFrame()
+            
             rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
             rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')
-            
-            # Drop rows with invalid time info
             rtm_df = rtm_df.dropna(subset=['DH_num', 'DI_num'])
-            
             rtm_df['DH_num'] = rtm_df['DH_num'].astype(int)
             rtm_df['DI_num'] = rtm_df['DI_num'].astype(int)
 
-            # Create timestamp for RTM
             rtm_df['date_dt'] = pd.to_datetime(rtm_df['DeliveryDate'], errors='coerce')
             rtm_df = rtm_df.dropna(subset=['date_dt'])
             
-            # DH 1 -> 00:xx, so subtract 1 hour
-            # DI 1 -> xx:00, DI 2 -> xx:15, so subtract 1 interval * 15 min
             rtm_df['timestamp'] = rtm_df['date_dt'] + \
                                   pd.to_timedelta(rtm_df['DH_num'], unit='h') - pd.Timedelta(hours=1) + \
                                   pd.to_timedelta(rtm_df['DI_num'] * 15, unit='min') - pd.Timedelta(minutes=15)
@@ -402,8 +391,6 @@ class ParquetDataLoader:
             return pd.DataFrame()
 
         # Merge
-        # RTM is 15-min, DAM is hourly.
-        # We want to keep RTM granularity.
         rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
         
         merged = pd.merge(
@@ -415,7 +402,6 @@ class ParquetDataLoader:
             how='left'
         )
         
-        # Clean up
         merged = merged.drop(columns=['hour_start', 'timestamp_dam_drop'], errors='ignore')
         
         merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
@@ -470,6 +456,9 @@ class UploadedFileLoader:
     def _load_file(self, uploaded_file, filename: str) -> pd.DataFrame:
         """Load file based on extension (CSV or Parquet)"""
         try:
+            if hasattr(uploaded_file, 'seek'):
+                uploaded_file.seek(0)
+            
             if filename.endswith('.parquet'):
                 return pd.read_parquet(uploaded_file)
             elif filename.endswith('.csv'):
@@ -500,23 +489,58 @@ class UploadedFileLoader:
         return True
 
     def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
-        """Loads and merges uploaded DAM and RTM price files"""
+        """
+        Loads and merges uploaded DAM and RTM price files.
+        Uses predicate pushdown (filters) for Parquet files to reduce memory usage.
+        """
+        # Define filters if node is provided
+        dam_filters = [('SettlementPoint', '==', node)] if node else None
+        rtm_filters = [('SettlementPointName', '==', node)] if node else None
+
         # Load DAM file
-        dam_df = self._load_file(self.dam_file, self.dam_filename)
-        if dam_df.empty or not self._validate_dam_schema(dam_df):
+        try:
+            if hasattr(self.dam_file, 'seek'):
+                self.dam_file.seek(0)
+            
+            if self.dam_filename.endswith('.parquet'):
+                dam_df = pd.read_parquet(self.dam_file, filters=dam_filters)
+            elif self.dam_filename.endswith('.csv'):
+                dam_df = pd.read_csv(self.dam_file)
+                if node and 'SettlementPoint' in dam_df.columns:
+                    dam_df = dam_df[dam_df['SettlementPoint'] == node]
+            else:
+                return pd.DataFrame()
+                
+            if dam_df.empty or not self._validate_dam_schema(dam_df):
+                return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading DAM file: {e}")
             return pd.DataFrame()
 
         # Load RTM file
-        rtm_df = self._load_file(self.rtm_file, self.rtm_filename)
-        if rtm_df.empty or not self._validate_rtm_schema(rtm_df):
+        try:
+            if hasattr(self.rtm_file, 'seek'):
+                self.rtm_file.seek(0)
+                
+            if self.rtm_filename.endswith('.parquet'):
+                rtm_df = pd.read_parquet(self.rtm_file, filters=rtm_filters)
+            elif self.rtm_filename.endswith('.csv'):
+                rtm_df = pd.read_csv(self.rtm_file)
+                if node and 'SettlementPointName' in rtm_df.columns:
+                    rtm_df = rtm_df[rtm_df['SettlementPointName'] == node]
+            else:
+                return pd.DataFrame()
+
+            if rtm_df.empty or not self._validate_rtm_schema(rtm_df):
+                return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading RTM file: {e}")
             return pd.DataFrame()
 
         # Process DAM (same logic as ParquetDataLoader)
         try:
-            if node:
-                dam_df = dam_df[dam_df['SettlementPoint'] == node].copy()
-            else:
-                dam_df = dam_df.copy()
+            # Note: Filtering already done during load for Parquet, or immediately after for CSV
+            dam_df = dam_df.copy()
 
             dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
             dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
@@ -539,10 +563,8 @@ class UploadedFileLoader:
 
         # Process RTM (same logic as ParquetDataLoader)
         try:
-            if node:
-                rtm_df = rtm_df[rtm_df['SettlementPointName'] == node].copy()
-            else:
-                rtm_df = rtm_df.copy()
+            # Note: Filtering already done during load for Parquet, or immediately after for CSV
+            rtm_df = rtm_df.copy()
 
             rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
             rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')

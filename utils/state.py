@@ -96,6 +96,11 @@ class AppState:
     _data_cache_key: Optional[str] = None  # Track what data is currently cached
     _dates_auto_selected: bool = False  # Track if dates were auto-selected (vs manually set)
 
+    # File upload tracking
+    uploaded_dam_file: Optional[object] = None  # BytesIO from st.file_uploader
+    uploaded_rtm_file: Optional[object] = None  # BytesIO from st.file_uploader
+    using_uploaded_files: bool = False  # Track if user is using uploaded files
+
 
 
 def init_state():
