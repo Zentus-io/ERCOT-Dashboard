@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import date, timedelta
 import pandas as pd
 from core.battery.battery import BatterySpecs
-from core.data.loaders import DataLoader, SupabaseDataLoader, UploadedFileLoader, ParquetDataLoader
+from core.data.loaders import SupabaseDataLoader, UploadedFileLoader, ParquetDataLoader
 from utils.state import (
     get_state, update_state, clear_simulation_cache, needs_data_reload,
     get_cache_key, update_date_range, get_date_range_str, clear_data_cache
@@ -50,10 +50,8 @@ def load_node_list(source: str = 'csv'):
         except Exception as e:
             st.warning(f"⚠️ Error fetching nodes from uploaded files: {str(e)}")
 
-    # Fallback to CSV or if DB/Parquet failed
-    csv_loader = DataLoader(data_dir)
-    price_data = csv_loader.load_prices()
-    return csv_loader.get_nodes(price_data)
+    # Fallback if DB/Parquet failed or empty
+    return []
 
 
 @st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading price data...")
@@ -108,10 +106,8 @@ def load_node_prices(
             st.warning(f"⚠️ Upload error: {str(e)}")
 
 
-    # CSV fallback (demo mode)
-    csv_loader = DataLoader(data_dir)
-    price_data = csv_loader.load_prices()
-    return csv_loader.filter_by_node(price_data, node)
+    # Fallback
+    return pd.DataFrame()
 
 
 @st.cache_data(ttl=3600)
@@ -232,22 +228,19 @@ def render_sidebar():
     if SUPABASE_URL and SUPABASE_KEY:
         data_source_ui = st.sidebar.radio(
             "Data Source:",
-            options=['Database', 'CSV Demo', 'Local Parquet'],
+            options=['Database', 'Local Parquet'],
             index={
                 'database': 0,
-                'csv': 1,
-                'local_parquet': 2
-            }.get(state.data_source, 1),
-            help="**Database**: Multi-day historical data from Supabase\n**CSV Demo**: Single-day sample data\n**Local Parquet**: Upload your own DAM/RTM parquet files"
+                'local_parquet': 1
+            }.get(state.data_source, 0),
+            help="**Database**: Multi-day historical data from Supabase\n**Local Parquet**: Upload your own DAM/RTM parquet files"
         )
 
         # Map display names to internal values
         if data_source_ui == 'Database':
             data_source_internal = 'database'
-        elif data_source_ui == 'Local Parquet':
-            data_source_internal = 'local_parquet'
         else:
-            data_source_internal = 'csv'
+            data_source_internal = 'local_parquet'
 
         # Logic: Only switch to local_parquet if files are ready
         if data_source_internal == 'local_parquet':
@@ -268,9 +261,9 @@ def render_sidebar():
                 state.using_uploaded_files = False
                 clear_data_cache()
     else:
-        # No database credentials - force CSV mode
-        state.data_source = 'csv'
-        st.sidebar.info("📌 **CSV Demo Mode** - Configure Supabase for multi-day data")
+        # No database credentials - force Local Parquet mode
+        state.data_source = 'local_parquet'
+        st.sidebar.info("📌 **Local Mode** - Configure Supabase for historical data")
 
     # ========================================================================
     # DATE RANGE SELECTION (Database mode only)
@@ -415,9 +408,8 @@ def render_sidebar():
         st.sidebar.caption(f"📅 **{days_selected} days** selected")
 
     elif state.data_source == 'csv':
-        # CSV mode - use fixed date from data
-        st.sidebar.markdown("---")
-        st.sidebar.info("📌 **Single-day demo data** (July 20, 2025)")
+        # Should not happen with new logic, but safe fallback
+        st.sidebar.warning("⚠️ CSV Demo Mode is deprecated. Please use Local Parquet.")
 
     # ========================================================================
     # PARQUET FILE UPLOAD (Show if UI selected Local Parquet)

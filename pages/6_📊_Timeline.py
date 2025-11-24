@@ -14,7 +14,6 @@ from ui.components.sidebar import render_sidebar
 from utils.state import get_state, has_valid_config
 from core.battery.simulator import BatterySimulator
 from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
-from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -57,8 +56,8 @@ if state.selected_node is None:
     st.stop()
 
 # Load node data
-loader = DataLoader(Path(__file__).parent.parent / 'data')
-node_data = loader.filter_by_node(state.price_data, state.selected_node)
+# Load node data
+node_data = state.price_data[state.price_data['node'] == state.selected_node].copy()
 
 # Check if battery specs are configured
 if state.battery_specs is None:

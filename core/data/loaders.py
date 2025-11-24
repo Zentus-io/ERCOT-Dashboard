@@ -18,63 +18,6 @@ from config.settings import (
 )
 
 
-class DataLoader:
-    """
-    Centralized data loading from local CSV files.
-    """
-    def __init__(self, data_dir: Path):
-        self.data_dir = Path(data_dir)
-
-    def load_prices(self) -> pd.DataFrame:
-        """Loads and merges DA and RT prices from local CSV files."""
-        da_prices_path = self.data_dir / 'da_prices.csv'
-        rt_prices_path = self.data_dir / 'rt_prices.csv'
-
-        if not da_prices_path.exists() or not rt_prices_path.exists():
-            return pd.DataFrame()
-
-        da_prices = pd.read_csv(da_prices_path, parse_dates=['timestamp'])
-        rt_prices = pd.read_csv(rt_prices_path, parse_dates=['timestamp'])
-
-        # Rename 'node' to 'settlement_point' to match new schema
-        da_prices.rename(columns={'node': 'settlement_point'}, inplace=True)
-        rt_prices.rename(columns={'node': 'settlement_point'}, inplace=True)
-        
-        merged = pd.merge(
-            da_prices, rt_prices, on=['timestamp', 'settlement_point'], suffixes=('_da', '_rt')
-        )
-
-        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
-        merged['price_spread'] = abs(merged['forecast_error'])
-        merged['extreme_event'] = merged['price_spread'] > 10
-        return merged.rename(columns={'settlement_point': 'node'}) # Rename back to node for app consistency
-
-
-
-    def get_nodes(self, price_df: pd.DataFrame) -> list:
-        # Handle both 'node' and 'settlement_point' column names
-        if 'node' in price_df.columns:
-            return sorted(price_df['node'].unique())
-        elif 'settlement_point' in price_df.columns:
-            return sorted(price_df['settlement_point'].unique())
-        else:
-            return []
-
-    def filter_by_node(self, price_df: pd.DataFrame, node: str) -> pd.DataFrame:
-        # Handle both 'node' and 'settlement_point' column names
-        if price_df.empty:
-            return price_df
-
-        if 'node' in price_df.columns:
-            node_data = price_df[price_df['node'] == node].copy()
-        elif 'settlement_point' in price_df.columns:
-            node_data = price_df[price_df['settlement_point'] == node].copy()
-        else:
-            return pd.DataFrame()
-
-        return node_data.sort_values('timestamp').reset_index(drop=True)
-
-
 class SupabaseDataLoader:
     """
     Data loader for Supabase database with an optimized schema.

@@ -112,12 +112,12 @@ DB_TIMEOUT = 10  # seconds
 DB_BATCH_SIZE = 1000  # records per batch for bulk operations
 
 # Data source selection
-# Options: 'csv' (local CSV files) or 'database' (Supabase)
-# Default to CSV if database credentials not configured
+# Options: 'database' (Supabase) or 'local_parquet' (User Upload)
+# Default to local_parquet if database credentials not configured
 if SUPABASE_URL and SUPABASE_KEY:
     DEFAULT_DATA_SOURCE = 'database'
 else:
-    DEFAULT_DATA_SOURCE = 'csv'
+    DEFAULT_DATA_SOURCE = 'local_parquet'
 
 # Date range defaults for database queries
 DEFAULT_DAYS_BACK = 30  # Default to last 30 days when using database

@@ -17,7 +17,6 @@ from core.battery.strategies import (
     ThresholdStrategy,
     RollingWindowStrategy
 )
-from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
 import pandas as pd
@@ -56,11 +55,10 @@ if state.price_data is None:
     st.stop()
 
 # Load node data
-loader = DataLoader(Path(__file__).parent.parent / 'data')
 if state.selected_node is None:
     st.error("⚠️ No settlement point selected. Please select a node in the sidebar.")
     st.stop()
-node_data = loader.filter_by_node(state.price_data, state.selected_node)
+node_data = state.price_data[state.price_data['node'] == state.selected_node].copy()
 
 # Check if battery specs are configured
 if state.battery_specs is None:
