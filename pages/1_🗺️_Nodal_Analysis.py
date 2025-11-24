@@ -26,8 +26,6 @@ with col1:
     
     if source == 'local_parquet':
         st.success("✅ Local Parquet Optimized for Nodal Scanning")
-    elif source == 'database':
-        st.warning("⚠️ Database scanning can be slow. Limited to top 50 nodes for demo.")
 
 with col2:
     scan_btn = st.button("🚀 Run Nodal Assessment", type="primary", width="stretch")
