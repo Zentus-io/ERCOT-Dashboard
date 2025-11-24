@@ -99,19 +99,25 @@ view_mode = st.radio(
     horizontal=True
 )
 
+# Calculate charge/discharge times for improved strategy (used by both views and summary stats)
+charge_times = improved_result.dispatch_df[improved_result.dispatch_df['dispatch'] == 'charge']
+discharge_times = improved_result.dispatch_df[improved_result.dispatch_df['dispatch'] == 'discharge']
+
 if view_mode == "Detailed (Hourly)":
-    # Create figure with subplots for each strategy
+    # Create figure with subplots for each strategy PLUS price context
     fig_timeline = make_subplots(
-        rows=4, cols=1,
+        rows=5, cols=1,
         subplot_titles=(
             "Baseline (DA Only)",
             f"Improved (+{state.forecast_improvement}%)",
             "Strategy Max (100%)",
-            "LP Benchmark (Theoretical Max)"
+            "LP Benchmark (Theoretical Max)",
+            f"Price Context - Improved Strategy ({state.forecast_improvement}% improvement)"
         ),
         shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.25, 0.25, 0.25, 0.25]
+        vertical_spacing=0.05,
+        row_heights=[0.2, 0.2, 0.2, 0.2, 0.2],
+        specs=[[{"secondary_y": False}]] * 5  # All rows have single y-axis
     )
 
     # Define colors for actions
@@ -189,18 +195,54 @@ if view_mode == "Detailed (Hourly)":
     add_dispatch_bars(fig_timeline, optimal_result.dispatch_df, 3, state.battery_specs.power_mw)
     add_dispatch_bars(fig_timeline, theoretical_max_result.dispatch_df, 4, state.battery_specs.power_mw)
 
+    # Add price context to row 5
+    fig_timeline.add_trace(go.Scatter(
+        x=node_data['timestamp'],
+        y=node_data['price_mwh_rt'],
+        name='Real-Time Price',
+        line=dict(color='#0A5F7A', width=2),
+        showlegend=True
+    ), row=5, col=1)
+
+    # Add dispatch markers for improved strategy on price chart
+    fig_timeline.add_trace(go.Scatter(
+        x=charge_times['timestamp'],
+        y=charge_times['actual_price'],
+        mode='markers',
+        name='Charge Decisions',
+        marker=dict(color='#28A745', size=10, symbol='triangle-down'),
+        hovertemplate='Charge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>',
+        showlegend=True
+    ), row=5, col=1)
+
+    fig_timeline.add_trace(go.Scatter(
+        x=discharge_times['timestamp'],
+        y=discharge_times['actual_price'],
+        mode='markers',
+        name='Discharge Decisions',
+        marker=dict(color='#DC3545', size=10, symbol='triangle-up'),
+        hovertemplate='Discharge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>',
+        showlegend=True
+    ), row=5, col=1)
+
     fig_timeline.update_layout(
-        height=800,
+        height=1000,
         barmode='stack',
         bargap=0.1,
-        title_text=f"Battery Dispatch Timeline - {state.strategy_type} vs LP Benchmark",
+        title_text=f"Battery Dispatch Timeline with Price Context - {state.strategy_type} vs LP Benchmark",
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1)
     )
 
-    # Fix y-axis range to [0, 1] for accurate visual proportions
-    fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False)
-    fig_timeline.update_xaxes(title_text="Time", row=4, col=1)
+    # Fix y-axis range to [0, 1] for dispatch rows (rows 1-4)
+    for row in range(1, 5):
+        fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False, row=row, col=1)
+
+    # Configure price chart y-axis (row 5)
+    fig_timeline.update_yaxes(title_text="Price ($/MWh)", row=5, col=1)
+
+    # Configure x-axis for the bottom plot only
+    fig_timeline.update_xaxes(title_text="Time", row=5, col=1)
 
 else:
     # Daily Aggregation View
@@ -261,58 +303,6 @@ else:
     fig_timeline.update_yaxes(title_text="Energy (MWh)")
 
 st.plotly_chart(fig_timeline, width="stretch")
-
-# ============================================================================
-# PRICE CONTEXT FOR DISPATCH DECISIONS
-# ============================================================================
-
-st.markdown("---")
-st.markdown("### Price Context for Dispatch Decisions")
-
-fig_price_dispatch = go.Figure()
-
-# Add price line
-fig_price_dispatch.add_trace(go.Scatter(
-    x=node_data['timestamp'],
-    y=node_data['price_mwh_rt'],
-    name='Real-Time Price',
-    line=dict(color='#0A5F7A', width=2)
-))
-
-# Add dispatch markers for improved strategy
-charge_times = improved_result.dispatch_df[improved_result.dispatch_df['dispatch'] == 'charge']
-discharge_times = improved_result.dispatch_df[improved_result.dispatch_df['dispatch'] == 'discharge']
-
-fig_price_dispatch.add_trace(go.Scatter(
-    x=charge_times['timestamp'],
-    y=charge_times['actual_price'],
-    mode='markers',
-    name='Charge',
-    marker=dict(color='#28A745', size=12, symbol='triangle-down'),
-    hovertemplate='Charge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>'
-))
-
-fig_price_dispatch.add_trace(go.Scatter(
-    x=discharge_times['timestamp'],
-    y=discharge_times['actual_price'],
-    mode='markers',
-    name='Discharge',
-    marker=dict(color='#DC3545', size=12, symbol='triangle-up'),
-    hovertemplate='Discharge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>'
-))
-
-fig_price_dispatch.update_layout(
-    title=f"Dispatch Decisions Overlaid on Price - Improved Strategy ({state.forecast_improvement}% improvement)",
-    xaxis_title="Time",
-    yaxis_title="Price ($/MWh)",
-    height=400,
-    hovermode='x unified'
-)
-
-from ui.components.charts import apply_standard_chart_styling
-apply_standard_chart_styling(fig_price_dispatch)
-
-st.plotly_chart(fig_price_dispatch, width="stretch")
 
 # ============================================================================
 # SUMMARY STATISTICS

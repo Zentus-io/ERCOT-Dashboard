@@ -200,7 +200,7 @@ with col1:
         title="Distribution of Actions (Baseline)",
         color_discrete_map=dispatch_colors
     )
-    st.plotly_chart(fig_dispatch_baseline, use_container_width=True)
+    st.plotly_chart(fig_dispatch_baseline, width="stretch")
 
 with col2:
     st.markdown(f"### Improved (+{state.forecast_improvement}%)")
@@ -211,7 +211,7 @@ with col2:
         title="Distribution of Actions (Improved)",
         color_discrete_map=dispatch_colors
     )
-    st.plotly_chart(fig_dispatch_improved, use_container_width=True)
+    st.plotly_chart(fig_dispatch_improved, width="stretch")
 
 # Row 2: Strategy Max and LP Benchmark
 col3, col4 = st.columns(2)
@@ -225,7 +225,7 @@ with col3:
         title="Distribution of Actions (Strategy Max)",
         color_discrete_map=dispatch_colors
     )
-    st.plotly_chart(fig_dispatch_optimal, use_container_width=True)
+    st.plotly_chart(fig_dispatch_optimal, width="stretch")
 
 with col4:
     st.markdown("### LP Benchmark")
@@ -236,7 +236,7 @@ with col4:
         title="Distribution of Actions (LP Benchmark)",
         color_discrete_map=dispatch_colors
     )
-    st.plotly_chart(fig_dispatch_lp, use_container_width=True)
+    st.plotly_chart(fig_dispatch_lp, width="stretch")
 
 # ============================================================================
 # OPERATIONS SUMMARY

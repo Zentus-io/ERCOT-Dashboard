@@ -30,7 +30,7 @@ with col1:
         st.warning("⚠️ Database scanning can be slow. Limited to top 50 nodes for demo.")
 
 with col2:
-    scan_btn = st.button("🚀 Run Nodal Assessment", type="primary", use_container_width=True)
+    scan_btn = st.button("🚀 Run Nodal Assessment", type="primary", width="stretch")
 
 @st.cache_data(ttl=3600, show_spinner="Scanning nodes...")
 def run_nodal_assessment(source: str):
@@ -106,7 +106,7 @@ if scan_btn:
         # Metrics styling
         st.dataframe(
             results_df.style.background_gradient(subset=['Revenue Score', 'Volatility ($/MWh)'], cmap='Greens'),
-            use_container_width=True
+            width="stretch"
         )
         
         # Visual Comparison
@@ -126,7 +126,7 @@ if scan_btn:
             
             # Plot Spread Distribution
             fig = px.box(combined, x='Node', y='price_spread', title="Price Spread Distribution (Volatility)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
     else:
         if not results_data and scan_btn: # Only show error if button was clicked and no results

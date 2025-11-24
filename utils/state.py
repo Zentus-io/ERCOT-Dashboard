@@ -94,6 +94,7 @@ class AppState:
 
     # Cache tracking
     _data_cache_key: Optional[str] = None  # Track what data is currently cached
+    _dates_auto_selected: bool = False  # Track if dates were auto-selected (vs manually set)
 
 
 

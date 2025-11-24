@@ -100,6 +100,84 @@ def load_engie_data():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def find_best_date_range(node: str, min_completeness: float = 95.0):
+    """
+    Find the longest contiguous date range with high data availability.
+
+    Args:
+        node: Settlement point name
+        min_completeness: Minimum completeness threshold (default 95%)
+
+    Returns:
+        tuple: (start_date, end_date) or None if no suitable range found
+    """
+    try:
+        db_loader = SupabaseDataLoader()
+        availability_df = db_loader.get_node_availability(node)
+
+        if availability_df.empty:
+            return None
+
+        # Filter for high-quality data
+        availability_df = availability_df[availability_df['completeness'] >= min_completeness].copy()
+
+        if availability_df.empty:
+            return None
+
+        # Sort by date
+        availability_df = availability_df.sort_values('date').reset_index(drop=True)
+
+        # Convert date column to datetime.date if needed
+        if not isinstance(availability_df['date'].iloc[0], date):
+            availability_df['date'] = pd.to_datetime(availability_df['date']).dt.date
+
+        # Find longest contiguous sequence
+        max_length = 0
+        max_start = None
+        max_end = None
+
+        current_start = availability_df['date'].iloc[0]
+        current_length = 1
+
+        for i in range(1, len(availability_df)):
+            prev_date = availability_df['date'].iloc[i - 1]
+            curr_date = availability_df['date'].iloc[i]
+
+            # Check if dates are consecutive
+            if (curr_date - prev_date).days == 1:
+                current_length += 1
+            else:
+                # End of contiguous sequence
+                if current_length > max_length:
+                    max_length = current_length
+                    max_start = current_start
+                    max_end = prev_date
+
+                # Start new sequence
+                current_start = curr_date
+                current_length = 1
+
+        # Check last sequence
+        if current_length > max_length:
+            max_length = current_length
+            max_start = current_start
+            max_end = availability_df['date'].iloc[-1]
+
+        if max_start and max_end and max_length > 0:
+            # Cap the range to MAX_DAYS_RANGE if needed
+            if (max_end - max_start).days > MAX_DAYS_RANGE:
+                max_end = max_start + timedelta(days=MAX_DAYS_RANGE)
+
+            return (max_start, max_end)
+
+        return None
+
+    except Exception as e:
+        st.warning(f"⚠️ Could not auto-select date range: {str(e)}")
+        return None
+
+
 def render_sidebar():
     """
     Render configuration sidebar.
@@ -213,15 +291,17 @@ def render_sidebar():
             if date_diff > MAX_DAYS_RANGE:
                 st.sidebar.error(f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
             elif start_date != state.start_date or end_date != state.end_date:
-                # Update date range
+                # User manually changed dates - update and mark as manual selection
                 try:
                     update_date_range(start_date, end_date)
+                    state._dates_auto_selected = False  # User manually set dates
                 except ValueError as e:
                     st.sidebar.error(f"⚠️ {str(e)}")
 
         # Show date range summary
         days_selected = (state.end_date - state.start_date).days + 1
-        st.sidebar.caption(f"📅 **{days_selected} days** selected")
+        auto_indicator = " (auto-selected)" if state._dates_auto_selected else ""
+        st.sidebar.caption(f"📅 **{days_selected} days** selected{auto_indicator}")
 
     elif state.data_source == 'local_parquet':
         st.sidebar.markdown("---")
@@ -257,7 +337,19 @@ def render_sidebar():
     if selected_node != state.selected_node:
         update_state(selected_node=selected_node)
         clear_simulation_cache()
-        
+
+        # Auto-select best date range when node changes (database mode only)
+        if state.data_source == 'database' and selected_node:
+            best_range = find_best_date_range(selected_node)
+            if best_range:
+                start_date, end_date = best_range
+                try:
+                    update_date_range(start_date, end_date)
+                    state._dates_auto_selected = True
+                    st.sidebar.success(f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
+                except ValueError:
+                    pass  # If update fails, just keep current dates
+
     # 2. Load Price Data for Selected Node
     if needs_data_reload() or state.price_data is None or state.price_data.empty or (state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
         if state.selected_node:
