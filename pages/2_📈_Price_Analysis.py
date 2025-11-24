@@ -179,10 +179,22 @@ with col1:
 with col2:
     st.subheader("Forecast Error Distribution")
 
-    # Calculate optimal bins using Sturges' rule
+    # Calculate optimal bins using Freedman-Diaconis rule
     forecast_data = node_data['forecast_error'].dropna()
     n = len(forecast_data)
-    optimal_bins = int(np.ceil(np.log2(n) + 1))
+
+    # Freedman-Diaconis rule: bin_width = 2 * IQR / n^(1/3)
+    q75, q25 = np.percentile(forecast_data, [75, 25])
+    iqr = q75 - q25
+    bin_width_fd = 2 * iqr / (n ** (1/3))
+
+    # Calculate number of bins
+    data_range = forecast_data.max() - forecast_data.min()
+    if bin_width_fd > 0:
+        optimal_bins = int(np.ceil(data_range / bin_width_fd))
+    else:
+        # Fallback if IQR is 0 (all data in one quartile)
+        optimal_bins = int(np.ceil(np.sqrt(n)))
 
     # Add reasonable bounds (min 10, max 50)
     optimal_bins = max(10, min(50, optimal_bins))
@@ -202,7 +214,7 @@ with col2:
     )])
 
     fig_error_hist.update_layout(
-        title=f"DA Forecast Error Distribution ({optimal_bins} bins, Sturges' rule)",
+        title=f"DA Forecast Error Distribution ({optimal_bins} bins, Freedman-Diaconis)",
         xaxis_title='Forecast Error ($/MWh)',
         yaxis_title='Count',
         showlegend=False
