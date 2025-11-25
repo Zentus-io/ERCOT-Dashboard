@@ -573,9 +573,11 @@ def render_sidebar():
 
     def on_strategy_change():
         """Callback for strategy change"""
-        new_strategy = st.session_state.strategy_radio
-        update_state(strategy_type=new_strategy)
-        clear_simulation_cache()
+        # Check if the key exists before accessing it
+        if "strategy_radio" in st.session_state:
+            new_strategy = st.session_state.strategy_radio
+            update_state(strategy_type=new_strategy)
+            clear_simulation_cache()
 
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
