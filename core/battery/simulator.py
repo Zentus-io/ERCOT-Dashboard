@@ -81,7 +81,7 @@ def run_simulation_cached(
     strategy_type = strategy_params.get('type', 'Threshold-Based')
     
     # Import here to avoid circular imports if any
-    from .strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy
+    from .strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
     
     if strategy_type == 'Threshold-Based':
         strategy = ThresholdStrategy(
@@ -94,6 +94,10 @@ def run_simulation_cached(
         )
     elif strategy_type == 'Linear Optimization (Perfect Foresight)':
         strategy = LinearOptimizationStrategy()
+    elif strategy_type == 'MPC (Rolling Horizon)':
+        strategy = MPCStrategy(
+            horizon_hours=strategy_params.get('horizon_hours', 24)
+        )
     else:
         # Default fallback
         strategy = ThresholdStrategy(0.25, 0.75)
@@ -219,6 +223,9 @@ class BatterySimulator:
         
         if hasattr(strategy, 'window_hours'):
             strategy_params['window_hours'] = strategy.window_hours
+
+        if hasattr(strategy, 'horizon_hours'):
+            strategy_params['horizon_hours'] = strategy.horizon_hours
             
         return run_simulation_cached(
             price_df,

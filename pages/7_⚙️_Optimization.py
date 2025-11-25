@@ -101,12 +101,50 @@ if strategy_name == "Threshold-Based":
     st.markdown("Simple logic: Charge when price < Xth percentile, Discharge when price > Yth percentile.")
 elif strategy_name == "Rolling Window Optimization":
     st.markdown(f"Looks ahead {state.window_hours} hours to find local minima/maxima.")
+elif strategy_name == "MPC (Rolling Horizon)":
+    st.markdown(f"Optimizes over a {state.horizon_hours}-hour rolling horizon at each step.")
 
 # ============================================================================
 # STRATEGY-SPECIFIC ANALYSIS
 # ============================================================================
 
-if state.strategy_type == "Rolling Window Optimization":
+if state.strategy_type == "MPC (Rolling Horizon)":
+    # MPC STRATEGY ANALYSIS
+    st.markdown(f"### MPC Strategy (Horizon: {state.horizon_hours} hours)")
+
+    st.info(f"""
+    **How it works:**
+    - At each hour, solves a full Linear Programming optimization for the next {state.horizon_hours} hours.
+    - Implements ONLY the first hour's decision.
+    - Moves forward one hour and repeats (Rolling Horizon).
+    
+    **Advantages:**
+    - **Industry Standard:** The gold standard for battery dispatch.
+    - **Optimal Planning:** Considers future constraints (e.g., "I need to be empty tomorrow morning to charge cheap solar").
+    - **Robust:** Re-optimizes every hour, naturally correcting for forecast errors as new data arrives.
+    """)
+    
+    # Show example of MPC vs Rolling Window vs Perfect Foresight
+    st.markdown("---")
+    st.markdown("### MPC vs. Other Strategies")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**MPC vs. Rolling Window**")
+        st.markdown("""
+        - **Rolling Window** is "greedy" - it just looks for min/max prices.
+        - **MPC** optimizes *volume* - it knows exactly how much to charge/discharge to hit SOC targets.
+        """)
+        
+    with col2:
+        st.markdown("**MPC vs. Perfect Foresight**")
+        st.markdown(f"""
+        - **Perfect Foresight** sees the *entire year* at once.
+        - **MPC** only sees the next {state.horizon_hours} hours.
+        - MPC is "real-world optimal" - the best you can do with available forecasts.
+        """)
+
+elif state.strategy_type == "Rolling Window Optimization":
     # ROLLING WINDOW STRATEGY ANALYSIS
     st.markdown(f"### Rolling Window Strategy (Lookahead: {state.window_hours} hours)")
 

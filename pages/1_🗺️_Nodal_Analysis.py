@@ -111,6 +111,13 @@ if results_data:
         results_df.style.background_gradient(subset=['Revenue Score', 'Volatility ($/MWh)'], cmap='Greens'),
         width="stretch"
     )
+
+    st.caption("""
+    **Metric Definitions:**
+    - **Volatility:** Standard deviation of Real-Time Market (RTM) prices. Higher volatility often implies more arbitrage opportunities.
+    - **Avg Spread:** Average absolute difference between Day-Ahead and Real-Time prices.
+    - **Revenue Score:** A simplified proxy for profitability. It is the sum of all price spreads greater than $20/MWh. A higher score indicates more frequent and larger arbitrage opportunities.
+    """)
     
     # Visual Comparison
     top_3 = results_df.head(3)['Node'].tolist()

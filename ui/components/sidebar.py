@@ -571,19 +571,24 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Dispatch Strategy")
 
+    def on_strategy_change():
+        """Callback for strategy change"""
+        new_strategy = st.session_state.strategy_radio
+        update_state(strategy_type=new_strategy)
+        clear_simulation_cache()
+
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
-        options=["Threshold-Based", "Rolling Window Optimization"],
+        options=["Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"],
         index={
             "Threshold-Based": 0,
-            "Rolling Window Optimization": 1
+            "Rolling Window Optimization": 1,
+            "MPC (Rolling Horizon)": 2
         }.get(state.strategy_type, 0),
-        help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page)."
+        help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page).",
+        key="strategy_radio",
+        on_change=on_strategy_change
     )
-
-    if strategy_type != state.strategy_type:
-        update_state(strategy_type=strategy_type)
-        clear_simulation_cache()
 
     # Strategy-specific parameters
     if strategy_type == "Threshold-Based":
@@ -611,7 +616,7 @@ def render_sidebar():
             update_state(charge_percentile=charge_pct, discharge_percentile=discharge_pct)
             clear_simulation_cache()
 
-    else:  # Rolling Window
+    elif strategy_type == "Rolling Window Optimization":
         st.sidebar.markdown("**Optimization Parameters:**")
 
         window = st.sidebar.slider(
@@ -625,6 +630,23 @@ def render_sidebar():
 
         if window != state.window_hours:
             update_state(window_hours=window)
+            clear_simulation_cache()
+            
+    elif strategy_type == "MPC (Rolling Horizon)":
+        st.sidebar.markdown("**MPC Parameters:**")
+        
+        horizon = st.sidebar.slider(
+            "Optimization Horizon (hours):",
+            min_value=12,
+            max_value=72,
+            value=state.horizon_hours if hasattr(state, 'horizon_hours') else 24,
+            step=12,
+            help="Lookahead horizon for each optimization step. Longer horizons are slower but more optimal."
+        )
+        
+        # Update state with horizon if it changed or wasn't set
+        if not hasattr(state, 'horizon_hours') or horizon != state.horizon_hours:
+            update_state(horizon_hours=horizon)
             clear_simulation_cache()
 
     # ========================================================================

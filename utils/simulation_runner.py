@@ -2,7 +2,7 @@ import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
 from utils.state import get_state
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy
+from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
 
 
 def _should_rerun_simulation(scenario: str) -> bool:
@@ -111,6 +111,8 @@ def run_or_get_cached_simulation():
             strategy = LinearOptimizationStrategy()
         elif state.strategy_type == "Rolling Window Optimization":
             strategy = RollingWindowStrategy(state.window_hours)
+        elif state.strategy_type == "MPC (Rolling Horizon)":
+            strategy = MPCStrategy(state.horizon_hours)
         else:  # Threshold-Based
             strategy = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
 
