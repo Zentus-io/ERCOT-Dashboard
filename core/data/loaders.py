@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Literal
 from datetime import datetime, date, timedelta
 import pandas as pd
+import polars as pl
 
 import streamlit as st
 from supabase import create_client, Client
@@ -276,11 +277,13 @@ class ParquetDataLoader:
 
         # Load DAM
         try:
-            # Use filters to only load data for the specific node
-            # This is "lazy loading" - we only read the row groups we need
-            filters = [('SettlementPoint', '==', node)] if node else None
-            
-            dam_df = pd.read_parquet(self.dam_path, filters=filters)
+            # Use polars lazy loading with filter for efficient I/O
+            if node:
+                dam_df = pl.scan_parquet(self.dam_path).filter(
+                    pl.col('SettlementPoint') == node
+                ).collect().to_pandas()
+            else:
+                dam_df = pl.read_parquet(self.dam_path).to_pandas()
             
             if dam_df.empty:
                 return pd.DataFrame()
@@ -307,9 +310,13 @@ class ParquetDataLoader:
 
         # Load RTM
         try:
-            filters = [('SettlementPointName', '==', node)] if node else None
-            
-            rtm_df = pd.read_parquet(self.rtm_path, filters=filters)
+            # Use polars lazy loading with filter for efficient I/O
+            if node:
+                rtm_df = pl.scan_parquet(self.rtm_path).filter(
+                    pl.col('SettlementPointName') == node
+                ).collect().to_pandas()
+            else:
+                rtm_df = pl.read_parquet(self.rtm_path).to_pandas()
             
             if rtm_df.empty:
                 return pd.DataFrame()
@@ -362,8 +369,9 @@ class ParquetDataLoader:
             return []
         try:
             # Read only the SettlementPoint column to get unique values
-            df = pd.read_parquet(self.dam_path, columns=['SettlementPoint'])
-            return sorted(df['SettlementPoint'].unique().tolist())
+            # Use polars for fast parquet I/O, then convert to pandas
+            unique_nodes = pl.scan_parquet(self.dam_path).select('SettlementPoint').unique().collect()
+            return sorted(unique_nodes.to_pandas()['SettlementPoint'].tolist())
         except Exception as e:
             st.error(f"Error getting nodes from parquet: {e}")
             return []
@@ -373,8 +381,9 @@ class ParquetDataLoader:
         if not self.dam_path.exists():
             return None, None
         try:
-            df = pd.read_parquet(self.dam_path, columns=['DeliveryDate'])
-            dates = pd.to_datetime(df['DeliveryDate'])
+            # Use polars for fast parquet I/O
+            dates_pl = pl.scan_parquet(self.dam_path).select('DeliveryDate').collect()
+            dates = pd.to_datetime(dates_pl.to_pandas()['DeliveryDate'])
             return dates.min().date(), dates.max().date()
         except Exception as e:
             return None, None
