@@ -15,6 +15,7 @@ scipy>=1.10.0  # Linear optimization (linprog) and signal processing
 
 # Visualization
 plotly>=5.17.0  # Interactive charts (used in ui/components/charts.py)
+matplotlib>=3.5.0  # Required by pandas.style.background_gradient() for colormaps
 tqdm>=4.65.0  # Progress bars (fetch_ercot_data.py, fetch_ercot_api.py)
 
 # API and HTTP
