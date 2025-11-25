@@ -19,7 +19,7 @@ import datetime
 from datetime import date, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Set
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -46,7 +46,7 @@ DEFAULT_HISTORIC_START = date(2024, 1, 1)  # Fallback if database is empty
 # HELPER FUNCTIONS
 # ============================================================================
 
-def fetch_ercot_prices_for_day(iso: Ercot, day: date, market: Markets, market_name: str, filter_nodes: set = None) -> pd.DataFrame:
+def fetch_ercot_prices_for_day(iso: Ercot, day: date, market: Markets, market_name: str, filter_nodes: Optional[Set[str]] = None) -> pd.DataFrame:
     """Fetches ERCOT prices for a single day and market, optionally filtering by nodes."""
     try:
         prices = iso.get_spp(date=day, market=market)
@@ -131,7 +131,7 @@ def upsert_to_supabase(supabase: Client, records: list[dict]) -> int:
         return total_inserted  # Return what was successfully inserted before failure
 
 
-def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, filter_nodes: set = None, retry_count: int = 0) -> dict:
+def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, filter_nodes: Optional[Set[str]] = None, retry_count: int = 0) -> dict:
     """Orchestrates fetching, transforming, and storing data for a single day."""
     stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0, 'success': False}
     try:

@@ -18,63 +18,6 @@ from config.settings import (
 )
 
 
-class DataLoader:
-    """
-    Centralized data loading from local CSV files.
-    """
-    def __init__(self, data_dir: Path):
-        self.data_dir = Path(data_dir)
-
-    def load_prices(self) -> pd.DataFrame:
-        """Loads and merges DA and RT prices from local CSV files."""
-        da_prices_path = self.data_dir / 'da_prices.csv'
-        rt_prices_path = self.data_dir / 'rt_prices.csv'
-
-        if not da_prices_path.exists() or not rt_prices_path.exists():
-            return pd.DataFrame()
-
-        da_prices = pd.read_csv(da_prices_path, parse_dates=['timestamp'])
-        rt_prices = pd.read_csv(rt_prices_path, parse_dates=['timestamp'])
-
-        # Rename 'node' to 'settlement_point' to match new schema
-        da_prices.rename(columns={'node': 'settlement_point'}, inplace=True)
-        rt_prices.rename(columns={'node': 'settlement_point'}, inplace=True)
-        
-        merged = pd.merge(
-            da_prices, rt_prices, on=['timestamp', 'settlement_point'], suffixes=('_da', '_rt')
-        )
-
-        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
-        merged['price_spread'] = abs(merged['forecast_error'])
-        merged['extreme_event'] = merged['price_spread'] > 10
-        return merged.rename(columns={'settlement_point': 'node'}) # Rename back to node for app consistency
-
-
-
-    def get_nodes(self, price_df: pd.DataFrame) -> list:
-        # Handle both 'node' and 'settlement_point' column names
-        if 'node' in price_df.columns:
-            return sorted(price_df['node'].unique())
-        elif 'settlement_point' in price_df.columns:
-            return sorted(price_df['settlement_point'].unique())
-        else:
-            return []
-
-    def filter_by_node(self, price_df: pd.DataFrame, node: str) -> pd.DataFrame:
-        # Handle both 'node' and 'settlement_point' column names
-        if price_df.empty:
-            return price_df
-
-        if 'node' in price_df.columns:
-            node_data = price_df[price_df['node'] == node].copy()
-        elif 'settlement_point' in price_df.columns:
-            node_data = price_df[price_df['settlement_point'] == node].copy()
-        else:
-            return pd.DataFrame()
-
-        return node_data.sort_values('timestamp').reset_index(drop=True)
-
-
 class SupabaseDataLoader:
     """
     Data loader for Supabase database with an optimized schema.
@@ -139,8 +82,11 @@ class SupabaseDataLoader:
                 dam_df.rename(columns={'price_mwh': 'price_mwh_da'}, inplace=True)
 
                 # For each RTM record, find the matching DAM record at the hour
-                result['hour'] = result['timestamp'].dt.floor('h')
-                dam_df['hour'] = dam_df['timestamp'].dt.floor('h')
+                # Ensure timestamps are datetimes and silence static type checker for .dt.floor
+                result['timestamp'] = pd.to_datetime(result['timestamp'])
+                dam_df['timestamp'] = pd.to_datetime(dam_df['timestamp'])
+                result['hour'] = result['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
+                dam_df['hour'] = dam_df['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
 
                 # Merge on hour and settlement_point
                 result = result.merge(
@@ -273,9 +219,6 @@ class SupabaseDataLoader:
             return df
             
         except Exception as e:
-            return df
-            
-        except Exception as e:
             st.error(f"Error loading battery data: {e}")
             return pd.DataFrame()
 
@@ -312,25 +255,396 @@ class SupabaseDataLoader:
             return pd.DataFrame()
 
 
+class ParquetDataLoader:
+    """
+    Data loader for local Parquet files with specific schema.
+    """
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        # Hardcoded paths based on user request, but could be dynamic
+        self.dam_path = self.data_dir / 'DAM_Prices' / 'dam_consolidated_2025-01-01_2025-11-23.parquet'
+        self.rtm_path = self.data_dir / 'RTM_Prices' / 'rtm_consolidated_2025-01-01_2025-11-23.parquet'
+
+    def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
+        """
+        Loads and merges DA and RT prices from local Parquet files.
+        Uses predicate pushdown (filters) to only load data for the selected node.
+        """
+        if not self.dam_path.exists() or not self.rtm_path.exists():
+            st.error(f"Parquet files not found in {self.data_dir}")
+            return pd.DataFrame()
+
+        # Load DAM
+        try:
+            # Use filters to only load data for the specific node
+            # This is "lazy loading" - we only read the row groups we need
+            filters = [('SettlementPoint', '==', node)] if node else None
+            
+            dam_df = pd.read_parquet(self.dam_path, filters=filters)
+            
+            if dam_df.empty:
+                return pd.DataFrame()
+            
+            # Ensure numeric types for time calculations
+            dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
+            dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
+            dam_df = dam_df.dropna(subset=['HE_num'])
+            dam_df['HE_num'] = dam_df['HE_num'].astype(int)
+            
+            dam_df['date_dt'] = pd.to_datetime(dam_df['DeliveryDate'], errors='coerce')
+            dam_df = dam_df.dropna(subset=['date_dt'])
+            
+            dam_df['timestamp'] = dam_df['date_dt'] + pd.to_timedelta(dam_df['HE_num'], unit='h') - pd.Timedelta(hours=1)
+            
+            dam_df = dam_df.rename(columns={
+                'SettlementPoint': 'node',
+                'SettlementPointPrice': 'price_mwh_da'
+            })
+            dam_df = dam_df[['timestamp', 'node', 'price_mwh_da']]
+        except Exception as e:
+            st.error(f"Error loading DAM parquet: {e}")
+            return pd.DataFrame()
+
+        # Load RTM
+        try:
+            filters = [('SettlementPointName', '==', node)] if node else None
+            
+            rtm_df = pd.read_parquet(self.rtm_path, filters=filters)
+            
+            if rtm_df.empty:
+                return pd.DataFrame()
+            
+            rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
+            rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['DH_num', 'DI_num'])
+            rtm_df['DH_num'] = rtm_df['DH_num'].astype(int)
+            rtm_df['DI_num'] = rtm_df['DI_num'].astype(int)
+
+            rtm_df['date_dt'] = pd.to_datetime(rtm_df['DeliveryDate'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['date_dt'])
+            
+            rtm_df['timestamp'] = rtm_df['date_dt'] + \
+                                  pd.to_timedelta(rtm_df['DH_num'], unit='h') - pd.Timedelta(hours=1) + \
+                                  pd.to_timedelta(rtm_df['DI_num'] * 15, unit='min') - pd.Timedelta(minutes=15)
+
+            rtm_df = rtm_df.rename(columns={
+                'SettlementPointName': 'node',
+                'SettlementPointPrice': 'price_mwh_rt'
+            })
+            rtm_df = rtm_df[['timestamp', 'node', 'price_mwh_rt']]
+        except Exception as e:
+            st.error(f"Error loading RTM parquet: {e}")
+            return pd.DataFrame()
+
+        # Merge
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+        
+        merged = pd.merge(
+            rtm_df,
+            dam_df,
+            left_on=['hour_start', 'node'],
+            right_on=['timestamp', 'node'],
+            suffixes=('', '_dam_drop'),
+            how='left'
+        )
+        
+        merged = merged.drop(columns=['hour_start', 'timestamp_dam_drop'], errors='ignore')
+        
+        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
+        merged['price_spread'] = abs(merged['forecast_error'])
+        merged['extreme_event'] = merged['price_spread'] > 10
+        
+        return merged.sort_values(['node', 'timestamp']).reset_index(drop=True)
+
+    def get_available_nodes(self) -> list[str]:
+        """Reads unique nodes from the DAM file (faster than RTM)."""
+        if not self.dam_path.exists():
+            return []
+        try:
+            # Read only the SettlementPoint column to get unique values
+            df = pd.read_parquet(self.dam_path, columns=['SettlementPoint'])
+            return sorted(df['SettlementPoint'].unique().tolist())
+        except Exception as e:
+            st.error(f"Error getting nodes from parquet: {e}")
+            return []
+            
+    def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
+        """Reads min/max date from DAM file."""
+        if not self.dam_path.exists():
+            return None, None
+        try:
+            df = pd.read_parquet(self.dam_path, columns=['DeliveryDate'])
+            dates = pd.to_datetime(df['DeliveryDate'])
+            return dates.min().date(), dates.max().date()
+        except Exception as e:
+            return None, None
+
+
+class UploadedFileLoader:
+    """
+    Data loader for user-uploaded CSV or Parquet files.
+    Handles both file formats dynamically based on file extension.
+    """
+    def __init__(self, dam_file, rtm_file):
+        """
+        Parameters
+        ----------
+        dam_file : BytesIO | UploadedFile
+            Uploaded DAM file from st.file_uploader
+        rtm_file : BytesIO | UploadedFile
+            Uploaded RTM file from st.file_uploader
+        """
+        self.dam_file = dam_file
+        self.rtm_file = rtm_file
+        self.dam_filename = getattr(dam_file, 'name', 'dam_file')
+        self.rtm_filename = getattr(rtm_file, 'name', 'rtm_file')
+
+    def _load_file(self, uploaded_file, filename: str) -> pd.DataFrame:
+        """Load file based on extension (CSV or Parquet)"""
+        try:
+            if hasattr(uploaded_file, 'seek'):
+                uploaded_file.seek(0)
+            
+            if filename.endswith('.parquet'):
+                return pd.read_parquet(uploaded_file)
+            elif filename.endswith('.csv'):
+                return pd.read_csv(uploaded_file)
+            else:
+                # Try to detect by content or default to CSV if unknown
+                try:
+                    return pd.read_parquet(uploaded_file)
+                except:
+                    uploaded_file.seek(0)
+                    return pd.read_csv(uploaded_file)
+        except Exception as e:
+            st.error(f"Error loading {filename}: {e}")
+            return pd.DataFrame()
+
+    def _normalize_columns(self, df: pd.DataFrame, file_type: str) -> pd.DataFrame:
+        """
+        Normalize column names to standard expected format.
+        file_type: 'dam' or 'rtm'
+        """
+        df.columns = df.columns.str.strip()
+        
+        # Common mappings
+        mappings = {
+            'Settlement Point': 'SettlementPoint',
+            'Settlement Point Name': 'SettlementPointName',
+            'Settlement Point Price': 'SettlementPointPrice',
+            'Price': 'SettlementPointPrice',
+            'LMP': 'SettlementPointPrice',
+            'Hour Ending': 'HourEnding',
+            'Delivery Date': 'DeliveryDate',
+            'Delivery Hour': 'DeliveryHour',
+            'Delivery Interval': 'DeliveryInterval',
+            'Repeated Hour Flag': 'RepeatedHourFlag'
+        }
+        
+        # Apply mappings
+        df = df.rename(columns=mappings)
+        
+        # Specific fix for DAM vs RTM naming confusion
+        if file_type == 'dam':
+            if 'SettlementPointName' in df.columns and 'SettlementPoint' not in df.columns:
+                df = df.rename(columns={'SettlementPointName': 'SettlementPoint'})
+        elif file_type == 'rtm':
+            if 'SettlementPoint' in df.columns and 'SettlementPointName' not in df.columns:
+                df = df.rename(columns={'SettlementPoint': 'SettlementPointName'})
+                
+        return df
+
+    def _validate_dam_schema(self, df: pd.DataFrame) -> bool:
+        """Validate DAM file has required columns"""
+        required = ['SettlementPoint', 'HourEnding', 'DeliveryDate', 'SettlementPointPrice']
+        # Check if columns exist (case-insensitive check handled by normalization)
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.error(f"DAM file missing required columns: {', '.join(missing)}")
+            st.caption(f"Found columns: {list(df.columns)}")
+            return False
+        return True
+
+    def _validate_rtm_schema(self, df: pd.DataFrame) -> bool:
+        """Validate RTM file has required columns"""
+        required = ['SettlementPointName', 'DeliveryHour', 'DeliveryInterval',
+                    'DeliveryDate', 'SettlementPointPrice']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.error(f"RTM file missing required columns: {', '.join(missing)}")
+            st.caption(f"Found columns: {list(df.columns)}")
+            return False
+        return True
+
+    def load_prices(self, node: Optional[str] = None) -> pd.DataFrame:
+        """
+        Loads and merges uploaded DAM and RTM price files.
+        Uses predicate pushdown (filters) for Parquet files to reduce memory usage.
+        """
+        # Define filters if node is provided
+        dam_filters = [('SettlementPoint', '==', node)] if node else None
+        rtm_filters = [('SettlementPointName', '==', node)] if node else None
+
+        # Load DAM file
+        try:
+            if hasattr(self.dam_file, 'seek'):
+                self.dam_file.seek(0)
+            
+            if self.dam_filename.endswith('.parquet'):
+                dam_df = pd.read_parquet(self.dam_file, filters=dam_filters)
+                dam_df = self._normalize_columns(dam_df, 'dam')
+            else:
+                # CSV or other
+                dam_df = self._load_file(self.dam_file, self.dam_filename)
+                dam_df = self._normalize_columns(dam_df, 'dam')
+                if node and 'SettlementPoint' in dam_df.columns:
+                    dam_df = dam_df[dam_df['SettlementPoint'] == node]
+                
+            if dam_df.empty or not self._validate_dam_schema(dam_df):
+                return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading DAM file: {e}")
+            return pd.DataFrame()
+
+        # Load RTM file
+        try:
+            if hasattr(self.rtm_file, 'seek'):
+                self.rtm_file.seek(0)
+                
+            if self.rtm_filename.endswith('.parquet'):
+                rtm_df = pd.read_parquet(self.rtm_file, filters=rtm_filters)
+                rtm_df = self._normalize_columns(rtm_df, 'rtm')
+            else:
+                # CSV or other
+                rtm_df = self._load_file(self.rtm_file, self.rtm_filename)
+                rtm_df = self._normalize_columns(rtm_df, 'rtm')
+                if node and 'SettlementPointName' in rtm_df.columns:
+                    rtm_df = rtm_df[rtm_df['SettlementPointName'] == node]
+
+            if rtm_df.empty or not self._validate_rtm_schema(rtm_df):
+                return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading RTM file: {e}")
+            return pd.DataFrame()
+
+        # Process DAM (same logic as ParquetDataLoader)
+        try:
+            # Note: Filtering already done during load for Parquet, or immediately after for CSV
+            dam_df = dam_df.copy()
+
+            dam_df['HE_str'] = dam_df['HourEnding'].astype(str)
+            dam_df['HE_num'] = pd.to_numeric(dam_df['HE_str'].str.split(':').str[0], errors='coerce')
+            dam_df = dam_df.dropna(subset=['HE_num'])
+            dam_df['HE_num'] = dam_df['HE_num'].astype(int)
+
+            dam_df['date_dt'] = pd.to_datetime(dam_df['DeliveryDate'], errors='coerce')
+            dam_df = dam_df.dropna(subset=['date_dt'])
+
+            dam_df['timestamp'] = dam_df['date_dt'] + pd.to_timedelta(dam_df['HE_num'], unit='h') - pd.Timedelta(hours=1)
+
+            dam_df = dam_df.rename(columns={
+                'SettlementPoint': 'node',
+                'SettlementPointPrice': 'price_mwh_da'
+            })
+            dam_df = dam_df[['timestamp', 'node', 'price_mwh_da']]
+        except Exception as e:
+            st.error(f"Error processing DAM file: {e}")
+            return pd.DataFrame()
+
+        # Process RTM (same logic as ParquetDataLoader)
+        try:
+            # Note: Filtering already done during load for Parquet, or immediately after for CSV
+            rtm_df = rtm_df.copy()
+
+            rtm_df['DH_num'] = pd.to_numeric(rtm_df['DeliveryHour'], errors='coerce')
+            rtm_df['DI_num'] = pd.to_numeric(rtm_df['DeliveryInterval'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['DH_num', 'DI_num'])
+            rtm_df['DH_num'] = rtm_df['DH_num'].astype(int)
+            rtm_df['DI_num'] = rtm_df['DI_num'].astype(int)
+
+            rtm_df['date_dt'] = pd.to_datetime(rtm_df['DeliveryDate'], errors='coerce')
+            rtm_df = rtm_df.dropna(subset=['date_dt'])
+
+            rtm_df['timestamp'] = rtm_df['date_dt'] + \
+                                  pd.to_timedelta(rtm_df['DH_num'], unit='h') - pd.Timedelta(hours=1) + \
+                                  pd.to_timedelta(rtm_df['DI_num'] * 15, unit='min') - pd.Timedelta(minutes=15)
+
+            rtm_df = rtm_df.rename(columns={
+                'SettlementPointName': 'node',
+                'SettlementPointPrice': 'price_mwh_rt'
+            })
+            rtm_df = rtm_df[['timestamp', 'node', 'price_mwh_rt']]
+        except Exception as e:
+            st.error(f"Error processing RTM file: {e}")
+            return pd.DataFrame()
+
+        # Merge DAM and RTM
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+
+        merged = pd.merge(
+            rtm_df,
+            dam_df,
+            left_on=['hour_start', 'node'],
+            right_on=['timestamp', 'node'],
+            suffixes=('', '_dam_drop'),
+            how='left'
+        )
+
+        merged = merged.drop(columns=['hour_start', 'timestamp_dam_drop'], errors='ignore')
+
+        merged['forecast_error'] = merged['price_mwh_rt'] - merged['price_mwh_da']
+        merged['price_spread'] = abs(merged['forecast_error'])
+        merged['extreme_event'] = merged['price_spread'] > 10
+
+        return merged.sort_values(['node', 'timestamp']).reset_index(drop=True)
+
+    def get_available_nodes(self) -> list[str]:
+        """Get list of unique nodes from uploaded DAM file"""
+        dam_df = self._load_file(self.dam_file, self.dam_filename)
+        dam_df = self._normalize_columns(dam_df, 'dam')
+        if dam_df.empty or 'SettlementPoint' not in dam_df.columns:
+            return []
+        try:
+            return sorted(dam_df['SettlementPoint'].unique().tolist())
+        except Exception as e:
+            st.error(f"Error getting nodes from uploaded files: {e}")
+            return []
+
+    def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
+        """Get min/max date from uploaded DAM file"""
+        dam_df = self._load_file(self.dam_file, self.dam_filename)
+        dam_df = self._normalize_columns(dam_df, 'dam')
+        if dam_df.empty or 'DeliveryDate' not in dam_df.columns:
+            return None, None
+        try:
+            dates = pd.to_datetime(dam_df['DeliveryDate'])
+            return dates.min().date(), dates.max().date()
+        except Exception:
+            return None, None
+
+
 def load_data(
-    source: Literal['csv', 'database'] = DEFAULT_DATA_SOURCE,
+    source: Literal['database', 'local_parquet'] = DEFAULT_DATA_SOURCE,
     node: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     data_dir: Optional[Path] = None
 ) -> pd.DataFrame:
-    """Unified data loading function supporting both CSV and database sources."""
-    if source == 'csv':
+    """Unified data loading function supporting database and local parquet sources."""
+    if source == 'database':
+        loader = SupabaseDataLoader()
+        return loader.load_prices(node=node, start_date=start_date, end_date=end_date)
+    elif source == 'local_parquet':
         if data_dir is None:
             data_dir = Path(__file__).parent.parent.parent / 'data'
-        loader = DataLoader(data_dir)
-        df = loader.load_prices()
-        if node:
-            df = loader.filter_by_node(df, node)
+        loader = ParquetDataLoader(data_dir)
+        df = loader.load_prices(node=node)
+        # Filter by date if provided
+        if not df.empty and (start_date or end_date):
+            if start_date:
+                df = df[df['timestamp'].dt.date >= start_date]
+            if end_date:
+                df = df[df['timestamp'].dt.date <= end_date]
         return df
-    elif source == 'database':
-        loader = SupabaseDataLoader()
-        # In DB mode, the node filter is applied in the SQL query itself
-        return loader.load_prices(node=node, start_date=start_date, end_date=end_date)
     else:
-        raise ValueError(f"Invalid data source: {source}. Must be 'csv' or 'database'")
+        raise ValueError(f"Invalid data source: {source}. Must be 'database' or 'local_parquet'")

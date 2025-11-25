@@ -60,28 +60,140 @@ class SimulationResult:
     metadata: dict
 
 
+import streamlit as st
+
+@st.cache_data(show_spinner=False)
+def run_simulation_cached(
+    price_df: pd.DataFrame,
+    battery_specs: dict,
+    strategy_params: dict,
+    improvement_factor: float = 0.0
+) -> SimulationResult:
+    """
+    Cached simulation runner.
+    Takes simple types (dicts) instead of objects to ensure hashability.
+    """
+    # Reconstruct objects
+    specs = BatterySpecs(**battery_specs)
+    
+    # Reconstruct strategy
+    # Reconstruct strategy
+    strategy_type = strategy_params.get('type', 'Threshold-Based')
+    
+    # Import here to avoid circular imports if any
+    from .strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
+    
+    if strategy_type == 'Threshold-Based':
+        strategy = ThresholdStrategy(
+            charge_percentile=strategy_params.get('charge_percentile', 0.25),
+            discharge_percentile=strategy_params.get('discharge_percentile', 0.75)
+        )
+    elif strategy_type == 'Rolling Window Optimization':
+        strategy = RollingWindowStrategy(
+            window_hours=strategy_params.get('window_hours', 6)
+        )
+    elif strategy_type == 'Linear Optimization (Perfect Foresight)':
+        strategy = LinearOptimizationStrategy()
+    elif strategy_type == 'MPC (Rolling Horizon)':
+        strategy = MPCStrategy(
+            horizon_hours=strategy_params.get('horizon_hours', 24)
+        )
+    else:
+        # Default fallback
+        strategy = ThresholdStrategy(0.25, 0.75)
+
+    # Run simulation logic (extracted from original run method)
+    if price_df.empty:
+        return SimulationResult(
+            dispatch_df=pd.DataFrame(),
+            total_revenue=0.0,
+            charge_cost=0.0,
+            discharge_revenue=0.0,
+            charge_count=0,
+            discharge_count=0,
+            hold_count=0,
+            soc_timestamps=[],
+            soc_values=[],
+            metadata={}
+        )
+
+    battery = Battery(specs)
+    battery.reset()
+
+    decisions = []
+    soc_history = []
+    revenue_history = []
+    soc_timestamps = [price_df.iloc[0]['timestamp']]
+    soc_values = [battery.soc]
+
+    total_revenue = 0.0
+    charge_cost = 0.0
+    discharge_revenue = 0.0
+
+    for idx in range(len(price_df)):
+        soc_history.append(battery.soc)
+        revenue_history.append(total_revenue)
+
+        decision = strategy.decide(battery, idx, price_df, improvement_factor)
+        decisions.append(decision)
+
+        if decision.action == 'charge':
+            cost = decision.energy_mwh * decision.actual_price
+            total_revenue -= cost
+            charge_cost += cost
+        elif decision.action == 'discharge':
+            revenue = decision.energy_mwh * decision.actual_price
+            total_revenue += revenue
+            discharge_revenue += revenue
+
+        # Visualization updates
+        row = price_df.iloc[idx]
+        if decision.action != 'hold':
+            if abs(decision.energy_mwh) >= specs.power_mw:
+                duration_hours = 1.0
+            else:
+                duration_hours = abs(decision.energy_mwh) / specs.power_mw
+            
+            soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
+            soc_values.append(battery.soc)
+            
+            if duration_hours < 1.0:
+                soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                soc_values.append(battery.soc)
+        else:
+            soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+            soc_values.append(battery.soc)
+
+    result_df = price_df.copy()
+    result_df['dispatch'] = [d.action for d in decisions]
+    result_df['power'] = [d.power_mw for d in decisions]
+    result_df['energy_mwh'] = [d.energy_mwh for d in decisions]
+    result_df['decision_price'] = [d.decision_price for d in decisions]
+    result_df['actual_price'] = [d.actual_price for d in decisions]
+    result_df['soc'] = soc_history
+    result_df['cumulative_revenue'] = revenue_history
+
+    return SimulationResult(
+        dispatch_df=result_df,
+        total_revenue=total_revenue,
+        charge_cost=charge_cost,
+        discharge_revenue=discharge_revenue,
+        charge_count=sum(1 for d in decisions if d.action == 'charge'),
+        discharge_count=sum(1 for d in decisions if d.action == 'discharge'),
+        hold_count=sum(1 for d in decisions if d.action == 'hold'),
+        soc_timestamps=soc_timestamps,
+        soc_values=soc_values,
+        metadata=strategy.get_metadata()
+    )
+
+
 class BatterySimulator:
     """
     High-level battery simulation orchestrator.
-
-    This class runs complete simulations using a battery specification
-    and a dispatch strategy.
-
-    Attributes
-    ----------
-    specs : BatterySpecs
-        Battery system specifications
+    Wrapper around cached simulation logic.
     """
 
     def __init__(self, specs: BatterySpecs):
-        """
-        Initialize simulator with battery specifications.
-
-        Parameters
-        ----------
-        specs : BatterySpecs
-            Battery system specifications
-        """
         self.specs = specs
 
     def run(self,
@@ -89,120 +201,35 @@ class BatterySimulator:
             strategy: DispatchStrategy,
             improvement_factor: float = 0.0) -> SimulationResult:
         """
-        Run complete simulation.
-
-        Parameters
-        ----------
-        price_df : pd.DataFrame
-            Price data with columns: timestamp, price_mwh_da, price_mwh_rt, forecast_error
-        strategy : DispatchStrategy
-            Dispatch strategy to use
-        improvement_factor : float, optional
-            Forecast improvement factor from 0 (DA only) to 1 (perfect RT) (default: 0.0)
-
-        Returns
-        -------
-        SimulationResult
-            Complete simulation results
+        Run complete simulation (cached).
         """
-        # Validate input data
-        if price_df.empty:
-            # Return empty result for empty data
-            return SimulationResult(
-                dispatch_df=pd.DataFrame(),
-                total_revenue=0.0,
-                charge_cost=0.0,
-                discharge_revenue=0.0,
-                charge_count=0,
-                discharge_count=0,
-                hold_count=0,
-                soc_timestamps=[],
-                soc_values=[],
-                metadata={}
-            )
+        # Convert objects to dicts for caching
+        battery_specs_dict = {
+            'capacity_mwh': self.specs.capacity_mwh,
+            'power_mw': self.specs.power_mw,
+            'efficiency': self.specs.efficiency,
+            'max_soc': self.specs.max_soc,
+            'min_soc': self.specs.min_soc,
+            'initial_soc': self.specs.initial_soc
+        }
+        
+        # Extract strategy params
+        metadata = strategy.get_metadata()
+        strategy_params = {'type': metadata.get('strategy', 'Unknown')}
+        
+        if hasattr(strategy, 'charge_percentile'):
+            strategy_params['charge_percentile'] = strategy.charge_percentile
+            strategy_params['discharge_percentile'] = strategy.discharge_percentile
+        
+        if hasattr(strategy, 'window_hours'):
+            strategy_params['window_hours'] = strategy.window_hours
 
-        # Initialize battery
-        battery = Battery(self.specs)
-        battery.reset()
-
-        # Track results
-        decisions: List[DispatchDecision] = []
-        soc_history = []
-        revenue_history = []
-
-        # Smooth SOC visualization data
-        soc_timestamps = [price_df.iloc[0]['timestamp']]
-        soc_values = [battery.soc]
-
-        # Financial tracking
-        total_revenue = 0
-        charge_cost = 0
-        discharge_revenue = 0
-
-        # Main simulation loop
-        for idx in range(len(price_df)):
-            # Record state at BEGINNING of this hour (before trading)
-            soc_history.append(battery.soc)
-            revenue_history.append(total_revenue)
-
-            # Make dispatch decision
-            decision = strategy.decide(battery, idx, price_df, improvement_factor)
-            decisions.append(decision)
-
-            # Update financials based on decision
-            if decision.action == 'charge':
-                cost = decision.energy_mwh * decision.actual_price
-                total_revenue -= cost
-                charge_cost += cost
-
-            elif decision.action == 'discharge':
-                revenue = decision.energy_mwh * decision.actual_price
-                total_revenue += revenue
-                discharge_revenue += revenue
-
-            # Update SOC visualization
-            row = price_df.iloc[idx]
-
-            # Calculate actual duration based on power capacity
-            if decision.action != 'hold':
-                if abs(decision.energy_mwh) >= self.specs.power_mw:
-                    duration_hours = 1.0
-                else:
-                    duration_hours = abs(decision.energy_mwh) / self.specs.power_mw
-
-                # Add point at end of ramping (when operation completes)
-                soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
-                soc_values.append(battery.soc)
-
-                # If operation completes before end of hour, add flat section
-                if duration_hours < 1.0:
-                    soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
-                    soc_values.append(battery.soc)
-            else:
-                # Hold - SOC stays constant, just add end point
-                soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
-                soc_values.append(battery.soc)
-
-        # Build results dataframe
-        result_df = price_df.copy()
-        result_df['dispatch'] = [d.action for d in decisions]
-        result_df['power'] = [d.power_mw for d in decisions]
-        result_df['energy_mwh'] = [d.energy_mwh for d in decisions]
-        result_df['decision_price'] = [d.decision_price for d in decisions]
-        result_df['actual_price'] = [d.actual_price for d in decisions]
-        result_df['soc'] = soc_history
-        result_df['cumulative_revenue'] = revenue_history
-
-        # Return complete results
-        return SimulationResult(
-            dispatch_df=result_df,
-            total_revenue=total_revenue,
-            charge_cost=charge_cost,
-            discharge_revenue=discharge_revenue,
-            charge_count=sum(1 for d in decisions if d.action == 'charge'),
-            discharge_count=sum(1 for d in decisions if d.action == 'discharge'),
-            hold_count=sum(1 for d in decisions if d.action == 'hold'),
-            soc_timestamps=soc_timestamps,
-            soc_values=soc_values,
-            metadata=strategy.get_metadata()
+        if hasattr(strategy, 'horizon_hours'):
+            strategy_params['horizon_hours'] = strategy.horizon_hours
+            
+        return run_simulation_cached(
+            price_df,
+            battery_specs_dict,
+            strategy_params,
+            improvement_factor
         )

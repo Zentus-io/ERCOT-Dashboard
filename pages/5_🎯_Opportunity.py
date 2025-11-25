@@ -13,12 +13,13 @@ from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from utils.state import get_state, has_valid_config, get_date_range_str
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
-from core.data.loaders import DataLoader
+from core.battery.battery import BatterySpecs
+from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
 from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -57,8 +58,22 @@ if state.selected_node is None:
     st.stop()
 
 # Load node data
-loader = DataLoader(Path(__file__).parent.parent / 'data')
-node_data = loader.filter_by_node(state.price_data, state.selected_node)
+# Load node data
+if state.price_data.empty:
+    st.warning("⚠️ No price data available. Please check your data source or date range.")
+    st.stop()
+
+if 'node' in state.price_data.columns:
+    node_col = 'node'
+elif 'settlement_point' in state.price_data.columns:
+    node_col = 'settlement_point'
+elif 'SettlementPoint' in state.price_data.columns:
+    node_col = 'SettlementPoint'
+else:
+    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
+    st.stop()
+
+node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
 
 # Check if battery specs are configured
 if state.battery_specs is None:
@@ -69,42 +84,161 @@ if state.battery_specs is None:
 # SENSITIVITY ANALYSIS
 # ============================================================================
 
-st.subheader("Impact of Forecast Accuracy on Revenue - Strategy Comparison")
+st.subheader("Impact of Forecast Accuracy on Revenue")
+
+st.info("""
+**Chart Guide:** The green LP Benchmark line represents the **theoretical maximum** achievable with perfect hindsight.
+The gap between your selected strategy and LP shows potential gains from strategy improvements.
+""")
 
 # Reduce points for performance (0, 10, 20... 100)
-improvement_range = range(0, 101, 5)  
-revenue_threshold = []
-revenue_rolling_window = []
+def run_sensitivity_analysis(
+    node_data: pd.DataFrame,
+    battery_specs: BatterySpecs,
+    charge_percentile: float,
+    discharge_percentile: float,
+    window_hours: int
+):
+    """
+    Run sensitivity analysis with progress bar.
+    """
+    improvement_range = range(0, 101, 10)  # Reduced resolution for speed
+    revenue_threshold = []
+    revenue_rolling_window = []
+    revenue_mpc = []
+    revenue_linear = []
 
-# Create progress bar
-progress_bar = st.progress(0, text="Running sensitivity analysis...")
-total_steps = len(improvement_range)
-
-simulator = BatterySimulator(state.battery_specs)
-
-for i, imp in enumerate(improvement_range):
-    # Update progress
-    progress_bar.progress((i + 1) / total_steps, text=f"Simulating {imp}% improvement scenario...")
+    simulator = BatterySimulator(battery_specs)
     
-    # Threshold strategy
-    strategy_threshold = ThresholdStrategy(state.charge_percentile, state.discharge_percentile)
-    temp_result_threshold = simulator.run(
-        node_data,
-        strategy_threshold,
-        improvement_factor=imp/100
-    )
-    revenue_threshold.append(temp_result_threshold.total_revenue)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_steps = len(improvement_range)
 
-    # Rolling window strategy
-    strategy_window = RollingWindowStrategy(state.window_hours)
-    temp_result_window = simulator.run(
-        node_data,
-        strategy_window,
-        improvement_factor=imp/100
-    )
-    revenue_rolling_window.append(temp_result_window.total_revenue)
+    for i, imp in enumerate(improvement_range):
+        status_text.text(f"Simulating forecast improvement: {imp}%...")
+        improvement_factor = imp / 100
 
-progress_bar.empty()
+        # Threshold strategy
+        strategy_threshold = ThresholdStrategy(charge_percentile, discharge_percentile)
+        temp_result_threshold = simulator.run(
+            node_data,
+            strategy_threshold,
+            improvement_factor=improvement_factor
+        )
+        revenue_threshold.append(temp_result_threshold.total_revenue)
+
+        # Rolling window strategy
+        strategy_window = RollingWindowStrategy(window_hours)
+        temp_result_window = simulator.run(
+            node_data,
+            strategy_window,
+            improvement_factor=improvement_factor
+        )
+        revenue_rolling_window.append(temp_result_window.total_revenue)
+
+        # MPC Strategy (New)
+        # Note: MPC is computationally expensive, so we might want to skip it or run it less frequently
+        # For now, we'll run it but it might slow down the page load
+        # Use a default horizon of 24h for comparison if not specified in state, but here we don't have state access directly
+        # We'll assume 24h or pass it in. Let's add horizon_hours to function signature.
+        strategy_mpc = MPCStrategy(horizon_hours=24) # Default for general comparison
+        temp_result_mpc = simulator.run(
+            node_data,
+            strategy_mpc,
+            improvement_factor=improvement_factor
+        )
+        revenue_mpc.append(temp_result_mpc.total_revenue)
+
+        # Linear Optimization strategy (new instance for each improvement level)
+        strategy_linear = LinearOptimizationStrategy()
+        temp_result_linear = simulator.run(
+            node_data,
+            strategy_linear,
+            improvement_factor=improvement_factor
+        )
+        revenue_linear.append(temp_result_linear.total_revenue)
+        
+        progress_bar.progress((i + 1) / total_steps)
+        
+    status_text.empty()
+    progress_bar.empty()
+
+    return list(improvement_range), revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear
+
+def run_window_sensitivity_analysis(
+    node_data: pd.DataFrame,
+    battery_specs: BatterySpecs,
+    improvement_factor: float
+):
+    """
+    Run sensitivity analysis for Rolling Window strategy varying window size.
+    """
+    window_range = range(2, 49, 2)  # 2 to 48 hours
+    revenue_window = []
+    
+    simulator = BatterySimulator(battery_specs)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_steps = len(window_range)
+    
+    for i, window in enumerate(window_range):
+        status_text.text(f"Simulating window size: {window} hours...")
+        strategy = RollingWindowStrategy(window_hours=window)
+        result = simulator.run(
+            node_data,
+            strategy,
+            improvement_factor=improvement_factor
+        )
+        revenue_window.append(result.total_revenue)
+        progress_bar.progress((i + 1) / total_steps)
+        
+    status_text.empty()
+    progress_bar.empty()
+        
+    return list(window_range), revenue_window
+
+def run_horizon_sensitivity_analysis(
+    node_data: pd.DataFrame,
+    battery_specs: BatterySpecs,
+    improvement_factor: float
+):
+    """
+    Run sensitivity analysis for MPC strategy varying horizon size.
+    """
+    horizon_range = range(2, 50, 2)  # 2, 4, 6... 48 hours
+    revenue_horizon = []
+    
+    simulator = BatterySimulator(battery_specs)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_steps = len(horizon_range)
+    
+    for i, horizon in enumerate(horizon_range):
+        status_text.text(f"Simulating MPC horizon: {horizon} hours...")
+        strategy = MPCStrategy(horizon_hours=horizon)
+        result = simulator.run(
+            node_data,
+            strategy,
+            improvement_factor=improvement_factor
+        )
+        revenue_horizon.append(result.total_revenue)
+        progress_bar.progress((i + 1) / total_steps)
+        
+    status_text.empty()
+    progress_bar.empty()
+        
+    return list(horizon_range), revenue_horizon
+
+# Run forecast sensitivity analysis
+improvement_range, revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear = run_sensitivity_analysis(
+    node_data,
+    state.battery_specs,
+    state.charge_percentile,
+    state.discharge_percentile,
+    state.window_hours
+)
 
 # Create comparison chart
 fig_sensitivity = go.Figure()
@@ -127,31 +261,145 @@ fig_sensitivity.add_trace(go.Scatter(
     hovertemplate='Rolling Window<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
 
-# Add reference line for theoretical maximum (100% improvement)
-fig_sensitivity.add_hline(
-    y=revenue_rolling_window[-1],  # 100% improvement
-    line_dash="dash",
-    line_color="green",
-    annotation_text="Theoretical Maximum"
-)
+fig_sensitivity.add_trace(go.Scatter(
+    x=list(improvement_range),
+    y=revenue_mpc,
+    name='MPC (24h Horizon)',
+    line=dict(color='#8B5CF6', width=3),
+    mode='lines+markers',
+    hovertemplate='MPC<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+))
+
+# LP Benchmark curve (theoretical upper bound at each improvement level)
+fig_sensitivity.add_trace(go.Scatter(
+    x=list(improvement_range),
+    y=revenue_linear,
+    name='LP Benchmark (Theoretical Max)',
+    line=dict(color='#28a745', width=3),
+    mode='lines+markers',
+    hovertemplate='LP Benchmark<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
+))
 
 fig_sensitivity.update_layout(
-    title="Revenue Sensitivity: Threshold vs Rolling Window Strategies",
+    title="Revenue Sensitivity: Practical Strategies vs LP Benchmark",
     xaxis_title="Forecast Improvement (%)",
     yaxis_title="Revenue ($)",
     height=500,
-    hovermode='x unified'
+    hovermode='x unified',
+    legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01),
+    yaxis=dict(fixedrange=False), # Allow Y-axis zooming
+    xaxis=dict(fixedrange=False)
 )
 
 st.plotly_chart(fig_sensitivity, width="stretch")
+
+# Window Sensitivity (Only for Rolling Window Strategy)
+if state.strategy_type == "Rolling Window Optimization":
+    st.markdown("---")
+    st.subheader(f"Window Size Sensitivity (at {state.forecast_improvement}% Improvement)")
+    
+    window_range, revenue_window_sens = run_window_sensitivity_analysis(
+        node_data,
+        state.battery_specs,
+        state.forecast_improvement / 100.0
+    )
+        
+    fig_window = go.Figure()
+    
+    fig_window.add_trace(go.Scatter(
+        x=window_range,
+        y=revenue_window_sens,
+        name='Revenue',
+        line=dict(color='#0A5F7A', width=3),
+        mode='lines+markers',
+        hovertemplate='Window: %{x}h<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+    
+    # Add marker for current selection
+    current_rev = revenue_window_sens[window_range.index(state.window_hours)] if state.window_hours in window_range else 0
+    if state.window_hours in window_range:
+        fig_window.add_trace(go.Scatter(
+            x=[state.window_hours],
+            y=[current_rev],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Current Selection',
+            hoverinfo='skip'
+        ))
+    
+    fig_window.update_layout(
+        title="Revenue vs. Lookahead Window Size",
+        xaxis_title="Lookahead Window (Hours)",
+        yaxis_title="Revenue ($)",
+        height=400,
+        hovermode='x unified',
+        yaxis=dict(fixedrange=False),
+        xaxis=dict(fixedrange=False)
+    )
+    
+    st.plotly_chart(fig_window, width="stretch")
+    
+    # Find optimal window
+    best_window = window_range[revenue_window_sens.index(max(revenue_window_sens))]
+    st.info(f"💡 Optimal lookahead window for this scenario appears to be **{best_window} hours**.")
+
+# Horizon Sensitivity (Only for MPC Strategy)
+elif state.strategy_type == "MPC (Rolling Horizon)":
+    st.markdown("---")
+    st.subheader(f"Optimization Horizon Sensitivity (at {state.forecast_improvement}% Improvement)")
+    
+    horizon_range, revenue_horizon_sens = run_horizon_sensitivity_analysis(
+        node_data,
+        state.battery_specs,
+        state.forecast_improvement / 100.0
+    )
+        
+    fig_horizon = go.Figure()
+    
+    fig_horizon.add_trace(go.Scatter(
+        x=horizon_range,
+        y=revenue_horizon_sens,
+        name='Revenue',
+        line=dict(color='#8B5CF6', width=3),
+        mode='lines+markers',
+        hovertemplate='Horizon: %{x}h<br>Revenue: $%{y:,.0f}<extra></extra>'
+    ))
+    
+    # Add marker for current selection
+    current_rev = revenue_horizon_sens[horizon_range.index(state.horizon_hours)] if state.horizon_hours in horizon_range else 0
+    if state.horizon_hours in horizon_range:
+        fig_horizon.add_trace(go.Scatter(
+            x=[state.horizon_hours],
+            y=[current_rev],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Current Selection',
+            hoverinfo='skip'
+        ))
+    
+    fig_horizon.update_layout(
+        title="Revenue vs. Optimization Horizon",
+        xaxis_title="Optimization Horizon (Hours)",
+        yaxis_title="Revenue ($)",
+        height=400,
+        hovermode='x unified',
+        yaxis=dict(fixedrange=False),
+        xaxis=dict(fixedrange=False)
+    )
+    
+    st.plotly_chart(fig_horizon, width="stretch")
+    
+    # Find optimal horizon
+    best_horizon = horizon_range[revenue_horizon_sens.index(max(revenue_horizon_sens))]
+    st.info(f"💡 Optimal horizon for this scenario appears to be **{best_horizon} hours**.")
 
 # ============================================================================
 # STRATEGY COMPARISON INSIGHTS
 # ============================================================================
 
 st.markdown("### Strategy Comparison Insights")
-
-col1, col2 = st.columns(2)
+    
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.markdown("**Threshold-Based Strategy:**")
@@ -180,6 +428,35 @@ with col2:
 
     st.metric("Revenue Range",
              f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
+
+with col3:
+    st.markdown("**MPC Strategy (24h):**")
+    # Check if monotonic
+    mpc_diffs = [revenue_mpc[i+1] - revenue_mpc[i] for i in range(len(revenue_mpc)-1)]
+    negative_changes_mpc = sum(1 for d in mpc_diffs if d < 0)
+
+    if negative_changes_mpc > 0:
+        st.warning(f"⚠️ Non-monotonic: {negative_changes_mpc} instances where improvement REDUCED revenue")
+    else:
+        st.success("✓ Monotonic improvement")
+
+    st.metric("Revenue Range",
+             f"${min(revenue_mpc):,.0f} to ${max(revenue_mpc):,.0f}")
+
+with col4:
+    st.markdown("**LP Benchmark (Theoretical):**")
+    # Check if monotonic
+    linear_diffs = [revenue_linear[i+1] - revenue_linear[i] for i in range(len(revenue_linear)-1)]
+    negative_changes_linear = sum(1 for d in linear_diffs if d < 0)
+
+    if negative_changes_linear > 0:
+        st.warning(f"⚠️ Non-monotonic: {negative_changes_linear} instances where improvement REDUCED revenue")
+    else:
+        st.success("✓ Monotonic improvement")
+
+    st.metric("Revenue Range",
+             f"${min(revenue_linear):,.0f} to ${max(revenue_linear):,.0f}")
+    st.caption("Upper bound for any strategy")
 
 # ============================================================================
 # KEY INSIGHTS
@@ -243,48 +520,54 @@ with col2:
 # ============================================================================
 
 st.markdown("---")
-st.subheader("Revenue Capture Potential")
+st.subheader("LP Benchmark Analysis")
 
-# Current settings revenue
+st.info("""
+This section shows how revenue improves along the **LP Benchmark curve** as forecast accuracy increases.
+The LP benchmark represents the theoretical maximum at each improvement level.
+""")
+
+# Current settings revenue (using LP Benchmark as the true optimal)
 current_idx = state.forecast_improvement // 10
-baseline_revenue = revenue_rolling_window[0]
-current_revenue = revenue_rolling_window[current_idx]
-max_revenue = revenue_rolling_window[-1]
+baseline_revenue_lp = revenue_linear[0]  # LP at 0% improvement
+current_revenue_lp = revenue_linear[current_idx]  # LP at current improvement
+max_revenue_lp = revenue_linear[-1]  # LP at 100% (perfect foresight)
 
-captured = current_revenue - baseline_revenue
-remaining = max_revenue - current_revenue
-total_opportunity = max_revenue - baseline_revenue
+captured = current_revenue_lp - baseline_revenue_lp
+remaining = max_revenue_lp - current_revenue_lp
+total_opportunity = max_revenue_lp - baseline_revenue_lp
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Baseline Revenue",
-        f"${baseline_revenue:,.0f}",
-        help="Revenue with 0% forecast improvement (DA only)"
+        "LP @ 0% (DA Only)",
+        f"${baseline_revenue_lp:,.0f}",
+        help="LP Benchmark revenue using only day-ahead forecasts"
     )
 
 with col2:
     st.metric(
-        f"Current Revenue (+{state.forecast_improvement}%)",
-        f"${current_revenue:,.0f}",
+        f"LP @ {state.forecast_improvement}%",
+        f"${current_revenue_lp:,.0f}",
         delta=f"+${captured:,.0f}",
-        help=f"Revenue with {state.forecast_improvement}% forecast improvement"
+        help=f"LP Benchmark revenue with {state.forecast_improvement}% forecast improvement"
     )
 
 with col3:
     st.metric(
-        "Remaining Opportunity",
-        f"${remaining:,.0f}",
-        help="Additional revenue possible with perfect forecast"
+        "LP @ 100% (Perfect)",
+        f"${max_revenue_lp:,.0f}",
+        delta=f"+${remaining:,.0f} remaining",
+        help="LP Benchmark at 100% (absolute theoretical maximum)"
     )
 
 with col4:
     capture_pct = (captured / total_opportunity * 100) if total_opportunity != 0 else 0
     st.metric(
-        "Capture Rate",
+        "LP Capture Rate",
         f"{capture_pct:.1f}%",
-        help="Percentage of total opportunity captured"
+        help="Percentage of LP improvement potential captured at current forecast level"
     )
 
 # ============================================================================

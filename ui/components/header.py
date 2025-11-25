@@ -50,14 +50,17 @@ def render_header():
 
     eia_note = ""
     if state.eia_battery_data is not None:
-        eia_note = " Battery system parameters validated against EIA-860 data (136 operational Texas systems)."
+        eia_note = " Battery presets based on EIA-860 data."
 
     # Dynamic data note based on source
     if state.data_source == 'database':
         date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
-        note_content = f"<strong>Historical Analysis:</strong> Analyzing ERCOT market data for {date_range}."
+        note_content = f"<strong>Historical Analysis:</strong> Analyzing Engie assets in ERCOT market for {date_range}."
+    elif state.data_source == 'local_parquet':
+        date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
+        note_content = f"<strong>Local Data:</strong> Analyzing ERCOT data from uploaded parquet files for {date_range}."
     else:
-        note_content = "<strong>Demo Mode:</strong> Currently showing July 20, 2025 data from ERCOT wind resources (Single-day snapshot)."
+        note_content = "<strong>Select Data Source:</strong> Please choose a data source from the sidebar."
 
     st.markdown(f"""
     <div class='data-note'>
