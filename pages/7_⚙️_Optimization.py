@@ -17,7 +17,6 @@ from core.battery.strategies import (
     ThresholdStrategy,
     RollingWindowStrategy
 )
-from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
 import pandas as pd
@@ -56,11 +55,25 @@ if state.price_data is None:
     st.stop()
 
 # Load node data
-loader = DataLoader(Path(__file__).parent.parent / 'data')
 if state.selected_node is None:
     st.error("⚠️ No settlement point selected. Please select a node in the sidebar.")
     st.stop()
-node_data = loader.filter_by_node(state.price_data, state.selected_node)
+# Load node data
+if state.price_data.empty:
+    st.warning("⚠️ No price data available. Please check your data source or date range.")
+    st.stop()
+
+if 'node' in state.price_data.columns:
+    node_col = 'node'
+elif 'settlement_point' in state.price_data.columns:
+    node_col = 'settlement_point'
+elif 'SettlementPoint' in state.price_data.columns:
+    node_col = 'SettlementPoint'
+else:
+    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
+    st.stop()
+
+node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
 
 # Check if battery specs are configured
 if state.battery_specs is None:
@@ -88,12 +101,50 @@ if strategy_name == "Threshold-Based":
     st.markdown("Simple logic: Charge when price < Xth percentile, Discharge when price > Yth percentile.")
 elif strategy_name == "Rolling Window Optimization":
     st.markdown(f"Looks ahead {state.window_hours} hours to find local minima/maxima.")
+elif strategy_name == "MPC (Rolling Horizon)":
+    st.markdown(f"Optimizes over a {state.horizon_hours}-hour rolling horizon at each step.")
 
 # ============================================================================
 # STRATEGY-SPECIFIC ANALYSIS
 # ============================================================================
 
-if state.strategy_type == "Rolling Window Optimization":
+if state.strategy_type == "MPC (Rolling Horizon)":
+    # MPC STRATEGY ANALYSIS
+    st.markdown(f"### MPC Strategy (Horizon: {state.horizon_hours} hours)")
+
+    st.info(f"""
+    **How it works:**
+    - At each hour, solves a full Linear Programming optimization for the next {state.horizon_hours} hours.
+    - Implements ONLY the first hour's decision.
+    - Moves forward one hour and repeats (Rolling Horizon).
+    
+    **Advantages:**
+    - **Industry Standard:** The gold standard for battery dispatch.
+    - **Optimal Planning:** Considers future constraints (e.g., "I need to be empty tomorrow morning to charge cheap solar").
+    - **Robust:** Re-optimizes every hour, naturally correcting for forecast errors as new data arrives.
+    """)
+    
+    # Show example of MPC vs Rolling Window vs Perfect Foresight
+    st.markdown("---")
+    st.markdown("### MPC vs. Other Strategies")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**MPC vs. Rolling Window**")
+        st.markdown("""
+        - **Rolling Window** is "greedy" - it just looks for min/max prices.
+        - **MPC** optimizes *volume* - it knows exactly how much to charge/discharge to hit SOC targets.
+        """)
+        
+    with col2:
+        st.markdown("**MPC vs. Perfect Foresight**")
+        st.markdown(f"""
+        - **Perfect Foresight** sees the *entire simulation period* at once.
+        - **MPC** only sees the next {state.horizon_hours} hours.
+        - MPC re-optimizes at each time step (every 15 min or 1 hour depending on data).
+        """)
+
+elif state.strategy_type == "Rolling Window Optimization":
     # ROLLING WINDOW STRATEGY ANALYSIS
     st.markdown(f"### Rolling Window Strategy (Lookahead: {state.window_hours} hours)")
 

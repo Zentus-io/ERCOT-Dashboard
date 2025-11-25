@@ -12,11 +12,11 @@ from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from utils.state import get_state, has_valid_config, get_date_range_str
-from core.data.loaders import DataLoader
 from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+import numpy as np
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -55,8 +55,22 @@ if state.selected_node is None:
     st.stop()
 
 # Load node data
-loader = DataLoader(Path(__file__).parent.parent / 'data')
-node_data = loader.filter_by_node(state.price_data, state.selected_node)
+# Load node data
+if state.price_data.empty:
+    st.warning("⚠️ No price data available. Please check your data source or date range.")
+    st.stop()
+
+if 'node' in state.price_data.columns:
+    node_col = 'node'
+elif 'settlement_point' in state.price_data.columns:
+    node_col = 'settlement_point'
+elif 'SettlementPoint' in state.price_data.columns:
+    node_col = 'SettlementPoint'
+else:
+    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
+    st.stop()
+
+node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
 
 # Calculate dynamic thresholds for threshold-based strategy
 if state.strategy_type == "Threshold-Based":
@@ -134,13 +148,15 @@ fig_price.update_layout(
     xaxis_title="Time",
     yaxis_title="Price ($/MWh)",
     height=500,
-    hovermode='x unified'
+    hovermode='x unified',
+    yaxis=dict(fixedrange=False),
+    xaxis=dict(fixedrange=False)
 )
 
 from ui.components.charts import apply_standard_chart_styling
 apply_standard_chart_styling(fig_price)
 
-st.plotly_chart(fig_price, width="stretch")
+st.plotly_chart(fig_price, width="stretch", config={'scrollZoom': True})
 
 # ============================================================================
 # PRICE STATISTICS AND FORECAST ERROR
@@ -177,15 +193,47 @@ with col1:
 
 with col2:
     st.subheader("Forecast Error Distribution")
-    fig_error_hist = px.histogram(
-        node_data,
-        x='forecast_error',
-        nbins=20,
-        title="DA Forecast Error (RT - DA)",
-        labels={'forecast_error': 'Forecast Error ($/MWh)'},
-        color_discrete_sequence=['#0A5F7A']
+
+    # Calculate optimal bins using Freedman-Diaconis rule
+    forecast_data = node_data['forecast_error'].dropna()
+    n = len(forecast_data)
+
+    # Freedman-Diaconis rule: bin_width = 2 * IQR / n^(1/3)
+    q75, q25 = np.percentile(forecast_data, [75, 25])
+    iqr = q75 - q25
+    bin_width_fd = 2 * iqr / (n ** (1/3))
+
+    # Calculate number of bins
+    data_range = forecast_data.max() - forecast_data.min()
+    if bin_width_fd > 0:
+        optimal_bins = int(np.ceil(data_range / bin_width_fd))
+    else:
+        # Fallback if IQR is 0 (all data in one quartile)
+        optimal_bins = int(np.ceil(np.sqrt(n)))
+
+    # Add reasonable bounds (min 10, max 50)
+    optimal_bins = max(10, min(50, optimal_bins))
+
+    # Manually calculate histogram with exact bin count
+    counts, bin_edges = np.histogram(forecast_data, bins=optimal_bins)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_width = bin_edges[1] - bin_edges[0]
+
+    # Create bar chart with exact bins
+    fig_error_hist = go.Figure(data=[go.Bar(
+        x=bin_centers,
+        y=counts,
+        width=bin_width * 0.9,
+        marker_color='#0A5F7A',
+        hovertemplate='Error: %{x:.2f} $/MWh<br>Count: %{y}<extra></extra>'
+    )])
+
+    fig_error_hist.update_layout(
+        title=f"DA Forecast Error Distribution ({optimal_bins} bins, Freedman-Diaconis)",
+        xaxis_title='Forecast Error ($/MWh)',
+        yaxis_title='Count',
+        showlegend=False
     )
-    fig_error_hist.update_layout(showlegend=False)
     st.plotly_chart(fig_error_hist, width="stretch")
 
     mae = node_data['forecast_error'].abs().mean()

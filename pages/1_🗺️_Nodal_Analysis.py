@@ -19,23 +19,14 @@ This tool scans available nodes to find the best opportunities for battery stora
 """)
 
 # Configuration
-col1, col2 = st.columns(2)
-with col1:
-    source = st.session_state.get('data_source', DEFAULT_DATA_SOURCE)
-    st.info(f"Current Data Source: **{source}**")
-    
-    if source == 'local_parquet':
-        st.success("✅ Local Parquet Optimized for Nodal Scanning")
-    elif source == 'database':
-        st.warning("⚠️ Database scanning can be slow. Limited to top 50 nodes for demo.")
+source = st.session_state.get('data_source', DEFAULT_DATA_SOURCE)
+st.info(f"Current Data Source: **{source}**")
 
-with col2:
-    scan_btn = st.button("🚀 Run Nodal Assessment", type="primary", width="stretch")
-
-@st.cache_data(ttl=3600, show_spinner="Scanning nodes...")
+if source == 'local_parquet':
+    st.success("✅ Local Parquet Optimized for Nodal Scanning")
 def run_nodal_assessment(source: str):
     """
-    Run nodal assessment with caching.
+    Run nodal assessment with progress bar.
     """
     # 1. Get List of Nodes
     nodes = []
@@ -58,8 +49,13 @@ def run_nodal_assessment(source: str):
         
     results = []
     
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     # 2. Analyze each node
     for i, node in enumerate(nodes):
+        status_text.text(f"Analyzing {node}...")
         try:
             # Load data for node
             df = load_data(source=source, node=node)
@@ -88,46 +84,59 @@ def run_nodal_assessment(source: str):
             
         except Exception as e:
             pass
+        
+        # Update progress
+        progress_bar.progress((i + 1) / len(nodes))
             
+    # Clear progress
+    status_text.empty()
+    progress_bar.empty()
+    
     return results
 
-if scan_btn:
-    results_data = run_nodal_assessment(source)
+# Auto-run analysis
+results_data = run_nodal_assessment(source)
+
+if results_data:
+    results_df = pd.DataFrame(results_data)
     
-    if results_data:
-        results_df = pd.DataFrame(results_data)
+    # Ranking
+    results_df = results_df.sort_values('Revenue Score', ascending=False).reset_index(drop=True)
+    results_df.index += 1 # 1-based ranking
+    
+    st.subheader("🏆 Top Performing Nodes")
+    
+    # Metrics styling
+    st.dataframe(
+        results_df.style.background_gradient(subset=['Revenue Score', 'Volatility ($/MWh)'], cmap='Greens'),
+        width="stretch"
+    )
+
+    st.caption("""
+    **Metric Definitions:**
+    - **Volatility:** Standard deviation of Real-Time Market (RTM) prices. Higher volatility often implies more arbitrage opportunities.
+    - **Avg Spread:** Average absolute difference between Day-Ahead and Real-Time prices.
+    - **Revenue Score:** A simplified proxy for profitability. It is the sum of all price spreads greater than $20/MWh. A higher score indicates more frequent and larger arbitrage opportunities.
+    """)
+    
+    # Visual Comparison
+    top_3 = results_df.head(3)['Node'].tolist()
+    
+    st.subheader("📊 Top 3 Nodes Comparison")
+    
+    # Load data for top 3 to plot
+    dfs = []
+    for node in top_3:
+        d = load_data(source=source, node=node)
+        d['Node'] = node
+        dfs.append(d)
+    
+    if dfs:
+        combined = pd.concat(dfs)
         
-        # Ranking
-        results_df = results_df.sort_values('Revenue Score', ascending=False).reset_index(drop=True)
-        results_df.index += 1 # 1-based ranking
+        # Plot Spread Distribution
+        fig = px.box(combined, x='Node', y='price_spread', title="Price Spread Distribution (Volatility)")
+        st.plotly_chart(fig, width="stretch")
         
-        st.subheader("🏆 Top Performing Nodes")
-        
-        # Metrics styling
-        st.dataframe(
-            results_df.style.background_gradient(subset=['Revenue Score', 'Volatility ($/MWh)'], cmap='Greens'),
-            width="stretch"
-        )
-        
-        # Visual Comparison
-        top_3 = results_df.head(3)['Node'].tolist()
-        
-        st.subheader("📊 Top 3 Nodes Comparison")
-        
-        # Load data for top 3 to plot
-        dfs = []
-        for node in top_3:
-            d = load_data(source=source, node=node)
-            d['Node'] = node
-            dfs.append(d)
-        
-        if dfs:
-            combined = pd.concat(dfs)
-            
-            # Plot Spread Distribution
-            fig = px.box(combined, x='Node', y='price_spread', title="Price Spread Distribution (Volatility)")
-            st.plotly_chart(fig, width="stretch")
-            
-    else:
-        if not results_data and scan_btn: # Only show error if button was clicked and no results
-             st.warning("No valid data found for analysis.")
+else:
+    st.info("No data found. Please check your data source or configuration.")
