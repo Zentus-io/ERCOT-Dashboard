@@ -206,7 +206,7 @@ def run_horizon_sensitivity_analysis(
     """
     Run sensitivity analysis for MPC strategy varying horizon size.
     """
-    horizon_range = range(12, 73, 12)  # 12, 24, 36, 48, 60, 72 hours
+    horizon_range = range(2, 50, 2)  # 2, 4, 6... 48 hours
     revenue_horizon = []
     
     simulator = BatterySimulator(battery_specs)

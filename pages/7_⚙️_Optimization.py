@@ -139,9 +139,9 @@ if state.strategy_type == "MPC (Rolling Horizon)":
     with col2:
         st.markdown("**MPC vs. Perfect Foresight**")
         st.markdown(f"""
-        - **Perfect Foresight** sees the *entire year* at once.
+        - **Perfect Foresight** sees the *entire simulation period* at once.
         - **MPC** only sees the next {state.horizon_hours} hours.
-        - MPC is "real-world optimal" - the best you can do with available forecasts.
+        - MPC re-optimizes at each time step (every 15 min or 1 hour depending on data).
         """)
 
 elif state.strategy_type == "Rolling Window Optimization":
