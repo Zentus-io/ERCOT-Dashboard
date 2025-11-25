@@ -634,13 +634,13 @@ def render_sidebar():
             
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
-        
+
         horizon = st.sidebar.slider(
             "Optimization Horizon (hours):",
-            min_value=12,
-            max_value=72,
+            min_value=2,
+            max_value=48,
             value=state.horizon_hours if hasattr(state, 'horizon_hours') else 24,
-            step=12,
+            step=2,
             help="Lookahead horizon for each optimization step. Longer horizons are slower but more optimal."
         )
         

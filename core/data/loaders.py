@@ -82,8 +82,11 @@ class SupabaseDataLoader:
                 dam_df.rename(columns={'price_mwh': 'price_mwh_da'}, inplace=True)
 
                 # For each RTM record, find the matching DAM record at the hour
-                result['hour'] = result['timestamp'].dt.floor('h')
-                dam_df['hour'] = dam_df['timestamp'].dt.floor('h')
+                # Ensure timestamps are datetimes and silence static type checker for .dt.floor
+                result['timestamp'] = pd.to_datetime(result['timestamp'])
+                dam_df['timestamp'] = pd.to_datetime(dam_df['timestamp'])
+                result['hour'] = result['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
+                dam_df['hour'] = dam_df['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
 
                 # Merge on hour and settlement_point
                 result = result.merge(
@@ -621,22 +624,14 @@ class UploadedFileLoader:
 
 
 def load_data(
-    source: Literal['csv', 'database', 'local_parquet'] = DEFAULT_DATA_SOURCE,
+    source: Literal['database', 'local_parquet'] = DEFAULT_DATA_SOURCE,
     node: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     data_dir: Optional[Path] = None
 ) -> pd.DataFrame:
-    """Unified data loading function supporting CSV, database, and local parquet."""
-    if source == 'csv':
-        if data_dir is None:
-            data_dir = Path(__file__).parent.parent.parent / 'data'
-        loader = DataLoader(data_dir)
-        df = loader.load_prices()
-        if node:
-            df = loader.filter_by_node(df, node)
-        return df
-    elif source == 'database':
+    """Unified data loading function supporting database and local parquet sources."""
+    if source == 'database':
         loader = SupabaseDataLoader()
         return loader.load_prices(node=node, start_date=start_date, end_date=end_date)
     elif source == 'local_parquet':
@@ -652,4 +647,4 @@ def load_data(
                 df = df[df['timestamp'].dt.date <= end_date]
         return df
     else:
-        raise ValueError(f"Invalid data source: {source}. Must be 'csv', 'database', or 'local_parquet'")
+        raise ValueError(f"Invalid data source: {source}. Must be 'database' or 'local_parquet'")

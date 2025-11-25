@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 import pandas as pd
 import numpy as np
+import os
 from .battery import Battery
 
 
@@ -422,9 +423,18 @@ class LinearOptimizationStrategy(DispatchStrategy):
             # Run optimization for the whole horizon once
             dt = calculate_dt(price_df)
             self._dt = dt
-            
+
             prices = (price_df['price_mwh_da'] + price_df['forecast_error'] * improvement_factor).to_numpy()
-            
+
+            # DIAGNOSTIC LOGGING
+            if os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
+                print(f"\n=== LP Diagnostics ===")
+                print(f"Dataset total: {len(price_df)} timesteps")
+                print(f"Sees full dataset: ALL {len(prices)} steps")
+                print(f"Price range: ${prices.min():.2f} - ${prices.max():.2f}")
+                print(f"Time step (dt): {dt:.2f} hours")
+                print(f"Improvement factor: {improvement_factor*100:.0f}%")
+
             self._dispatch_plan = solve_linear_optimization(
                 prices=prices,
                 dt=dt,
@@ -499,7 +509,24 @@ class MPCStrategy(DispatchStrategy):
              return DispatchDecision('hold', 0, 0, 0, 0)
 
         prices = (horizon_df['price_mwh_da'] + horizon_df['forecast_error'] * improvement_factor).to_numpy()
-        
+
+        # DIAGNOSTIC LOGGING (only on first timestep)
+        if current_idx == 0 and os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
+            print(f"\n=== MPC Diagnostics (Horizon={self.horizon_hours}h) ===")
+            print(f"Dataset total: {len(price_df)} timesteps")
+            print(f"Horizon window: [{current_idx}:{horizon_end}] = {horizon_end - current_idx} steps")
+            print(f"Expected horizon steps: {horizon_steps}")
+            print(f"Prices seen in horizon: min=${prices.min():.2f}, max=${prices.max():.2f}, mean=${prices.mean():.2f}")
+            print(f"Time step (dt): {dt:.2f} hours")
+            print(f"Improvement factor: {improvement_factor*100:.0f}%")
+
+            # Sanity check: Verify horizon slicing is correct
+            actual_horizon_length = horizon_end - current_idx
+            if actual_horizon_length != min(horizon_steps, len(price_df)):
+                print(f"⚠️  WARNING: Horizon length mismatch!")
+                print(f"   Expected: {min(horizon_steps, len(price_df))} steps")
+                print(f"   Actual: {actual_horizon_length} steps")
+
         # Solve LP for this horizon
         plan = solve_linear_optimization(
             prices=prices,
