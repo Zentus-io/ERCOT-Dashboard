@@ -84,8 +84,8 @@ def render_top_nav():
         }
 
         /* 2. HIDE GHOST COLUMNS (Symmetry Fix) */
-        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) > div[data-testid="column"]:first-child,
-        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) > div[data-testid="column"]:last-child {
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) > div[data-testid="stColumn"]:first-child,
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) > div[data-testid="stColumn"]:last-child {
             display: none !important;
             width: 0 !important;
             flex: 0 !important;
@@ -96,7 +96,8 @@ def render_top_nav():
         }
         
         /* 3. ACCORDION COLUMNS */
-        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="column"] {
+        /* All visible columns share space equally by default */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="stColumn"] {
             width: auto !important;
             flex: 1 !important;
             min-width: 0 !important;
@@ -106,13 +107,16 @@ def render_top_nav():
             justify-content: center !important;
             
             /* Smooth Transition for Flex Grow */
-            transition: flex 0.4s cubic-bezier(0.25, 1, 0.5, 1) !important;
+            transition: flex 0.4s cubic-bezier(0.25, 1, 0.5, 1), background-color 0.2s ease !important;
             overflow: hidden !important;
         }
         
-        /* HOVER STATE: Triggered by JavaScript class */
-        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="column"].nav-hover {
-            flex: 2.5 !important;
+        /* HOVER STATE: Pure CSS Hover */
+        /* We use :hover on the column itself. This works because the column wraps the link. */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="stColumn"]:hover {
+            flex: 2.5 !important; /* Grow significantly */
+            background-color: rgba(128, 128, 128, 0.05) !important; /* Subtle highlight on the column too */
+            border-radius: 50px !important;
         }
 
         /* 4. BUTTON/ANCHOR STYLING */
@@ -143,15 +147,22 @@ def render_top_nav():
 
         /* Hover Effect on the Link */
         div[data-testid="stHorizontalBlock"]:has(div#nav-marker) a[data-testid="stPageLink-NavLink"]:hover {
-            background-color: rgba(128, 128, 128, 0.15) !important;
+            background-color: transparent !important; /* Let column background handle it */
         }
         
         /* Active/Focus State */
         div[data-testid="stHorizontalBlock"]:has(div#nav-marker) a[data-testid="stPageLink-NavLink"]:active,
         div[data-testid="stHorizontalBlock"]:has(div#nav-marker) a[data-testid="stPageLink-NavLink"]:focus {
-             background-color: rgba(128, 128, 128, 0.15) !important;
+             background-color: transparent !important;
              border: none !important;
              outline: none !important;
+        }
+        
+        /* Current Page Styling (Disabled button) */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) button:disabled {
+            color: var(--primary-color) !important;
+            background-color: transparent !important;
+            opacity: 1 !important;
         }
 
         /* 5. CONTENT ALIGNMENT (Icon + Text) */
@@ -178,8 +189,8 @@ def render_top_nav():
                         margin-left 0.3s ease-in-out !important;
         }
 
-        /* REVEAL TEXT when COLUMN has nav-hover class */
-        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="column"].nav-hover p {
+        /* REVEAL TEXT when COLUMN is hovered */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-marker) [data-testid="stColumn"]:hover p {
             max-width: 150px !important;
             opacity: 1;
             margin-left: 0.5rem !important;
@@ -204,76 +215,4 @@ def render_top_nav():
             }
         }
     </style>
-    
-    <script>
-        // JavaScript-based accordion hover using EVENT DELEGATION
-        // This is robust against Streamlit's re-rendering and DOM updates.
-        
-        function setupNavHoverDelegation() {
-            if (window.navHoverInitialized) return;
-            
-            console.log("Initializing Nav Hover Delegation...");
-            
-            // Helper to find the correct column
-            function getNavColumn(target) {
-                // Check if we are hovering a nav link or inside one
-                const link = target.closest('a[data-testid="stPageLink-NavLink"]');
-                if (!link) return null;
-                
-                // Verify it's inside our specific nav container
-                const navContainer = link.closest('div[data-testid="stHorizontalBlock"]:has(div#nav-marker)');
-                if (!navContainer) return null;
-                
-                return {
-                    column: link.closest('[data-testid="column"]'),
-                    container: navContainer
-                };
-            }
-
-            // Mouse Over Delegation
-            document.body.addEventListener('mouseover', function(e) {
-                const result = getNavColumn(e.target);
-                if (result) {
-                    const { column, container } = result;
-                    
-                    // Remove hover class from all other columns in this container
-                    container.querySelectorAll('[data-testid="column"]').forEach(col => {
-                        if (col !== column) col.classList.remove('nav-hover');
-                    });
-                    
-                    // Add hover class to current column
-                    if (!column.classList.contains('nav-hover')) {
-                        column.classList.add('nav-hover');
-                        // console.log('Hover ON:', column);
-                    }
-                }
-            });
-
-            // Mouse Out Delegation
-            document.body.addEventListener('mouseout', function(e) {
-                const result = getNavColumn(e.target);
-                if (result) {
-                    const { column } = result;
-                    
-                    // Check if we are actually leaving the column (not just moving to a child)
-                    // relatedTarget is where the mouse went
-                    if (!column.contains(e.relatedTarget)) {
-                        column.classList.remove('nav-hover');
-                        // console.log('Hover OFF:', column);
-                    }
-                }
-            });
-            
-            window.navHoverInitialized = true;
-            console.log("Nav Hover Delegation Setup Complete.");
-        }
-        
-        // Run immediately
-        setupNavHoverDelegation();
-        
-        // Also run on doc ready just in case
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', setupNavHoverDelegation);
-        }
-    </script>
     """, unsafe_allow_html=True)
