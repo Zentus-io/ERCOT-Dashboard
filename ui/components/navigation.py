@@ -68,7 +68,8 @@ def render_top_nav():
             margin: 0 !important;
             
             /* Glassmorphism Theme Adaptive */
-            background-color: color-mix(in srgb, var(--background-color), transparent 10%) !important;
+            /* Glassmorphism Theme Adaptive */
+            background-color: color-mix(in srgb, var(--background-color), transparent 50%) !important;
             backdrop-filter: blur(16px) !important;
             -webkit-backdrop-filter: blur(16px) !important;
             border: 1px solid rgba(128, 128, 128, 0.2) !important;
@@ -196,7 +197,24 @@ def render_top_nav():
             margin-left: 0.5rem !important;
         }
 
-        /* 6. MOBILE RESPONSIVENESS */
+        /* 6. RESTORE HEADER TRANSPARENCY */
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            z-index: 100 !important; /* Lower than custom nav */
+            pointer-events: none; /* Let clicks pass through to our nav */
+        }
+        
+        /* Re-enable pointer events for the buttons inside the header */
+        header[data-testid="stHeader"] > * {
+            pointer-events: auto !important;
+        }
+        
+        /* Hide the colored decoration line if present */
+        header[data-testid="stHeader"]::before {
+            display: none !important;
+        }
+
+        /* 7. MOBILE RESPONSIVENESS */
         @media (max-width: 900px) {
             div[data-testid="stHorizontalBlock"]:has(div#nav-marker) {
                 width: 90vw !important;
