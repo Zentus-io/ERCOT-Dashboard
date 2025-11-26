@@ -12,9 +12,6 @@ def render_top_nav():
     """
     state = get_state()
     
-    # Marker for CSS targeting
-    st.markdown('<div id="nav-container-marker"></div>', unsafe_allow_html=True)
-    
     # Define pages structure
     pages = [
         {"name": "Home", "path": "Home.py", "icon": "🏠"},
@@ -27,83 +24,137 @@ def render_top_nav():
         {"name": "Timeline", "path": "pages/6_📊_Timeline.py", "icon": "📅"},
         {"name": "Optimization", "path": "pages/7_⚙️_Optimization.py", "icon": "⚙️"},
     ]
+    
+    # Use columns for navigation
+    cols = st.columns(len(pages))
+    
+    # Place marker in the first column so we can target the parent HorizontalBlock
+    with cols[0]:
+        st.markdown('<div id="nav-container-marker"></div>', unsafe_allow_html=True)
 
-    # Determine active page
-    # current_page gets the file path of the script being run
-    import os
-    # Note: st.navigation or similar new features might be better, 
-    # but sticking to standard components for compatibility.
-    
-    # HTML for Navbar
-    # We use st.markdown with unsafe_allow_html to create a fixed header
-    
+    for i, page in enumerate(pages):
+        with cols[i]:
+            st.page_link(
+                page["path"],
+                label=page["name"],
+                icon=page["icon"],
+                use_container_width=True
+            )
+
     st.markdown("""
     <style>
         /* Floating Navbar Container */
-        .floating-nav-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw; /* Full viewport width */
-            height: 3.5rem; /* Fixed height */
-            z-index: 999999; /* Highest priority */
-            background: rgba(255, 255, 255, 0.98);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-            border-bottom: 1px solid rgba(0,0,0,0.05);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0 1rem;
-            transition: all 0.3s ease;
+        /* Target the HorizontalBlock that contains the marker */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) {
+            position: fixed !important;
+            top: 1rem !important;
+            left: 15vw !important;
+            width: 70vw !important;
+            height: 3rem !important;
+            z-index: 1000002 !important;
+            background: rgba(255, 255, 255, 0.40) !important;
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+            border-bottom: 1px solid rgba(0,0,0,0.05) !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: flex-start !important; /* Align left */
+            padding: 0 1rem !important;
+            padding-left: 1rem !important; /* Space for sidebar toggle */
+            margin: 0 !important;
+            transition: all 0.3s ease !important;
+            pointer-events: auto !important;
+            gap: 0.25rem !important; /* Minimal gap */
         }
 
-        /* Target the container Streamlit creates for the markdown */
-        div[data-testid="stVerticalBlock"] > div:has(div#nav-container-marker) {
+        /* Hide the marker itself */
+        div#nav-container-marker {
+            display: none;
+        }
+        
+        /* Style the columns inside - FORCE COMPACT WIDTH */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) [data-testid="column"] {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            height: 100% !important;
+            min-width: auto !important;
+            width: auto !important; /* Override Streamlit's equal width */
+            flex: 0 1 auto !important; /* Don't grow, allow shrink */
+            padding: 0 !important;
+        }
+        
+        /* Target the page link buttons */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) button {
+            background: transparent !important;
+            border: none !important;
+            padding: 0.25rem 0.5rem !important;
+            font-size: 0.85rem !important;
+            line-height: 1 !important;
+            min-height: 0 !important;
+            height: auto !important;
+            margin: 0 !important; /* Remove any default margins */
+            box-shadow: none !important;
+        }
+        
+        /* Fix vertical alignment for all content inside buttons */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) button > div {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 0.3rem !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            line-height: 1 !important;
+        }
+        
+        /* Target the paragraph inside the button (the label) */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) button p {
+            font-size: 0.85rem !important;
+            font-weight: 500 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1 !important;
+            display: inline-block !important;
+        }
+        
+        /* Target the icon specifically if possible to ensure alignment */
+        div[data-testid="stHorizontalBlock"]:has(div#nav-container-marker) button span[role="img"] {
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1 !important;
+        }
+
+        /* Restore Streamlit header but make it transparent and click-through */
+        header[data-testid="stHeader"] {
+            display: block !important;
             position: fixed !important;
             top: 0 !important;
             left: 0 !important;
             width: 100vw !important;
-            z-index: 999999 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            background: transparent !important; /* Let the inner container handle bg */
-            pointer-events: none; /* Let clicks pass through wrapper if needed, but we need clicks on children */
-        }
-        
-        /* Re-enable pointer events for the actual content */
-        div[data-testid="stVerticalBlock"] > div:has(div#nav-container-marker) > * {
-            pointer-events: auto;
-        }
-
-        /* Style the inner content of the nav */
-        div[data-testid="stVerticalBlock"] > div:has(div#nav-container-marker) .stHorizontalBlock {
-            background: rgba(255, 255, 255, 0.98);
-            backdrop-filter: blur(12px);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            padding: 0.5rem 1rem;
-            border-radius: 0 0 10px 10px; /* Rounded bottom corners */
-            width: 100%;
-            max-width: 100%;
-        }
-        
-        /* Restore Streamlit header but make it transparent and click-through */
-        header[data-testid="stHeader"] {
-            display: block !important;
             background: transparent !important;
-            z-index: 1000000 !important; /* Higher than custom nav */
-            pointer-events: none; /* Let clicks pass through to our nav */
+            z-index: 1000001 !important;
+            pointer-events: none;
+            height: 3rem !important;
         }
         
-        /* Re-enable pointer events for the buttons inside the header */
-        header[data-testid="stHeader"] > * {
-            pointer-events: auto;
+        /* Re-enable pointer events ONLY for the buttons inside the header */
+        header[data-testid="stHeader"] button, 
+        header[data-testid="stHeader"] [role="button"],
+        header[data-testid="stHeader"] a {
+            pointer-events: auto !important;
+            visibility: visible !important;
+            z-index: 1000003 !important;
         }
         
         /* Hide the colored decoration line if present */
         header[data-testid="stHeader"]::before {
-            display: none;
+            display: none !important;
         }
         
         /* Ensure main content is pushed down */
@@ -113,28 +164,6 @@ def render_top_nav():
     </style>
     """, unsafe_allow_html=True)
 
-    # We can't easily create clickable links that route internally in Streamlit 
-    # without using st.page_link.
-    # So we will use a container at the top that mimics the navbar using native columns
-    # but styled to look integrated.
-    
-    # Note: Pure CSS floating navbar with Streamlit widgets inside is hard because 
-    # Streamlit widgets are rendered where they are in the script flow.
-    # We will use a top container.
-    
-    with st.container():
-        # Use columns for navigation
-        cols = st.columns(len(pages))
-        for i, page in enumerate(pages):
-            with cols[i]:
-                st.page_link(
-                    page["path"],
-                    label=page["name"],
-                    icon=page["icon"],
-                    use_container_width=True
-                )
-    
-    st.markdown("---")
     
     # Breadcrumbs (Simple implementation based on active page could be added here)
     # For now, the page title usually serves this purpose.
