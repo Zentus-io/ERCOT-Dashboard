@@ -23,6 +23,12 @@ def apply_custom_styles():
         div[data-testid="stSidebarNav"] {{
             display: none;
         }}
+
+        /* 3. Increase Sidebar Width */
+        section[data-testid="stSidebar"] {{
+            width: 280px; !important;
+            min-width: 200px;
+        }}
         
         /* --- Theme-Aware Components --- */
         
