@@ -44,7 +44,7 @@ CHART_COLORS = {
 DEFAULT_BATTERY = {
     'capacity_mwh': 100,
     'power_mw': 50,
-    'efficiency': 0.9,
+    'efficiency': 0.95,
     'min_soc': 0.05,
     'max_soc': 0.95,
     'initial_soc': 0.5,
@@ -55,7 +55,8 @@ DEFAULT_STRATEGY = {
     'type': 'Threshold-Based',
     'charge_percentile': 0.25,
     'discharge_percentile': 0.75,
-    'window_hours': 6,
+    'window_hours': 12,
+    'horizon_hours': 6,
 }
 
 # Simulation defaults

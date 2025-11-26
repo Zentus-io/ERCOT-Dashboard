@@ -18,7 +18,7 @@ from utils.state import (
 )
 from config.settings import (
     DEFAULT_BATTERY, BATTERY_PRESETS, SUPABASE_URL, SUPABASE_KEY,
-    DEFAULT_DAYS_BACK, MAX_DAYS_RANGE
+    DEFAULT_DAYS_BACK, MAX_DAYS_RANGE, DEFAULT_STRATEGY
 )
 
 
@@ -54,7 +54,7 @@ def load_node_list(source: str = 'csv'):
     return []
 
 
-@st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading price data...")
+# @st.cache_data(ttl=3600, max_entries=10, show_spinner="Loading price data...")
 def load_node_prices(
     source: str,
     node: str,
@@ -522,15 +522,39 @@ def render_sidebar():
 
         # Auto-select best date range when node changes (database mode only)
         if state.data_source == 'database' and selected_node:
-            best_range = find_best_date_range(selected_node)
-            if best_range:
-                start_date, end_date = best_range
-                try:
-                    update_date_range(start_date, end_date)
-                    state._dates_auto_selected = True
-                    st.sidebar.success(f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
-                except ValueError:
-                    pass  # If update fails, just keep current dates
+            # Check if current range is valid for the new node
+            db_loader = SupabaseDataLoader()
+            current_availability = db_loader.get_node_availability(selected_node)
+            
+            # Filter for current date range
+            if not current_availability.empty:
+                mask = (current_availability['date'] >= state.start_date) & \
+                       (current_availability['date'] <= state.end_date)
+                range_stats = current_availability[mask]
+                
+                # Calculate average completeness for the current range
+                if not range_stats.empty:
+                    avg_completeness = range_stats['completeness'].mean()
+                else:
+                    avg_completeness = 0
+            else:
+                avg_completeness = 0
+            
+            # Only auto-select if current range is poor (<95% complete)
+            if avg_completeness < 95:
+                best_range = find_best_date_range(selected_node)
+                if best_range:
+                    start_date, end_date = best_range
+                    try:
+                        update_date_range(start_date, end_date)
+                        state._dates_auto_selected = True
+                        st.sidebar.success(f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
+                    except ValueError:
+                        pass  # If update fails, just keep current dates
+            else:
+                # Current range is good, keep it but mark as NOT auto-selected (user choice persisted)
+                # or we can say "Kept current range"
+                pass
 
     # 2. Load Price Data for Selected Node
     if needs_data_reload() or state.price_data is None or state.price_data.empty or (state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
@@ -818,42 +842,65 @@ def render_sidebar():
     if 'last_battery_preset' not in st.session_state:
         st.session_state.last_battery_preset = battery_preset
 
+    # Track node changes for Current Asset updates
+    if 'last_selected_node' not in st.session_state:
+        st.session_state.last_selected_node = state.selected_node
+
     preset_changed = (st.session_state.last_battery_preset != battery_preset)
+    node_changed = (st.session_state.last_selected_node != state.selected_node)
+
     if preset_changed:
         st.session_state.last_battery_preset = battery_preset
+    if node_changed:
+        st.session_state.last_selected_node = state.selected_node
 
     # Initialize or update session state for capacity
-    if 'capacity_master' not in st.session_state or preset_changed:
-        st.session_state.capacity_master = default_capacity
-        st.session_state.capacity_slider = default_capacity
+    # Update if preset changed OR if we are in "Current Asset" mode and the node changed
+    should_update_defaults = preset_changed or (battery_preset == "Current Asset" and node_changed)
+
+    if should_update_defaults:
+        # Update Capacity
+        st.session_state.capacity_master = float(default_capacity)
+        st.session_state.capacity_slider = float(default_capacity)
+        st.session_state.capacity_input = float(default_capacity)
+        
+        # Update Power
+        st.session_state.power_master = float(default_power)
+        st.session_state.power_slider = float(default_power)
+        st.session_state.power_input = float(default_power)
+        st.rerun()
+
+    if 'capacity_master' not in st.session_state:
+        st.session_state.capacity_master = float(default_capacity)
+        st.session_state.capacity_slider = float(default_capacity)
         st.session_state.capacity_input = float(default_capacity)
     elif 'capacity_slider' not in st.session_state:
-        st.session_state.capacity_slider = default_capacity
+        st.session_state.capacity_slider = float(default_capacity)
     elif 'capacity_input' not in st.session_state:
         st.session_state.capacity_input = float(default_capacity)
 
     # Callbacks
     def on_capacity_slider_change():
-        new_val = st.session_state.capacity_slider
+        new_val = float(st.session_state.capacity_slider)
         st.session_state.capacity_master = new_val
-        st.session_state.capacity_input = float(new_val)
+        st.session_state.capacity_input = new_val
 
     def on_capacity_input_change():
-        new_val = int(st.session_state.capacity_input)
+        new_val = float(st.session_state.capacity_input)
         st.session_state.capacity_master = new_val
         st.session_state.capacity_slider = new_val
 
     # Two-column layout
-    col1, col2 = st.sidebar.columns([2.5, 1])
+    col1, col2 = st.sidebar.columns([2.25, 1])
 
     is_disabled = (battery_preset != "Custom")
 
     with col1:
         st.slider(
             "Energy Capacity (MWh):",
-            min_value=1,
-            max_value=1000,
-            step=5 if st.session_state.capacity_master < 100 else 10,
+            min_value=5.0,
+            max_value=1000.0,
+            step=10.0,
             help="Total energy storage capacity of the battery",
             disabled=is_disabled,
             key="capacity_slider",
@@ -864,10 +911,10 @@ def render_sidebar():
         st.write("")  # Alignment
         st.number_input(
             "MWh",
-            min_value=1.0,
+            min_value=5.0,
             max_value=1000.0,
-            step=1.0,
-            format="%.0f",
+            step=10.0,
+            format="%.1f",
             help="Enter precise capacity",
             disabled=is_disabled,
             key="capacity_input",
@@ -878,38 +925,38 @@ def render_sidebar():
     # Use master value
     capacity = st.session_state.capacity_master
 
-    # Initialize or update session state for power
-    if 'power_master' not in st.session_state or preset_changed:
-        st.session_state.power_master = default_power
-        st.session_state.power_slider = default_power
+    # Initialize session state for power (only if not already present)
+    if 'power_master' not in st.session_state:
+        st.session_state.power_master = float(default_power)
+        st.session_state.power_slider = float(default_power)
         st.session_state.power_input = float(default_power)
     elif 'power_slider' not in st.session_state:
-        st.session_state.power_slider = default_power
+        st.session_state.power_slider = float(default_power)
     elif 'power_input' not in st.session_state:
         st.session_state.power_input = float(default_power)
 
     # Callbacks
     def on_power_slider_change():
-        new_val = st.session_state.power_slider
+        new_val = float(st.session_state.power_slider)
         st.session_state.power_master = new_val
-        st.session_state.power_input = float(new_val)
+        st.session_state.power_input = new_val
 
     def on_power_input_change():
-        new_val = int(st.session_state.power_input)
+        new_val = float(st.session_state.power_input)
         st.session_state.power_master = new_val
         st.session_state.power_slider = new_val
 
     # Two-column layout
-    col1, col2 = st.sidebar.columns([2.5, 1])
+    col1, col2 = st.sidebar.columns([2.25, 1])
 
     is_disabled = (battery_preset != "Custom")
 
     with col1:
         st.slider(
             "Power Capacity (MW):",
-            min_value=1,
-            max_value=500,
-            step=5,
+            min_value=5.0,
+            max_value=500.0,
+            step=5.0,
             help="Maximum charge/discharge rate",
             disabled=is_disabled,
             key="power_slider",
@@ -920,10 +967,10 @@ def render_sidebar():
         st.write("")  # Alignment
         st.number_input(
             "MW",
-            min_value=1.0,
+            min_value=5.0,
             max_value=500.0,
-            step=1.0,
-            format="%.0f",
+            step=5.0,
+            format="%.1f",
             help="Enter precise power",
             disabled=is_disabled,
             key="power_input",
@@ -955,12 +1002,12 @@ def render_sidebar():
         st.session_state.efficiency_slider = round(new_val / 0.05) * 0.05
 
     # Two-column layout
-    col1, col2 = st.sidebar.columns([2.5, 1])
+    col1, col2 = st.sidebar.columns([2.25, 1])
 
     with col1:
         st.slider(
             "Round-trip Efficiency:",
-            min_value=0.7,
+            min_value=0.5,
             max_value=1.0,
             step=0.05,  # Keep current step
             help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)",
@@ -996,101 +1043,8 @@ def render_sidebar():
         update_state(battery_specs=new_specs)
         clear_simulation_cache()
 
-    # ========================================================================
-    # DATA SUMMARY
-    # ========================================================================
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Data Summary")
-
-    # Defensive check for empty or invalid data
-    if state.selected_node and state.price_data is not None and not state.price_data.empty:
-        # Check if 'node' column exists, handle both 'node' and 'settlement_point' naming
-        if 'node' in state.price_data.columns:
-            node_data = state.price_data[state.price_data['node'] == state.selected_node]
-        elif 'settlement_point' in state.price_data.columns:
-            # Fallback if data hasn't been renamed yet
-            node_data = state.price_data[state.price_data['settlement_point'] == state.selected_node]
-        else:
-            st.sidebar.error("❌ Price data has unexpected column names")
-            st.sidebar.caption(f"Available columns: {list(state.price_data.columns)}")
-            node_data = None
-    else:
-        node_data = None
-
-    if node_data is not None and not node_data.empty:
-
-        # Dynamic date range display
-        date_range = get_date_range_str(node_data)
-        st.sidebar.metric("Date Range", date_range)
-
-        # Hours available
-        st.sidebar.metric("Hours Available", len(node_data))
-
-        # Extreme events
-        extreme_count = int(node_data['extreme_event'].sum()) if 'extreme_event' in node_data.columns else 0
-        st.sidebar.metric("Extreme Events (>$10 spread)", extreme_count)
-
-        # Data completeness (database mode only)
-        if state.data_source == 'database' and len(node_data) > 0:
-            expected_hours = (state.end_date - state.start_date).days * 24 + 24
-            actual_hours = len(node_data)
-            completeness = (actual_hours / expected_hours) * 100
-
-            if completeness < 95:
-                st.sidebar.warning(f"⚠️ Data coverage: {completeness:.1f}%")
-                missing_hours = expected_hours - actual_hours
-                st.sidebar.caption(f"Missing {missing_hours} hours")
-            elif completeness < 100:
-                st.sidebar.info(f"ℹ️ Data coverage: {completeness:.1f}%")
-            else:
-                st.sidebar.success("✓ Complete data")
-    else:
-        # Show why data isn't available
-        if state.price_data is None:
-            st.sidebar.warning("⚠️ No data loaded")
-        elif state.price_data.empty:
-            st.sidebar.warning("⚠️ Data query returned no results")
-            if state.data_source == 'database':
-                st.sidebar.caption(f"Check date range: {state.start_date} to {state.end_date}")
-        elif not state.selected_node:
-            st.sidebar.info("ℹ️ Select a node to view data")
 
     # ========================================================================
-    # EIA BATTERY MARKET CONTEXT
+    # DATA SUMMARY & MARKET CONTEXT MOVED TO HOME
     # ========================================================================
-    if state.eia_battery_data is not None:
-        st.sidebar.markdown("---")
-        with st.sidebar.expander("📊 ERCOT Battery Market Context", expanded=False):
-            percentile_energy = (state.eia_battery_data['Nameplate Energy Capacity (MWh)'] < capacity).mean() * 100
-            percentile_power = (state.eia_battery_data['Nameplate Capacity (MW)'] < power).mean() * 100
-
-            duration_hours = capacity / power if power > 0 else 0
-
-            st.markdown(f"""
-            **Texas Battery Market (EIA-860 2024)**
-
-            **Your System:**
-            - {capacity:.0f} MWh / {power:.0f} MW
-            - {duration_hours:.1f} hour duration
-            - Larger than **{percentile_energy:.0f}%** of TX batteries (by energy)
-            - Larger than **{percentile_power:.0f}%** of TX batteries (by power)
-
-            **Market Summary:**
-            - **136 operational systems** in Texas
-            - **8,060 MW** total installed capacity
-            - **54% primarily used for arbitrage** ✓
-            - Median: 10 MW / 17 MWh (1h duration)
-            - Mean: 59 MW / 85 MWh (1.4h duration)
-
-            **Use Cases (% of systems):**
-            - Arbitrage: 54% (your focus!)
-            - Ramping Reserve: 46%
-            - Frequency Regulation: 35%
-            """)
-
-            if percentile_energy < 50:
-                st.info("💡 Your system is smaller than average - representative of typical merchant battery operators.")
-            elif percentile_energy > 80:
-                st.success("💡 Your system is in the top 20% by size - representative of large utility-scale projects.")
-            else:
-                st.info("💡 Your system is mid-sized - representative of the average Texas battery market.")
+    # These sections have been moved to Home.py to improve layout
