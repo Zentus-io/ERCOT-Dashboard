@@ -153,8 +153,8 @@ with row1_col2:
             date_range = get_date_range_str(node_data)
             st.metric("Date Range", date_range)
 
-            # Hours available
-            st.metric("Hours Available", len(node_data))
+            # Number of settlements
+            st.metric("Number of Settlements", len(node_data))
 
             # Extreme events
             extreme_count = int(node_data['extreme_event'].sum()) if 'extreme_event' in node_data.columns else 0

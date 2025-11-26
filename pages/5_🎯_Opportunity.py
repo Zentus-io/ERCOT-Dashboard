@@ -19,6 +19,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ============================================================================
@@ -100,7 +101,7 @@ def run_sensitivity_analysis(
     window_hours: int
 ):
     """
-    Run sensitivity analysis with progress bar.
+    Run sensitivity analysis with progress bar and parallel strategy execution.
     """
     improvement_range = range(0, 101, 10)  # Reduced resolution for speed
     revenue_threshold = []
@@ -109,57 +110,46 @@ def run_sensitivity_analysis(
     revenue_linear = []
 
     simulator = BatterySimulator(battery_specs)
-    
+
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_steps = len(improvement_range)
+
+    def run_strategy(strategy, improvement_factor):
+        """Helper function to run a single strategy simulation."""
+        return simulator.run(node_data, strategy, improvement_factor=improvement_factor)
 
     for i, imp in enumerate(improvement_range):
         status_text.text(f"Simulating forecast improvement: {imp}%...")
         improvement_factor = imp / 100
 
-        # Threshold strategy
+        # Create strategy instances
         strategy_threshold = ThresholdStrategy(charge_percentile, discharge_percentile)
-        temp_result_threshold = simulator.run(
-            node_data,
-            strategy_threshold,
-            improvement_factor=improvement_factor
-        )
-        revenue_threshold.append(temp_result_threshold.total_revenue)
-
-        # Rolling window strategy
         strategy_window = RollingWindowStrategy(window_hours)
-        temp_result_window = simulator.run(
-            node_data,
-            strategy_window,
-            improvement_factor=improvement_factor
-        )
-        revenue_rolling_window.append(temp_result_window.total_revenue)
-
-        # MPC Strategy (New)
-        # Note: MPC is computationally expensive, so we might want to skip it or run it less frequently
-        # For now, we'll run it but it might slow down the page load
-        # Use a default horizon of 24h for comparison if not specified in state, but here we don't have state access directly
-        # We'll assume 24h or pass it in. Let's add horizon_hours to function signature.
-        strategy_mpc = MPCStrategy(horizon_hours=24) # Default for general comparison
-        temp_result_mpc = simulator.run(
-            node_data,
-            strategy_mpc,
-            improvement_factor=improvement_factor
-        )
-        revenue_mpc.append(temp_result_mpc.total_revenue)
-
-        # Linear Optimization strategy (new instance for each improvement level)
+        strategy_mpc = MPCStrategy(horizon_hours=24)
         strategy_linear = LinearOptimizationStrategy()
-        temp_result_linear = simulator.run(
-            node_data,
-            strategy_linear,
-            improvement_factor=improvement_factor
-        )
-        revenue_linear.append(temp_result_linear.total_revenue)
-        
+
+        # Run all strategies in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # Submit all strategy simulations
+            future_threshold = executor.submit(run_strategy, strategy_threshold, improvement_factor)
+            future_window = executor.submit(run_strategy, strategy_window, improvement_factor)
+            future_mpc = executor.submit(run_strategy, strategy_mpc, improvement_factor)
+            future_linear = executor.submit(run_strategy, strategy_linear, improvement_factor)
+
+            # Collect results
+            result_threshold = future_threshold.result()
+            result_window = future_window.result()
+            result_mpc = future_mpc.result()
+            result_linear = future_linear.result()
+
+        revenue_threshold.append(result_threshold.total_revenue)
+        revenue_rolling_window.append(result_window.total_revenue)
+        revenue_mpc.append(result_mpc.total_revenue)
+        revenue_linear.append(result_linear.total_revenue)
+
         progress_bar.progress((i + 1) / total_steps)
-        
+
     status_text.empty()
     progress_bar.empty()
 
@@ -206,7 +196,7 @@ def run_horizon_sensitivity_analysis(
     """
     Run sensitivity analysis for MPC strategy varying horizon size.
     """
-    horizon_range = range(2, 50, 2)  # 2, 4, 6... 48 hours
+    horizon_range = range(2, 14, 2)  # 2, 4, 6... 24 hours
     revenue_horizon = []
     
     simulator = BatterySimulator(battery_specs)
@@ -286,7 +276,7 @@ fig_sensitivity.update_layout(
     yaxis_title="Revenue ($)",
     height=500,
     hovermode='x unified',
-    legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01),
+    legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
     yaxis=dict(fixedrange=False), # Allow Y-axis zooming
     xaxis=dict(fixedrange=False)
 )
@@ -482,7 +472,7 @@ with col1:
 
     # Forecast Performance:
     - Mean Absolute Error: ${node_data['forecast_error'].abs().mean():.2f}/MWh
-    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[state.forecast_improvement//10] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
+    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[int(state.forecast_improvement//10)] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
     """)
 
 with col2:
@@ -528,7 +518,7 @@ The LP benchmark represents the theoretical maximum at each improvement level.
 """)
 
 # Current settings revenue (using LP Benchmark as the true optimal)
-current_idx = state.forecast_improvement // 10
+current_idx = int(state.forecast_improvement // 10)
 baseline_revenue_lp = revenue_linear[0]  # LP at 0% improvement
 current_revenue_lp = revenue_linear[current_idx]  # LP at current improvement
 max_revenue_lp = revenue_linear[-1]  # LP at 100% (perfect foresight)

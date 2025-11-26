@@ -708,12 +708,18 @@ def render_sidebar():
     st.sidebar.markdown("**Forecast Scenario:**")
 
     # Initialize master forecast value and widget states
+    # Determine what values to use
     if 'forecast_master' not in st.session_state:
-        st.session_state.forecast_master = float(state.forecast_improvement)
+        init_forecast = float(state.forecast_improvement)
+    else:
+        init_forecast = st.session_state.forecast_master
+
+    # Always ensure all three values exist and are synchronized
+    st.session_state.forecast_master = init_forecast
     if 'forecast_slider' not in st.session_state:
-        st.session_state.forecast_slider = int(state.forecast_improvement)
+        st.session_state.forecast_slider = int(init_forecast)
     if 'forecast_input' not in st.session_state:
-        st.session_state.forecast_input = float(state.forecast_improvement)
+        st.session_state.forecast_input = init_forecast
 
     # Callbacks to synchronize both widgets
     def on_slider_change():
@@ -745,6 +751,7 @@ def render_sidebar():
             "Forecast Accuracy (%):",
             min_value=0,
             max_value=100,
+            value=st.session_state.forecast_slider,
             step=5,
             help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)",
             key="forecast_slider",
@@ -758,6 +765,7 @@ def render_sidebar():
             "value",
             min_value=0.0,
             max_value=100.0,
+            value=st.session_state.forecast_input,
             step=0.1,
             format="%.1f",
             help="Enter precise value with decimals",
@@ -778,11 +786,34 @@ def render_sidebar():
     if state.eia_battery_data is not None:
         preset_options = ["Custom", "Current Asset"] + [v['name'] for v in BATTERY_PRESETS.values()]
 
+        # Initialize battery preset in session state if not present
+        # IMPORTANT: We must initialize BEFORE creating the widget
+        if 'battery_preset_value' not in st.session_state:
+            st.session_state.battery_preset_value = "Custom"
+
+        # Find the index for the stored preset value
+        try:
+            preset_index = preset_options.index(st.session_state.battery_preset_value)
+        except (ValueError, AttributeError):
+            preset_index = 0  # Default to "Custom"
+            st.session_state.battery_preset_value = "Custom"
+
+        # Callback to persist selection to our custom state variable
+        def on_preset_change():
+            # Store the selected value in our persistent state variable
+            st.session_state.battery_preset_value = st.session_state.battery_preset_widget
+
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
+            index=preset_index,
+            key="battery_preset_widget",
+            on_change=on_preset_change,
             help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."
         )
+
+        # Ensure our persistent value is in sync
+        st.session_state.battery_preset_value = battery_preset
 
         # Set defaults based on preset
         if battery_preset == "Custom":
@@ -830,6 +861,9 @@ def render_sidebar():
             default_capacity = DEFAULT_BATTERY['capacity_mwh']
             default_power = DEFAULT_BATTERY['power_mw']
     else:
+        # No EIA data available - force Custom mode
+        if 'battery_preset_value' not in st.session_state:
+            st.session_state.battery_preset_value = "Custom"
         battery_preset = "Custom"
         default_capacity = DEFAULT_BATTERY['capacity_mwh']
         default_power = DEFAULT_BATTERY['power_mw']
@@ -840,46 +874,48 @@ def render_sidebar():
 
     # Track preset changes - update sliders when preset switches
     if 'last_battery_preset' not in st.session_state:
-        st.session_state.last_battery_preset = battery_preset
+        st.session_state.last_battery_preset = st.session_state.get('battery_preset_value', 'Custom')
 
     # Track node changes for Current Asset updates
     if 'last_selected_node' not in st.session_state:
         st.session_state.last_selected_node = state.selected_node
 
-    preset_changed = (st.session_state.last_battery_preset != battery_preset)
+    preset_changed = (st.session_state.last_battery_preset != st.session_state.get('battery_preset_value', 'Custom'))
     node_changed = (st.session_state.last_selected_node != state.selected_node)
 
     if preset_changed:
-        st.session_state.last_battery_preset = battery_preset
+        st.session_state.last_battery_preset = st.session_state.get('battery_preset_value', 'Custom')
     if node_changed:
         st.session_state.last_selected_node = state.selected_node
 
-    # Initialize or update session state for capacity
-    # Update if preset changed OR if we are in "Current Asset" mode and the node changed
-    should_update_defaults = preset_changed or (battery_preset == "Current Asset" and node_changed)
+    # Determine if we should force update from preset/defaults
+    should_update_defaults = preset_changed or (st.session_state.get('battery_preset_value', 'Custom') == "Current Asset" and node_changed)
 
+    # Initialize session state values - prioritize existing state, then presets, then defaults
+    # This ensures consistency when switching between pages
+
+    # Determine what values to use
     if should_update_defaults:
-        # Update Capacity
-        st.session_state.capacity_master = float(default_capacity)
-        st.session_state.capacity_slider = float(default_capacity)
-        st.session_state.capacity_input = float(default_capacity)
-        
-        # Update Power
-        st.session_state.power_master = float(default_power)
-        st.session_state.power_slider = float(default_power)
-        st.session_state.power_input = float(default_power)
-        st.rerun()
+        # Preset changed - use new preset values
+        init_capacity = float(default_capacity)
+    elif 'capacity_master' not in st.session_state:
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_capacity = float(state.battery_specs.capacity_mwh)
+        else:
+            init_capacity = float(default_capacity)
+    else:
+        # Already initialized, use existing values
+        init_capacity = st.session_state.capacity_master
 
-    if 'capacity_master' not in st.session_state:
-        st.session_state.capacity_master = float(default_capacity)
-        st.session_state.capacity_slider = float(default_capacity)
-        st.session_state.capacity_input = float(default_capacity)
-    elif 'capacity_slider' not in st.session_state:
-        st.session_state.capacity_slider = float(default_capacity)
-    elif 'capacity_input' not in st.session_state:
-        st.session_state.capacity_input = float(default_capacity)
+    # Always ensure all three values exist and are synchronized
+    st.session_state.capacity_master = init_capacity
+    if 'capacity_slider' not in st.session_state or should_update_defaults:
+        st.session_state.capacity_slider = init_capacity
+    if 'capacity_input' not in st.session_state or should_update_defaults:
+        st.session_state.capacity_input = init_capacity
 
-    # Callbacks
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_capacity_slider_change():
         new_val = float(st.session_state.capacity_slider)
         st.session_state.capacity_master = new_val
@@ -900,6 +936,7 @@ def render_sidebar():
             "Energy Capacity (MWh):",
             min_value=5.0,
             max_value=1000.0,
+            value=st.session_state.capacity_slider,
             step=10.0,
             help="Total energy storage capacity of the battery",
             disabled=is_disabled,
@@ -913,6 +950,7 @@ def render_sidebar():
             "MWh",
             min_value=5.0,
             max_value=1000.0,
+            value=st.session_state.capacity_input,
             step=10.0,
             format="%.1f",
             help="Enter precise capacity",
@@ -925,17 +963,29 @@ def render_sidebar():
     # Use master value
     capacity = st.session_state.capacity_master
 
-    # Initialize session state for power (only if not already present)
-    if 'power_master' not in st.session_state:
-        st.session_state.power_master = float(default_power)
-        st.session_state.power_slider = float(default_power)
-        st.session_state.power_input = float(default_power)
-    elif 'power_slider' not in st.session_state:
-        st.session_state.power_slider = float(default_power)
-    elif 'power_input' not in st.session_state:
-        st.session_state.power_input = float(default_power)
+    # Initialize session state for power - prioritize existing state, then presets, then defaults
+    # Determine what values to use
+    if should_update_defaults:
+        # Preset changed - use new preset values
+        init_power = float(default_power)
+    elif 'power_master' not in st.session_state:
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_power = float(state.battery_specs.power_mw)
+        else:
+            init_power = float(default_power)
+    else:
+        # Already initialized, use existing values
+        init_power = st.session_state.power_master
 
-    # Callbacks
+    # Always ensure all three values exist and are synchronized
+    st.session_state.power_master = init_power
+    if 'power_slider' not in st.session_state or should_update_defaults:
+        st.session_state.power_slider = init_power
+    if 'power_input' not in st.session_state or should_update_defaults:
+        st.session_state.power_input = init_power
+
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_power_slider_change():
         new_val = float(st.session_state.power_slider)
         st.session_state.power_master = new_val
@@ -956,6 +1006,7 @@ def render_sidebar():
             "Power Capacity (MW):",
             min_value=5.0,
             max_value=500.0,
+            value=st.session_state.power_slider,
             step=5.0,
             help="Maximum charge/discharge rate",
             disabled=is_disabled,
@@ -969,6 +1020,7 @@ def render_sidebar():
             "MW",
             min_value=5.0,
             max_value=500.0,
+            value=st.session_state.power_input,
             step=5.0,
             format="%.1f",
             help="Enter precise power",
@@ -981,22 +1033,33 @@ def render_sidebar():
     # Use master value
     power = st.session_state.power_master
 
-    # Initialize session state for efficiency
+    # Initialize session state for efficiency - prioritize existing state, then defaults
+    # Determine what values to use
     if 'efficiency_master' not in st.session_state:
-        st.session_state.efficiency_master = DEFAULT_BATTERY['efficiency']
-    if 'efficiency_slider' not in st.session_state:
-        st.session_state.efficiency_slider = DEFAULT_BATTERY['efficiency']
-    if 'efficiency_input' not in st.session_state:
-        st.session_state.efficiency_input = DEFAULT_BATTERY['efficiency']
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_efficiency = float(state.battery_specs.efficiency)
+        else:
+            init_efficiency = DEFAULT_BATTERY['efficiency']
+    else:
+        # Already initialized, use existing values (efficiency doesn't change with presets)
+        init_efficiency = st.session_state.efficiency_master
 
-    # Callbacks
+    # Always ensure all three values exist and are synchronized
+    st.session_state.efficiency_master = init_efficiency
+    if 'efficiency_slider' not in st.session_state:
+        st.session_state.efficiency_slider = init_efficiency
+    if 'efficiency_input' not in st.session_state:
+        st.session_state.efficiency_input = init_efficiency
+
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_efficiency_slider_change():
-        new_val = st.session_state.efficiency_slider
+        new_val = float(st.session_state.efficiency_slider)
         st.session_state.efficiency_master = new_val
         st.session_state.efficiency_input = new_val
 
     def on_efficiency_input_change():
-        new_val = st.session_state.efficiency_input
+        new_val = float(st.session_state.efficiency_input)
         st.session_state.efficiency_master = new_val
         # Round to nearest 0.05 for slider
         st.session_state.efficiency_slider = round(new_val / 0.05) * 0.05
@@ -1009,6 +1072,7 @@ def render_sidebar():
             "Round-trip Efficiency:",
             min_value=0.5,
             max_value=1.0,
+            value=st.session_state.efficiency_slider,
             step=0.05,  # Keep current step
             help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)",
             key="efficiency_slider",
@@ -1021,6 +1085,7 @@ def render_sidebar():
             "eff",
             min_value=0.70,
             max_value=1.00,
+            value=st.session_state.efficiency_input,
             step=0.01,  # Finer precision
             format="%.2f",
             help="Enter precise efficiency (0.70-1.00)",
