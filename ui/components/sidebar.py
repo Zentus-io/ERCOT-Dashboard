@@ -586,7 +586,7 @@ def render_sidebar():
             "Threshold-Based": 0,
             "Rolling Window Optimization": 1,
             "MPC (Rolling Horizon)": 2
-        }.get(state.strategy_type, 0),
+        }.get(state.strategy_type, 2),  # DEFAULT CHANGED: 0 → 2 (MPC)
         help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page).",
         key="strategy_radio",
         on_change=on_strategy_change
@@ -596,78 +596,153 @@ def render_sidebar():
     if strategy_type == "Threshold-Based":
         st.sidebar.markdown("**Threshold Parameters:**")
 
-        charge_pct = st.sidebar.slider(
+        # Callback for charge threshold
+        def on_charge_change():
+            new_pct = st.session_state.charge_slider / 100
+            if abs(new_pct - state.charge_percentile) > 0.001:
+                update_state(charge_percentile=new_pct)
+                clear_simulation_cache()
+
+        # Callback for discharge threshold
+        def on_discharge_change():
+            new_pct = st.session_state.discharge_slider / 100
+            if abs(new_pct - state.discharge_percentile) > 0.001:
+                update_state(discharge_percentile=new_pct)
+                clear_simulation_cache()
+
+        # Charge threshold slider
+        st.sidebar.slider(
             "Charge Threshold Percentile:",
             min_value=10,
             max_value=40,
             value=int(state.charge_percentile * 100),
             step=5,
-            help="Charge when price below this percentile"
-        ) / 100
+            help="Charge when price below this percentile",
+            key="charge_slider",
+            on_change=on_charge_change
+        )
 
-        discharge_pct = st.sidebar.slider(
+        # Discharge threshold slider
+        st.sidebar.slider(
             "Discharge Threshold Percentile:",
             min_value=60,
             max_value=90,
             value=int(state.discharge_percentile * 100),
             step=5,
-            help="Discharge when price above this percentile"
-        ) / 100
-
-        if charge_pct != state.charge_percentile or discharge_pct != state.discharge_percentile:
-            update_state(charge_percentile=charge_pct, discharge_percentile=discharge_pct)
-            clear_simulation_cache()
+            help="Discharge when price above this percentile",
+            key="discharge_slider",
+            on_change=on_discharge_change
+        )
 
     elif strategy_type == "Rolling Window Optimization":
         st.sidebar.markdown("**Optimization Parameters:**")
 
-        window = st.sidebar.slider(
+        # Callback for window hours
+        def on_window_change():
+            new_val = st.session_state.window_slider
+            if new_val != state.window_hours:
+                update_state(window_hours=new_val)
+                clear_simulation_cache()
+
+        # Lookahead window slider
+        st.sidebar.slider(
             "Lookahead Window (hours):",
             min_value=2,
-            max_value=12,
-            value=state.window_hours,
+            max_value=24,
+            value=state.window_hours if hasattr(state, 'window_hours') else 12,
             step=1,
-            help="Number of hours to look ahead for optimization"
+            help="Number of hours to look ahead for optimization",
+            key="window_slider",
+            on_change=on_window_change
         )
-
-        if window != state.window_hours:
-            update_state(window_hours=window)
-            clear_simulation_cache()
             
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
 
-        horizon = st.sidebar.slider(
+        # Callback for horizon hours
+        def on_horizon_change():
+            new_val = st.session_state.mpc_horizon_slider
+            if not hasattr(state, 'horizon_hours') or new_val != state.horizon_hours:
+                update_state(horizon_hours=new_val)
+                clear_simulation_cache()
+
+        # Optimization horizon slider
+        st.sidebar.slider(
             "Optimization Horizon (hours):",
             min_value=2,
-            max_value=48,
-            value=state.horizon_hours if hasattr(state, 'horizon_hours') else 24,
-            step=2,
-            help="Lookahead horizon for each optimization step. Longer horizons are slower but more optimal."
+            max_value=24,
+            value=state.horizon_hours if hasattr(state, 'horizon_hours') else 6,
+            step=1,
+            help="Lookahead horizon for each optimization step.",
+            key="mpc_horizon_slider",
+            on_change=on_horizon_change
         )
-        
-        # Update state with horizon if it changed or wasn't set
-        if not hasattr(state, 'horizon_hours') or horizon != state.horizon_hours:
-            update_state(horizon_hours=horizon)
-            clear_simulation_cache()
 
     # ========================================================================
     # FORECAST IMPROVEMENT (placed right after strategy parameters)
     # ========================================================================
     st.sidebar.markdown("**Forecast Scenario:**")
 
-    forecast_improvement = st.sidebar.slider(
-        "Forecast Accuracy Improvement (%):",
-        min_value=0,
-        max_value=100,
-        value=state.forecast_improvement,
-        step=10,
-        help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)"
-    )
+    # Initialize master forecast value and widget states
+    if 'forecast_master' not in st.session_state:
+        st.session_state.forecast_master = float(state.forecast_improvement)
+    if 'forecast_slider' not in st.session_state:
+        st.session_state.forecast_slider = int(state.forecast_improvement)
+    if 'forecast_input' not in st.session_state:
+        st.session_state.forecast_input = float(state.forecast_improvement)
 
-    if forecast_improvement != state.forecast_improvement:
-        update_state(forecast_improvement=forecast_improvement)
-        clear_simulation_cache()
+    # Callbacks to synchronize both widgets
+    def on_slider_change():
+        """Slider changed - update master and input to match"""
+        new_val = float(st.session_state.forecast_slider)
+        st.session_state.forecast_master = new_val
+        st.session_state.forecast_input = new_val
+        # Move state update INTO callback (performance optimization)
+        if abs(new_val - state.forecast_improvement) > 0.01:
+            update_state(forecast_improvement=new_val)
+            clear_simulation_cache()
+
+    def on_input_change():
+        """Input changed - update master and slider to match"""
+        new_val = float(st.session_state.forecast_input)
+        st.session_state.forecast_master = new_val
+        # Round slider to nearest 5
+        st.session_state.forecast_slider = int(round(new_val / 5) * 5)
+        # Move state update INTO callback (performance optimization)
+        if abs(new_val - state.forecast_improvement) > 0.01:
+            update_state(forecast_improvement=new_val)
+            clear_simulation_cache()
+
+    # Two-column layout: slider + precise input (aligned)
+    col_slider, col_input = st.sidebar.columns([2.5, 1])
+
+    with col_slider:
+        st.slider(
+            "Forecast Accuracy (%):",
+            min_value=0,
+            max_value=100,
+            step=5,
+            help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)",
+            key="forecast_slider",
+            on_change=on_slider_change
+        )
+
+    with col_input:
+        # Add spacing to align with slider
+        st.write("")  # Empty line for vertical alignment
+        st.number_input(
+            "value",
+            min_value=0.0,
+            max_value=100.0,
+            step=0.1,
+            format="%.1f",
+            help="Enter precise value with decimals",
+            key="forecast_input",
+            on_change=on_input_change,
+            label_visibility="collapsed"
+        )
+
+    # State updates now handled in callbacks (performance optimization)
 
     # ========================================================================
     # BATTERY SPECIFICATIONS
@@ -714,51 +789,201 @@ def render_sidebar():
                 default_capacity = DEFAULT_BATTERY['capacity_mwh']
                 default_power = DEFAULT_BATTERY['power_mw']
                 
-        elif "Small" in battery_preset:
+        elif battery_preset == BATTERY_PRESETS['Small']['name']:
             default_capacity = BATTERY_PRESETS['Small']['capacity_mwh']
             default_power = BATTERY_PRESETS['Small']['power_mw']
-        elif "Medium" in battery_preset:
+        elif battery_preset == BATTERY_PRESETS['Medium']['name']:
             default_capacity = BATTERY_PRESETS['Medium']['capacity_mwh']
             default_power = BATTERY_PRESETS['Medium']['power_mw']
-        elif "Large" in battery_preset:
+        elif battery_preset == BATTERY_PRESETS['Large']['name']:
             default_capacity = int(state.eia_battery_data['Nameplate Energy Capacity (MWh)'].quantile(0.9))
             default_power = int(state.eia_battery_data['Nameplate Capacity (MW)'].quantile(0.9))
-        else:  # Very Large
+        elif battery_preset == BATTERY_PRESETS['Very Large']['name']:
             default_capacity = BATTERY_PRESETS['Very Large']['capacity_mwh']
             default_power = BATTERY_PRESETS['Very Large']['power_mw']
+        else:
+            # Fallback for any unrecognized preset
+            default_capacity = DEFAULT_BATTERY['capacity_mwh']
+            default_power = DEFAULT_BATTERY['power_mw']
     else:
         battery_preset = "Custom"
         default_capacity = DEFAULT_BATTERY['capacity_mwh']
         default_power = DEFAULT_BATTERY['power_mw']
 
-    capacity = st.sidebar.slider(
-        "Energy Capacity (MWh):",
-        min_value=10,
-        max_value=600,
-        value=default_capacity,
-        step=5 if default_capacity < 100 else 10,
-        help="Total energy storage capacity of the battery",
-        disabled=(battery_preset != "Custom")
-    )
+    # Clamp values to valid ranges (min 1, max 1000/500)
+    default_capacity = max(1, min(1000, default_capacity))
+    default_power = max(1, min(500, default_power))
 
-    power = st.sidebar.slider(
-        "Power Capacity (MW):",
-        min_value=5,
-        max_value=300,
-        value=default_power,
-        step=5,
-        help="Maximum charge/discharge rate",
-        disabled=(battery_preset != "Custom")
-    )
+    # Track preset changes - update sliders when preset switches
+    if 'last_battery_preset' not in st.session_state:
+        st.session_state.last_battery_preset = battery_preset
 
-    efficiency = st.sidebar.slider(
-        "Round-trip Efficiency:",
-        min_value=0.7,
-        max_value=1.0,
-        value=DEFAULT_BATTERY['efficiency'],
-        step=0.05,
-        help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)"
-    )
+    preset_changed = (st.session_state.last_battery_preset != battery_preset)
+    if preset_changed:
+        st.session_state.last_battery_preset = battery_preset
+
+    # Initialize or update session state for capacity
+    if 'capacity_master' not in st.session_state or preset_changed:
+        st.session_state.capacity_master = default_capacity
+        st.session_state.capacity_slider = default_capacity
+        st.session_state.capacity_input = float(default_capacity)
+    elif 'capacity_slider' not in st.session_state:
+        st.session_state.capacity_slider = default_capacity
+    elif 'capacity_input' not in st.session_state:
+        st.session_state.capacity_input = float(default_capacity)
+
+    # Callbacks
+    def on_capacity_slider_change():
+        new_val = st.session_state.capacity_slider
+        st.session_state.capacity_master = new_val
+        st.session_state.capacity_input = float(new_val)
+
+    def on_capacity_input_change():
+        new_val = int(st.session_state.capacity_input)
+        st.session_state.capacity_master = new_val
+        st.session_state.capacity_slider = new_val
+
+    # Two-column layout
+    col1, col2 = st.sidebar.columns([2.5, 1])
+
+    is_disabled = (battery_preset != "Custom")
+
+    with col1:
+        st.slider(
+            "Energy Capacity (MWh):",
+            min_value=1,
+            max_value=1000,
+            step=5 if st.session_state.capacity_master < 100 else 10,
+            help="Total energy storage capacity of the battery",
+            disabled=is_disabled,
+            key="capacity_slider",
+            on_change=on_capacity_slider_change
+        )
+
+    with col2:
+        st.write("")  # Alignment
+        st.number_input(
+            "MWh",
+            min_value=1.0,
+            max_value=1000.0,
+            step=1.0,
+            format="%.0f",
+            help="Enter precise capacity",
+            disabled=is_disabled,
+            key="capacity_input",
+            on_change=on_capacity_input_change,
+            label_visibility="collapsed"
+        )
+
+    # Use master value
+    capacity = st.session_state.capacity_master
+
+    # Initialize or update session state for power
+    if 'power_master' not in st.session_state or preset_changed:
+        st.session_state.power_master = default_power
+        st.session_state.power_slider = default_power
+        st.session_state.power_input = float(default_power)
+    elif 'power_slider' not in st.session_state:
+        st.session_state.power_slider = default_power
+    elif 'power_input' not in st.session_state:
+        st.session_state.power_input = float(default_power)
+
+    # Callbacks
+    def on_power_slider_change():
+        new_val = st.session_state.power_slider
+        st.session_state.power_master = new_val
+        st.session_state.power_input = float(new_val)
+
+    def on_power_input_change():
+        new_val = int(st.session_state.power_input)
+        st.session_state.power_master = new_val
+        st.session_state.power_slider = new_val
+
+    # Two-column layout
+    col1, col2 = st.sidebar.columns([2.5, 1])
+
+    is_disabled = (battery_preset != "Custom")
+
+    with col1:
+        st.slider(
+            "Power Capacity (MW):",
+            min_value=1,
+            max_value=500,
+            step=5,
+            help="Maximum charge/discharge rate",
+            disabled=is_disabled,
+            key="power_slider",
+            on_change=on_power_slider_change
+        )
+
+    with col2:
+        st.write("")  # Alignment
+        st.number_input(
+            "MW",
+            min_value=1.0,
+            max_value=500.0,
+            step=1.0,
+            format="%.0f",
+            help="Enter precise power",
+            disabled=is_disabled,
+            key="power_input",
+            on_change=on_power_input_change,
+            label_visibility="collapsed"
+        )
+
+    # Use master value
+    power = st.session_state.power_master
+
+    # Initialize session state for efficiency
+    if 'efficiency_master' not in st.session_state:
+        st.session_state.efficiency_master = DEFAULT_BATTERY['efficiency']
+    if 'efficiency_slider' not in st.session_state:
+        st.session_state.efficiency_slider = DEFAULT_BATTERY['efficiency']
+    if 'efficiency_input' not in st.session_state:
+        st.session_state.efficiency_input = DEFAULT_BATTERY['efficiency']
+
+    # Callbacks
+    def on_efficiency_slider_change():
+        new_val = st.session_state.efficiency_slider
+        st.session_state.efficiency_master = new_val
+        st.session_state.efficiency_input = new_val
+
+    def on_efficiency_input_change():
+        new_val = st.session_state.efficiency_input
+        st.session_state.efficiency_master = new_val
+        # Round to nearest 0.05 for slider
+        st.session_state.efficiency_slider = round(new_val / 0.05) * 0.05
+
+    # Two-column layout
+    col1, col2 = st.sidebar.columns([2.5, 1])
+
+    with col1:
+        st.slider(
+            "Round-trip Efficiency:",
+            min_value=0.7,
+            max_value=1.0,
+            step=0.05,  # Keep current step
+            help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)",
+            key="efficiency_slider",
+            on_change=on_efficiency_slider_change
+        )
+
+    with col2:
+        st.write("")  # Alignment
+        st.number_input(
+            "eff",
+            min_value=0.70,
+            max_value=1.00,
+            step=0.01,  # Finer precision
+            format="%.2f",
+            help="Enter precise efficiency (0.70-1.00)",
+            key="efficiency_input",
+            on_change=on_efficiency_input_change,
+            label_visibility="collapsed"
+        )
+
+    # Use master value
+    efficiency = st.session_state.efficiency_master
 
     # Update battery specs if changed
     new_specs = BatterySpecs(
