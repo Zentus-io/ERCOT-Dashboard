@@ -121,7 +121,11 @@ class SupabaseDataLoader:
         try:
             response = self.client.table("ercot_prices").select("settlement_point").execute()
             if not response.data: return []
-            nodes = set(str(row['settlement_point']) for row in response.data if row and 'settlement_point' in row)
+            nodes = set()
+            for row in response.data:
+                if isinstance(row, dict) and "settlement_point" in row:
+                    nodes.add(str(row["settlement_point"]))
+
             return sorted(list(nodes))
         except Exception as e:
             print(f"Error fetching available nodes: {e}")
@@ -134,8 +138,8 @@ class SupabaseDataLoader:
             latest_res = self.client.table("ercot_prices").select("timestamp").order("timestamp", desc=True).limit(1).execute()
 
             if not earliest_res.data or not latest_res.data: return None, None
-            earliest = pd.to_datetime(str(earliest_res.data[0]['timestamp'])).date()
-            latest = pd.to_datetime(str(latest_res.data[0]['timestamp'])).date()
+            earliest = pd.to_datetime(str(earliest_res.data[0]['timestamp'])).date()  # type: ignore
+            latest = pd.to_datetime(str(latest_res.data[0]['timestamp'])).date()  # type: ignore
             return earliest, latest
         except Exception as e:
             print(f"Error fetching date range: {e}")
@@ -162,7 +166,7 @@ class SupabaseDataLoader:
 
             df = pd.DataFrame(response.data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['date'] = df['timestamp'].dt.date
+            df['date'] = df['timestamp'].dt.date  # type: ignore[attr-defined]
             
             # Count records per day
             daily_counts = df.groupby('date').size().reset_index(name='count')
@@ -344,7 +348,7 @@ class ParquetDataLoader:
             return pd.DataFrame()
 
         # Merge
-        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
         
         merged = pd.merge(
             rtm_df,
@@ -588,7 +592,7 @@ class UploadedFileLoader:
             return pd.DataFrame()
 
         # Merge DAM and RTM
-        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')
+        rtm_df['hour_start'] = rtm_df['timestamp'].dt.floor('h')  # type: ignore[attr-defined]
 
         merged = pd.merge(
             rtm_df,
@@ -651,9 +655,9 @@ def load_data(
         # Filter by date if provided
         if not df.empty and (start_date or end_date):
             if start_date:
-                df = df[df['timestamp'].dt.date >= start_date]
+                df = df[df['timestamp'].dt.date >= start_date]  # type: ignore[attr-defined]
             if end_date:
-                df = df[df['timestamp'].dt.date <= end_date]
+                df = df[df['timestamp'].dt.date <= end_date]  # type: ignore[attr-defined]
         return df
     else:
         raise ValueError(f"Invalid data source: {source}. Must be 'database' or 'local_parquet'")

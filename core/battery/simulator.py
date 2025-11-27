@@ -6,10 +6,9 @@ This module provides the high-level simulation orchestrator.
 """
 
 from dataclasses import dataclass
-from typing import List
 import pandas as pd
 from .battery import Battery, BatterySpecs
-from .strategies import DispatchStrategy, DispatchDecision
+from .strategies import DispatchStrategy, ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
 
 
 @dataclass
@@ -77,11 +76,7 @@ def run_simulation_cached(
     specs = BatterySpecs(**battery_specs)
     
     # Reconstruct strategy
-    # Reconstruct strategy
     strategy_type = strategy_params.get('type', 'Threshold-Based')
-    
-    # Import here to avoid circular imports if any
-    from .strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
     
     if strategy_type == 'Threshold-Based':
         strategy = ThresholdStrategy(
@@ -196,7 +191,8 @@ class BatterySimulator:
     def __init__(self, specs: BatterySpecs):
         self.specs = specs
 
-    def run(self,
+    def run(
+            self,
             price_df: pd.DataFrame,
             strategy: DispatchStrategy,
             improvement_factor: float = 0.0) -> SimulationResult:
@@ -217,14 +213,14 @@ class BatterySimulator:
         metadata = strategy.get_metadata()
         strategy_params = {'type': metadata.get('strategy', 'Unknown')}
         
-        if hasattr(strategy, 'charge_percentile'):
+        if isinstance(strategy, ThresholdStrategy):
             strategy_params['charge_percentile'] = strategy.charge_percentile
             strategy_params['discharge_percentile'] = strategy.discharge_percentile
         
-        if hasattr(strategy, 'window_hours'):
+        if isinstance(strategy, RollingWindowStrategy):
             strategy_params['window_hours'] = strategy.window_hours
 
-        if hasattr(strategy, 'horizon_hours'):
+        if isinstance(strategy, MPCStrategy):
             strategy_params['horizon_hours'] = strategy.horizon_hours
             
         return run_simulation_cached(

@@ -127,26 +127,27 @@ with row1_col1:
 # --- ROW 1, COLUMN 2: Data Summary ---
 with row1_col2:
     with st.expander("📊 Data Summary", expanded=True):
+        node_data = None
         # Defensive check for empty or invalid data
         if state.selected_node and state.price_data is not None and not state.price_data.empty:
             # Check if 'node' column exists, handle both 'node' and 'settlement_point' naming
             if 'node' in state.price_data.columns:
-                node_data = state.price_data[state.price_data['node'] == state.selected_node]
+                node_data_slice = state.price_data[state.price_data['node'] == state.selected_node]
             elif 'settlement_point' in state.price_data.columns:
                 # Fallback if data hasn't been renamed yet
-                node_data = state.price_data[state.price_data['settlement_point'] == state.selected_node]
+                node_data_slice = state.price_data[state.price_data['settlement_point'] == state.selected_node]
             else:
                 st.error("❌ Price data has unexpected column names")
-                node_data = None
-        if node_data is not None and not node_data.empty:
-            # Explicitly filter by selected date range to ensure accuracy
-            # This handles cases where the loader might fetch a slightly larger buffer
-            if 'timestamp' in node_data.columns:
-                mask = (node_data['timestamp'].dt.date >= state.start_date) & \
-                       (node_data['timestamp'].dt.date <= state.end_date)
-                node_data = node_data[mask]
-        else:
-            node_data = None
+                node_data_slice = None
+
+            if node_data_slice is not None and not node_data_slice.empty:
+                node_data = node_data_slice.copy()
+                # Explicitly filter by selected date range to ensure accuracy
+                if 'timestamp' in node_data.columns:
+                    node_data['timestamp'] = pd.to_datetime(node_data['timestamp'])
+                    mask = (node_data['timestamp'].dt.date >= state.start_date) & \
+                           (node_data['timestamp'].dt.date <= state.end_date)
+                    node_data = node_data[mask]
 
         if node_data is not None and not node_data.empty:
             # Dynamic date range display

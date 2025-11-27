@@ -89,7 +89,7 @@ from utils.simulation_runner import run_or_get_cached_simulation
 with st.spinner('Running battery simulations...'):
     baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
 
-    if baseline_result is None:
+    if not baseline_result or not improved_result or not optimal_result or not theoretical_max_result:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
 

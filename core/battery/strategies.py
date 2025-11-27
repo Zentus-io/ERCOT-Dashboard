@@ -11,7 +11,7 @@ from typing import Literal, Optional
 import pandas as pd
 import numpy as np
 import os
-from .battery import Battery
+from .battery import Battery, BatterySpecs
 
 
 def calculate_dt(price_df: pd.DataFrame) -> float:
@@ -97,7 +97,7 @@ class DispatchStrategy(ABC):
         DispatchDecision
             Decision for this timestep
         """
-        pass
+        ...
 
     @abstractmethod
     def get_metadata(self) -> dict:
@@ -109,7 +109,7 @@ class DispatchStrategy(ABC):
         dict
             Strategy parameters and calculated thresholds
         """
-        pass
+        ...
 
 
 class ThresholdStrategy(DispatchStrategy):
@@ -297,8 +297,7 @@ def solve_linear_optimization(
     prices: np.ndarray,
     dt: float,
     battery_specs: 'BatterySpecs',
-    initial_soc: float,
-    final_soc_min: float = 0.0
+    initial_soc: float
 ) -> pd.DataFrame:
     """
     Solves the linear optimization problem for a given price series and battery state.
@@ -313,8 +312,6 @@ def solve_linear_optimization(
         Battery specifications
     initial_soc : float
         Initial state of charge (MWh)
-    final_soc_min : float
-        Minimum required SOC at the end of the horizon (MWh)
         
     Returns
     -------
@@ -428,7 +425,7 @@ class LinearOptimizationStrategy(DispatchStrategy):
 
             # DIAGNOSTIC LOGGING
             if os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
-                print(f"\n=== LP Diagnostics ===")
+                print("\n=== LP Diagnostics ===")
                 print(f"Dataset total: {len(price_df)} timesteps")
                 print(f"Sees full dataset: ALL {len(prices)} steps")
                 print(f"Price range: ${prices.min():.2f} - ${prices.max():.2f}")
@@ -532,13 +529,8 @@ class MPCStrategy(DispatchStrategy):
             prices=prices,
             dt=dt,
             battery_specs=battery.specs,
-            initial_soc=battery.soc,
-            # Optional: Enforce some final SOC to prevent draining battery at end of every horizon
-            # For now, we leave it as 0 to allow flexibility, but in reality one might want 
-            # final_soc >= initial_soc or similar.
-            final_soc_min=0.0 
-        )
-        
+            initial_soc=battery.soc
+        )        
         # Take first action
         if not plan.empty:
             charge_mw = plan.iloc[0]['charge_mw']

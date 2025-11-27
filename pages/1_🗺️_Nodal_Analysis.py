@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from typing import Literal, Optional
 from core.data.loaders import load_data, ParquetDataLoader, SupabaseDataLoader
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
@@ -21,6 +22,9 @@ This tool scans available nodes to find the best opportunities for battery stora
 
 # Configuration
 source = st.session_state.get('data_source', DEFAULT_DATA_SOURCE)
+if source not in ('database', 'local_parquet'):
+    st.error(f"Invalid data source: {source}. Must be 'database' or 'local_parquet'.")
+    st.stop()
 st.info(f"Current Data Source: **{source}**")
 
 if source == 'local_parquet':
@@ -28,7 +32,7 @@ if source == 'local_parquet':
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_node_data_cached(source: str, node: str) -> pd.DataFrame:
+def load_node_data_cached(source: Literal['database', 'local_parquet'], node: str) -> pd.DataFrame:
     """
     Load and cache node data for 1 hour.
     Uses polars for fast parquet I/O when source is 'local_parquet'.
@@ -36,7 +40,7 @@ def load_node_data_cached(source: str, node: str) -> pd.DataFrame:
     return load_data(source=source, node=node)
 
 
-def analyze_single_node(source: str, node: str) -> dict:
+def analyze_single_node(source: Literal['database', 'local_parquet'], node: str) -> Optional[dict]:
     """
     Analyze a single node and return metrics.
     Returns None if node has no data or error occurs.
@@ -67,7 +71,7 @@ def analyze_single_node(source: str, node: str) -> dict:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_nodal_assessment(source: str) -> tuple[pd.DataFrame, dict]:
+def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[pd.DataFrame, dict]:
     """
     Run nodal assessment with caching.
     Returns (results_df, node_data_cache) where node_data_cache contains data for top nodes.

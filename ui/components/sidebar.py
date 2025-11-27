@@ -97,9 +97,9 @@ def load_node_prices(
                 
                 if not df.empty and (start_date or end_date):
                     if start_date:
-                        df = df[df['timestamp'].dt.date >= start_date]
+                        df = df[df['timestamp'].dt.date >= start_date]  # type: ignore
                     if end_date:
-                        df = df[df['timestamp'].dt.date <= end_date]
+                        df = df[df['timestamp'].dt.date <= end_date]  # type: ignore
                 return df
             return pd.DataFrame()
         except Exception as e:
@@ -304,19 +304,22 @@ def render_sidebar():
                     date.today()
                 )
 
-        earliest, latest = state.available_date_range or (
-            date.today() - timedelta(days=DEFAULT_DAYS_BACK),
-            date.today()
-        )
+        date_range_to_unpack = state.available_date_range
+        if not date_range_to_unpack:
+            date_range_to_unpack = (
+                date.today() - timedelta(days=DEFAULT_DAYS_BACK),
+                date.today()
+            )
+        earliest, latest = date_range_to_unpack
 
         # Ensure state dates are within available range
-        if state.start_date < earliest:
+        if earliest and state.start_date < earliest:
             state.start_date = earliest
-        if state.start_date > latest:
+        if latest and state.start_date > latest:
             state.start_date = latest
-        if state.end_date < earliest:
+        if earliest and state.end_date < earliest:
             state.end_date = earliest
-        if state.end_date > latest:
+        if latest and state.end_date > latest:
             state.end_date = latest
 
         # Date range picker (Single input for range to save space and show full dates)
@@ -365,7 +368,7 @@ def render_sidebar():
             loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
             date_range = loader.get_date_range()
             
-            if date_range[0] and date_range[1]:
+            if date_range[0] is not None and date_range[1] is not None:
                 parquet_earliest, parquet_latest = date_range
             else:
                 parquet_earliest = date(2025, 1, 1)
@@ -377,13 +380,13 @@ def render_sidebar():
         st.sidebar.info(f"📌 Data available: {parquet_earliest} to {parquet_latest}")
 
         # Ensure state dates are within parquet range
-        if state.start_date < parquet_earliest:
+        if parquet_earliest and state.start_date < parquet_earliest:
             state.start_date = parquet_earliest
-        if state.start_date > parquet_latest:
+        if parquet_latest and state.start_date > parquet_latest:
             state.start_date = parquet_latest
-        if state.end_date < parquet_earliest:
+        if parquet_earliest and state.end_date < parquet_earliest:
             state.end_date = parquet_earliest
-        if state.end_date > parquet_latest:
+        if parquet_latest and state.end_date > parquet_latest:
             state.end_date = parquet_latest
 
         # Date range picker
@@ -475,12 +478,12 @@ def render_sidebar():
             
         # File Status Indicators
         if state.uploaded_dam_file:
-            st.sidebar.success(f"✅ DAM: {state.uploaded_dam_file.name}")
+            st.sidebar.success(f"✅ DAM: {state.uploaded_dam_file.name}")  # type: ignore
         else:
             st.sidebar.warning("⚠️ Waiting for DAM file...")
             
         if state.uploaded_rtm_file:
-            st.sidebar.success(f"✅ RTM: {state.uploaded_rtm_file.name}")
+            st.sidebar.success(f"✅ RTM: {state.uploaded_rtm_file.name}")  # type: ignore
         else:
             st.sidebar.warning("⚠️ Waiting for RTM file...")
             
@@ -569,8 +572,8 @@ def render_sidebar():
                     actual_source = 'uploaded'
                     # Generate signature to invalidate cache when files change
                     if state.uploaded_dam_file and state.uploaded_rtm_file:
-                        dam_sig = f"{state.uploaded_dam_file.name}_{state.uploaded_dam_file.size}"
-                        rtm_sig = f"{state.uploaded_rtm_file.name}_{state.uploaded_rtm_file.size}"
+                        dam_sig = f"{state.uploaded_dam_file.name}_{state.uploaded_dam_file.size}"  # type: ignore
+                        rtm_sig = f"{state.uploaded_rtm_file.name}_{state.uploaded_rtm_file.size}"  # type: ignore
                         file_sig = f"{dam_sig}_{rtm_sig}"
                     
                 price_data = load_node_prices(
