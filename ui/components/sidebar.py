@@ -784,7 +784,7 @@ def render_sidebar():
             max_value=100.0,
             value=st.session_state.forecast_input,
             step=0.1,
-            format="%.1",
+            format="%.1f",
             help="Enter precise value with decimals",
             key="forecast_input",
             on_change=on_input_change,
@@ -854,8 +854,7 @@ def render_sidebar():
                         asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
 
                     st.sidebar.success(
-                        f"✅ Matched: {
-                            asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
+                        f"✅ Matched: {asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
                 else:
                     st.sidebar.warning(f"⚠️ No asset found for {state.selected_node}")
                     default_capacity = DEFAULT_BATTERY['capacity_mwh']
@@ -980,7 +979,7 @@ def render_sidebar():
             max_value=1000.0,
             value=st.session_state.capacity_input,
             step=10.0,
-            format="%.1",
+            format="%.1f",
             help="Enter precise capacity",
             disabled=is_disabled,
             key="capacity_input",
@@ -1050,7 +1049,7 @@ def render_sidebar():
             max_value=500.0,
             value=st.session_state.power_input,
             step=5.0,
-            format="%.1",
+            format="%.1f",
             help="Enter precise power",
             disabled=is_disabled,
             key="power_input",
@@ -1115,7 +1114,7 @@ def render_sidebar():
             max_value=1.00,
             value=st.session_state.efficiency_input,
             step=0.01,  # Finer precision
-            format="%.2",
+            format="%.2f",
             help="Enter precise efficiency (0.70-1.00)",
             key="efficiency_input",
             on_change=on_efficiency_input_change,

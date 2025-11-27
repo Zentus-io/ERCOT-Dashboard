@@ -216,10 +216,8 @@ with col1:
 with col2:
     st.markdown("### 📈 Improved")
     st.metric(
-        "Revenue", f"${
-            improved_revenue:,.0f}", delta=f"+${
-            opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${
-                opportunity_vs_improved:,.0f}")
+        "Revenue", f"${improved_revenue:,.0f}",
+        delta=f"+${opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${opportunity_vs_improved:,.0f}")
     st.metric("Charge Events", improved_result.charge_count)
     st.metric("Discharge Events", improved_result.discharge_count)
     charge_pct = (improved_result.charge_count / len(node_data)) * 100
@@ -230,10 +228,8 @@ with col2:
 with col3:
     st.markdown("### ⭐ Strategy Max")
     st.metric(
-        "Revenue", f"${
-            optimal_revenue:,.0f}", delta=f"+${
-            opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${
-                opportunity_vs_naive:,.0f}")
+        "Revenue", f"${optimal_revenue:,.0f}",
+        delta=f"+${opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${opportunity_vs_naive:,.0f}")
     st.metric("Charge Events", optimal_result.charge_count)
     st.metric("Discharge Events", optimal_result.discharge_count)
     charge_pct = (optimal_result.charge_count / len(node_data)) * 100
@@ -245,10 +241,8 @@ with col4:
     st.markdown("### 🎯 LP Benchmark")
     gap_to_theoretical = theoretical_max_revenue - optimal_revenue
     st.metric(
-        "Revenue", f"${
-            theoretical_max_revenue:,.0f}", delta=f"+${
-            gap_to_theoretical:,.0f} vs strategy" if gap_to_theoretical >= 0 else f"${
-                gap_to_theoretical:,.0f}")
+        "Revenue", f"${theoretical_max_revenue:,.0f}",
+        delta=f"+${gap_to_theoretical:,.0f} vs strategy" if gap_to_theoretical >= 0 else f"${gap_to_theoretical:,.0f}")
     st.metric("Charge Events", theoretical_max_result.charge_count)
     st.metric("Discharge Events", theoretical_max_result.discharge_count)
     charge_pct = (theoretical_max_result.charge_count / len(node_data)) * 100

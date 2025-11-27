@@ -458,9 +458,7 @@ def main():
     if gap_report['has_gaps']:
         print("⚠️  Fetch complete with gaps remaining")
         print("=" * 80)
-        print(
-            f"Run the script again to retry fetching the {
-                gap_report['total_incomplete']} incomplete day(s).")
+        print(f"Run the script again to retry fetching the {gap_report['total_incomplete']} incomplete day(s).")
         return 1
     print("✅ Fetch complete - All data validated!")
     print("=" * 80)

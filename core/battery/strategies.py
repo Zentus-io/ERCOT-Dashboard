@@ -507,16 +507,9 @@ class MPCStrategy(DispatchStrategy):
         if current_idx == 0 and os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
             print(f"\n=== MPC Diagnostics (Horizon={self.horizon_hours}h) ===")
             print(f"Dataset total: {len(price_df)} timesteps")
-            print(
-                f"Horizon window: [{current_idx}:{horizon_end}] = {
-                    horizon_end -
-                    current_idx} steps")
+            print(f"Horizon window: [{current_idx}:{horizon_end}] = {horizon_end - current_idx} steps")
             print(f"Expected horizon steps: {horizon_steps}")
-            print(
-                f"Prices seen: min=${
-                    prices.min():.2f}, max=${
-                    prices.max():.2f}, mean=${
-                    prices.mean():.2f}")
+            print(f"Prices seen: min=${prices.min():.2f}, max=${prices.max():.2f}, mean=${prices.mean():.2f}")
             print(f"Time step (dt): {dt:.2f} hours")
             print(f"Improvement factor: {improvement_factor * 100:.0f}%")
 

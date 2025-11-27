@@ -218,14 +218,14 @@ class SupabaseDataLoader:
             return pd.DataFrame(columns=['date', 'completeness'])
 
     @st.cache_data(ttl=36000)
-    def load_eia_batteries(self) -> pd.DataFrame:
+    def load_eia_batteries(_self) -> pd.DataFrame:
         """
         Load EIA-860 battery data from Supabase.
         Cached for 10 hours.
         """
         try:
             # Fetch all batteries from Supabase
-            response = self.client.table("eia_batteries").select("*").execute()
+            response = _self.client.table("eia_batteries").select("*").execute()
 
             if not response.data:
                 st.warning("No battery data found in Supabase.")
@@ -267,14 +267,14 @@ class SupabaseDataLoader:
             return pd.DataFrame()
 
     @st.cache_data(ttl=36000)
-    def load_engie_assets(self) -> pd.DataFrame:
+    def load_engie_assets(_self) -> pd.DataFrame:
         """
         Load Engie/Broad Reach Power asset data from Supabase.
         Cached for 10 hours.
         """
         try:
             # Fetch all Engie assets from Supabase
-            response = self.client.table("engie_storage_assets").select("*").execute()
+            response = _self.client.table("engie_storage_assets").select("*").execute()
 
             if not response.data:
                 return pd.DataFrame()
