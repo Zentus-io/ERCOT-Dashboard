@@ -474,7 +474,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("#### Price Events")
-    st.markdown("""
+    st.markdown(f"""
     **Negative Price Events:**
     - {(node_data['price_mwh_rt'] < 0).sum()} hours with negative RT prices
     - Lowest: ${node_data['price_mwh_rt'].min():.2f}/MWh

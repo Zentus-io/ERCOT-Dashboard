@@ -174,6 +174,7 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric("Baseline (DA only)", f"${baseline_revenue:,.2f}")
+    st.markdown("<div style='margin-bottom: 27px;'></div>", unsafe_allow_html=True)
     st.caption(f"Charge cost: ${baseline_result.charge_cost:,.0f}")
     st.caption(f"Discharge revenue: ${baseline_result.discharge_revenue:,.0f}")
 

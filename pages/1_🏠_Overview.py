@@ -94,7 +94,7 @@ with st.spinner('Running battery simulations...'):
 # KEY METRICS
 # ============================================================================
 
-st.info("""
+st.info(f"""
 **How to use this dashboard:**
 Your **{state.strategy_type}** strategy is tested with **3 forecast quality scenarios**, plus a theoretical benchmark:
 1. **Baseline (DA Only)** - Strategy uses only day-ahead forecasts
@@ -206,6 +206,7 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown("### 📉 Baseline")
     st.metric("Revenue", f"${naive_revenue:,.0f}")
+    st.markdown("<div style='margin-bottom: 27px;'></div>", unsafe_allow_html=True)
     st.metric("Charge Events", baseline_result.charge_count)
     st.metric("Discharge Events", baseline_result.discharge_count)
     charge_pct = (baseline_result.charge_count / len(node_data)) * 100
@@ -301,7 +302,7 @@ if state.strategy_type == "Rolling Window Optimization":
          naive_revenue) /
         abs(naive_revenue) *
         100) if naive_revenue != 0 else 0
-    st.info("""
+    st.info(f"""
     **Rolling Window Strategy** with {state.window_hours}-hour lookahead window:
     - Achieves {improvement_rate:+.1f}% revenue improvement with {state.forecast_improvement}% better forecasts
     - Naturally handles temporal constraints (must charge before discharge)
@@ -310,7 +311,7 @@ if state.strategy_type == "Rolling Window Optimization":
     - **More robust** to forecast errors than threshold-based
     """)
 else:  # Threshold-Based
-    st.warning("""
+    st.warning(f"""
     **Threshold-Based Strategy** using {int(state.charge_percentile * 100)}th/{int(state.discharge_percentile * 100)}th percentiles:
     - May show non-monotonic improvement (small forecast gains can reduce revenue)
     - Sensitive to threshold parameter selection
