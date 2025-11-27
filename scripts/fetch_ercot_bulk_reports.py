@@ -1,25 +1,29 @@
-"""ERCOT Direct API Data Fetcher (V1.0)
+"""
+ERCOT Bulk Report Downloader (Official API)
 Zentus - ERCOT Battery Revenue Dashboard
 
-This script fetches data directly from the ERCOT Public API, bypassing gridstatus
-limitations. It supports bulk archive downloads for historical data.
-
-Key Features:
-- Direct ERCOT API authentication
-- Bulk archive downloads (up to 1000 files per request)
-- Supports both RTM and DAM settlement point prices
-- Saves to CSV files locally (no database required)
-- Handles the 15-min RTM data efficiently
-
-Supported Reports:
-- NP6-905-CD: RTM Settlement Point Prices (15-min intervals)
-- NP6-785-ER: Historical RTM Hub/Zone Prices (weekly aggregated)
-- NP4-190-CD: DAM Settlement Point Prices (hourly)
+Purpose:
+    Downloads raw bulk data reports (ZIP/CSV) directly from the ERCOT Public API.
+    Useful for fetching historical archives or specific report types not supported
+    by the `gridstatus` library. Data is saved locally as Parquet/CSV.
 
 Usage:
-    python fetch_ercot_api.py --report RTM --start 2025-01-01 --end 2025-11-24
-    python fetch_ercot_api.py --report RTM_HISTORICAL --start 2025-01-01
-    python fetch_ercot_api.py --report DAM --start 2025-01-01 --end 2025-11-24
+    python scripts/fetch_ercot_bulk_reports.py --report RTM --start 2025-01-01
+    python scripts/fetch_ercot_bulk_reports.py --help
+
+Arguments:
+    --report (str): Report type(s) to fetch (RTM, RTM_HISTORICAL, DAM, DAM_AS).
+    --start (str): Start date (YYYY-MM-DD).
+    --end (str): End date (YYYY-MM-DD). Default: yesterday.
+    --output (str): Output directory.
+    --format (str): Output format (csv/parquet).
+
+Examples:
+    # Download RTM Settlement Point Prices for 2025
+    python scripts/fetch_ercot_bulk_reports.py --report RTM --start 2025-01-01
+
+    # Download DAM Prices for a specific range
+    python scripts/fetch_ercot_bulk_reports.py --report DAM --start 2025-01-01 --end 2025-01-31
 """
 
 import argparse

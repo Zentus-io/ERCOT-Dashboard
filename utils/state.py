@@ -353,3 +353,21 @@ def get_date_range_str(data: Optional[pd.DataFrame] = None) -> str:
     if start == end:
         return str(start)
     return f"{start} to {end}"
+
+
+def get_supabase_client():
+    """Returns a Supabase client instance."""
+    try:
+        from supabase import create_client
+        import os
+        from dotenv import load_dotenv
+        
+        load_dotenv()
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        
+        if url and key:
+            return create_client(url, key)
+    except Exception as e:
+        print(f"Error creating supabase client: {e}")
+    return None

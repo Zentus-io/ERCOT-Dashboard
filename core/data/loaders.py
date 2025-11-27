@@ -301,6 +301,51 @@ class SupabaseDataLoader:
             st.warning(f"Unexpected error loading Engie asset data: {e}")
             return pd.DataFrame()
 
+    def load_generation_data(
+        self,
+        node: str,
+        fuel_type: str = 'Solar',
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> pd.DataFrame:
+        """
+        Load generation data (Solar/Wind) for a specific node.
+        """
+        try:
+            query = self.client.table("ercot_generation").select("timestamp, gen_mw")
+            query = query.eq("settlement_point", node).eq("fuel_type", fuel_type)
+            
+            if start_date:
+                query = query.gte("timestamp", start_date.isoformat())
+            if end_date:
+                # Add 1 day to include the end date fully
+                query = query.lte("timestamp", (end_date + timedelta(days=1)).isoformat())
+                
+            response = query.execute()
+            
+            if not response.data:
+                return pd.DataFrame()
+                
+            df = pd.DataFrame(response.data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Convert to US/Central if TZ-aware, else assume it matches price data (which is usually local-naive in this app)
+            # The fetch script inserts as UTC (isoformat). 
+            # Price data in this app is usually naive (local time).
+            # We need to convert UTC -> Central -> Naive to match.
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_convert('US/Central').dt.tz_localize(None)
+                
+            df = df.set_index('timestamp').sort_index()
+            return df
+            
+        except APIError as e:
+            st.error(f"Database error loading generation data: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            st.warning(f"Unexpected error loading generation data: {e}")
+            return pd.DataFrame()
+
 
 class ParquetDataLoader:
     """

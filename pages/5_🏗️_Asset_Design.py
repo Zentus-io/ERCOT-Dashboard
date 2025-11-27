@@ -1,10 +1,11 @@
 """
-Hybrid Asset Design & Opportunity Analysis Page
+Hybrid Asset Design & Optimization Page
 Zentus - ERCOT Battery Revenue Dashboard
 
 This page allows users to:
-1. Design hybrid assets (Solar + Storage) and analyze clipping/interconnection limits.
-2. Perform sensitivity analysis showing revenue impact across different forecast improvement levels.
+1. Design hybrid assets (Solar + Storage) using real market data and generation profiles.
+2. Compare the currently selected asset against an optimal configuration.
+3. Visualize clipping capture and revenue potential.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,7 @@ from core.battery.strategies import (
     RollingWindowStrategy,
     ThresholdStrategy,
 )
+from core.data.loaders import SupabaseDataLoader
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from ui.styles.custom_css import apply_custom_styles
@@ -57,36 +59,34 @@ if not has_valid_config():
 # Get state
 state = get_state()
 
-if state.price_data is None:
-    st.error("⚠️ Price data not loaded. Please refresh the page or check data availability.")
+# --- STEP 1: CORE DATA INTEGRATION (GUARDRAILS) ---
+if state.price_data is None or state.price_data.empty:
+    st.error("⚠️ Price data not loaded. Please refresh the page or check data availability in the sidebar.")
     st.stop()
 
 if state.selected_node is None:
     st.error("⚠️ No settlement point selected. Please select a node in the sidebar.")
     st.stop()
 
-# Load node data
-if state.price_data.empty:
-    st.warning("⚠️ No price data available. Please check your data source or date range.")
+# Filter data for selected node
+# Handle different column names for node
+node_col = 'node' if 'node' in state.price_data.columns else 'settlement_point'
+if node_col not in state.price_data.columns:
+    node_col = state.price_data.columns[0] # Fallback
+
+df_prices = state.price_data[state.price_data[node_col] == state.selected_node].copy()
+
+if df_prices.empty:
+    st.warning(f"⚠️ No data available for node {state.selected_node}. Please select a different node or date range.")
     st.stop()
 
-if 'node' in state.price_data.columns:
-    node_col = 'node'
-elif 'settlement_point' in state.price_data.columns:
-    node_col = 'settlement_point'
-elif 'SettlementPoint' in state.price_data.columns:
-    node_col = 'SettlementPoint'
-else:
-    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
-    st.stop()
+# Ensure timestamp index
+if 'timestamp' in df_prices.columns:
+    df_prices['timestamp'] = pd.to_datetime(df_prices['timestamp'])
+    df_prices = df_prices.set_index('timestamp', drop=False).sort_index()
 
-node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
-
-# Check if battery specs are configured
-if state.battery_specs is None:
-    st.error("⚠️ Battery specifications not configured. Please configure in the sidebar.")
-    st.stop()
-
+# Alias for compatibility with existing code in Tab 2
+node_data = df_prices
 
 # Create Tabs
 tab1, tab2 = st.tabs(["☀️ Hybrid Design", "📈 Strategy Analysis"])
@@ -95,25 +95,32 @@ tab1, tab2 = st.tabs(["☀️ Hybrid Design", "📈 Strategy Analysis"])
 # TAB 1: HYBRID DESIGN
 # ============================================================================
 with tab1:
-    st.subheader("Solar + Storage Configuration")
+    st.subheader(f"Asset Optimization: {state.selected_node}")
     
+    # --- CONFIGURATION SECTION ---
     col_left, col_right = st.columns([1, 3])
     
     with col_left:
         st.markdown("### Asset Config")
         
+        # Default values from State (Current Asset)
+        current_power = state.battery_specs.power_mw
+        current_energy = state.battery_specs.capacity_mwh
+        
+        # Solar Capacity Input
         solar_capacity_mw = st.number_input(
             "Solar Capacity (MW)",
             min_value=0.0,
-            value=150.0,
+            value=float(current_power * 1.5), # Default to 1.5x POI
             step=10.0,
             help="Total DC capacity of the solar array."
         )
         
+        # Interconnection Limit Input
         interconnection_limit_mw = st.number_input(
             "Interconnection Limit (MW)",
             min_value=0.0,
-            value=100.0,
+            value=float(current_power), # Default to Battery Power (POI)
             step=10.0,
             help="Maximum power allowed to be exported to the grid (POI limit)."
         )
@@ -122,142 +129,226 @@ with tab1:
         st.markdown("### Solar Profile")
         uploaded_file = st.file_uploader("Upload Solar Profile (CSV)", type=['csv'])
         
-        solar_profile = None
-        
-        if uploaded_file is not None:
-            try:
-                df_solar = pd.read_csv(uploaded_file)
-                # Try to find a generation column
-                possible_cols = ['Generation', 'generation', 'Solar', 'solar', 'Output', 'output']
-                target_col = None
-                for col in possible_cols:
-                    if col in df_solar.columns:
-                        target_col = col
-                        break
-                
-                if target_col is None:
-                    # Fallback to first column if numeric
-                    if pd.api.types.is_numeric_dtype(df_solar.iloc[:, 0]):
+        # --- SMART SLICING / DATA FETCHING ---
+        @st.cache_data(ttl=3600)
+        def get_smart_solar_profile(_df_prices, _uploaded_file=None, _node_name=None):
+            """
+            Generates or loads a solar profile aligned with df_prices index.
+            Priorities:
+            1. Uploaded CSV
+            2. Database (ercot_generation table)
+            3. Synthetic Bell Curve
+            """
+            target_index = _df_prices.index
+            start_date = target_index.min().date()
+            end_date = target_index.max().date()
+            
+            # 1. Uploaded File
+            if _uploaded_file is not None:
+                try:
+                    df_solar = pd.read_csv(_uploaded_file)
+                    # Find generation column
+                    possible_cols = ['Generation', 'generation', 'Solar', 'solar', 'Output', 'output', 'gen_mw']
+                    target_col = next((c for c in possible_cols if c in df_solar.columns), None)
+                    
+                    if not target_col and pd.api.types.is_numeric_dtype(df_solar.iloc[:, 0]):
                         target_col = df_solar.columns[0]
-                
-                if target_col:
-                    # Normalize to 0-1 if max > 1, otherwise assume it's already normalized or MW
-                    # For simplicity, let's assume the user uploads a normalized profile (0-1) 
-                    # OR a MW profile. We'll normalize it to 0-1 for scaling with capacity.
-                    raw_values = df_solar[target_col].values
-                    max_val = np.max(raw_values)
-                    if max_val > 0:
-                        solar_profile = raw_values / max_val
-                    else:
-                        solar_profile = raw_values # All zeros
+                        
+                    if target_col:
+                        # Normalize
+                        raw = df_solar[target_col].values
+                        mx = np.max(raw)
+                        profile_values = raw / mx if mx > 0 else raw
+                        
+                        # Tile/Slice to match target length
+                        if len(profile_values) >= len(target_index):
+                            aligned_values = profile_values[:len(target_index)]
+                        else:
+                            repeats = int(np.ceil(len(target_index) / len(profile_values)))
+                            aligned_values = np.tile(profile_values, repeats)[:len(target_index)]
+                            
+                        return pd.Series(aligned_values, index=target_index), "Uploaded CSV"
+                except Exception as e:
+                    st.error(f"Error parsing CSV: {e}")
+            
+            # 2. Database Fetch
+            if _node_name and state.data_source == 'database':
+                try:
+                    loader = SupabaseDataLoader()
+                    # Try fetching Solar data
+                    df_gen = loader.load_generation_data(
+                        node=_node_name, 
+                        fuel_type='Solar',
+                        start_date=start_date,
+                        end_date=end_date
+                    )
                     
-                    st.success(f"Loaded profile from column: '{target_col}'")
-                else:
-                    st.error("Could not identify a numeric generation column in CSV.")
-                    
-            except Exception as e:
-                st.error(f"Error parsing CSV: {e}")
-        
-        if solar_profile is None:
-            # Generate mock "Bell Curve" profile
-            # Create a simple daily pattern repeated
-            hours = np.linspace(0, 24, 24 * 4) # 15-min intervals
-            # Gaussian-like curve centered at noon (hour 12)
+                    if not df_gen.empty:
+                        # Reindex to match target_index (fill missing with 0 or interpolate)
+                        # The DB data might be hourly, target might be 15-min.
+                        aligned = df_gen['gen_mw'].reindex(target_index).interpolate(method='time').fillna(0)
+                        
+                        # Normalize
+                        mx = aligned.max()
+                        if mx > 0:
+                            aligned = aligned / mx
+                            
+                        return aligned, "Database (Regional Forecast)"
+                except Exception as e:
+                    # st.warning(f"DB Fetch Error: {e}")
+                    pass
+
+            # 3. Fallback: Synthetic Bell Curve
+            hours = np.linspace(0, 24, 96)
             daily_profile = np.exp(-((hours - 12)**2) / (2 * 3**2))
-            # Clip small values to 0 (night)
             daily_profile[daily_profile < 0.01] = 0
             
-            # Repeat for the length of node_data or just show one day?
-            # Let's match node_data length if possible, or just show a representative period
-            # For visualization, let's show 24 hours (96 intervals)
-            solar_profile = daily_profile
+            days = int(np.ceil(len(target_index) / 96))
+            full_profile = np.tile(daily_profile, days)[:len(target_index)]
             
-            if uploaded_file is None:
-                st.info("Using default mock solar profile (Bell Curve). Upload a CSV to use custom data.")
+            return pd.Series(full_profile, index=target_index), "Synthetic (Bell Curve)"
+
+        solar_profile, source_type = get_smart_solar_profile(df_prices, uploaded_file, state.selected_node)
+        
+        if "Database" in source_type:
+             st.success(f"✅ Using {source_type}")
+        elif "Synthetic" in source_type:
+             st.caption(f"Using {source_type}. Upload CSV or use Database mode for real data.")
+        else:
+             st.info(f"Using {source_type}")
 
     with col_right:
-        # Calculate vectors
-        # Ensure profile matches visualization length. 
-        # For this demo, let's just visualize a 24-hour period (96 points)
+        # --- SIMULATION ENGINE ---
         
-        vis_points = 96 # 1 day at 15-min resolution
+        # 1. Calculate Solar Vectors
+        df_sim = df_prices.copy()
+        df_sim['Solar_MW'] = solar_profile * solar_capacity_mw
+        df_sim['Export_MW'] = np.minimum(df_sim['Solar_MW'], interconnection_limit_mw)
+        df_sim['Clipped_MW'] = np.maximum(0, df_sim['Solar_MW'] - interconnection_limit_mw)
         
-        # If profile is longer, take first day. If shorter, tile it.
-        if len(solar_profile) >= vis_points:
-            profile_segment = solar_profile[:vis_points]
-        else:
-            # Tile it
-            repeats = int(np.ceil(vis_points / len(solar_profile)))
-            profile_segment = np.tile(solar_profile, repeats)[:vis_points]
+        # 2. Base Solar Revenue
+        # RTM Price is usually 15-min, so divide by 4 for MWh
+        df_sim['Solar_Revenue'] = (df_sim['Export_MW'] * df_sim['price_mwh_rt']) / 4
+        
+        # 3. Hybrid Arbitrage Simulation (Vectorized)
+        # Strategy: Capture clipped energy, discharge at daily peak price
+        df_sim['Date'] = df_sim.index.date
+        
+        daily_stats = df_sim.groupby('Date').agg({
+            'Clipped_MW': 'sum', # Sum of MW per interval
+            'price_mwh_rt': 'max'
+        }).rename(columns={'Clipped_MW': 'Daily_Clipped_Sum_MW', 'price_mwh_rt': 'Daily_Max_Price'})
+        
+        daily_stats['Daily_Clipped_MWh'] = daily_stats['Daily_Clipped_Sum_MW'] / 4
+        
+        batt_eff = state.battery_specs.efficiency
+        
+        # --- OPTIMIZATION SWEEPER ---
+        # We run this automatically now to compare
+        max_batt_mw = max(200, int(solar_capacity_mw)) # Sweep up to Solar Capacity
+        step_size = 10
+        sizes = range(0, max_batt_mw + 1, step_size)
+        revenues = []
+        
+        # Pre-calculate for speed
+        clipped_mwh = daily_stats['Daily_Clipped_MWh'].values
+        max_prices = daily_stats['Daily_Max_Price'].values
+        
+        for size_mw in sizes:
+            # Heuristic: Discharge at Peak Price limited by Power (1 hour duration assumption for peak)
+            # Volume = min(Daily_Clipped_MWh, Size_MW * 1h)
+            # Revenue = Volume * Max_Price * Efficiency
+            daily_rev = np.minimum(clipped_mwh, size_mw * 1.0) * max_prices * batt_eff
+            total_arb = daily_rev.sum()
+            revenues.append(df_sim['Solar_Revenue'].sum() + total_arb)
             
-        raw_solar_mw = profile_segment * solar_capacity_mw
+        # Find Optimal
+        optimal_idx = np.argmax(revenues)
+        optimal_size = sizes[optimal_idx]
+        optimal_revenue = revenues[optimal_idx]
         
-        # Calculate clipping
-        # Export is min(Generation, Limit)
-        exported_solar_mw = np.minimum(raw_solar_mw, interconnection_limit_mw)
+        # Calculate Current Asset Performance
+        current_daily_rev = np.minimum(clipped_mwh, current_power * 1.0) * max_prices * batt_eff
+        current_hybrid_rev = df_sim['Solar_Revenue'].sum() + current_daily_rev.sum()
         
-        # Clipped is max(0, Generation - Limit)
-        clipped_energy_mw = np.maximum(0, raw_solar_mw - interconnection_limit_mw)
+        lost_revenue = optimal_revenue - current_hybrid_rev
         
-        # Create X-axis (Hours)
-        x_axis = np.linspace(0, 24, vis_points)
+        # --- METRICS & COMPARISON ---
+        st.markdown("### 📊 Performance Comparison")
         
-        # Plotting
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Current Asset Size", f"{current_power} MW")
+        m2.metric("Current Revenue", f"${current_hybrid_rev:,.0f}")
+        m3.metric("Optimal Size", f"{optimal_size} MW")
+        m4.metric("Potential Revenue", f"${optimal_revenue:,.0f}", delta=f"+${lost_revenue:,.0f}")
+        
+        if lost_revenue > 0:
+            st.info(f"💡 Increasing battery size to **{optimal_size} MW** could capture **${lost_revenue:,.0f}** in additional revenue from clipped energy.")
+        else:
+            st.success("✅ Current asset is optimally sized for clipping capture!")
+
+        # --- VISUALIZATION ---
+        
+        # 1. Revenue Curve
+        fig_sweep = px.line(
+            x=sizes, 
+            y=revenues,
+            title="Revenue Optimization Curve",
+            labels={'x': 'Battery Power (MW)', 'y': 'Total Revenue ($)'}
+        )
+        # Add Current Asset Marker
+        fig_sweep.add_trace(go.Scatter(
+            x=[current_power], y=[current_hybrid_rev],
+            mode='markers', marker=dict(color='red', size=12, symbol='x'),
+            name='Current Asset'
+        ))
+        # Add Optimal Marker
+        fig_sweep.add_trace(go.Scatter(
+            x=[optimal_size], y=[optimal_revenue],
+            mode='markers', marker=dict(color='green', size=12, symbol='star'),
+            name='Optimal Asset'
+        ))
+        
+        st.plotly_chart(fig_sweep, width="stretch")
+        
+        # 2. Operational Chart (Representative Week)
+        st.markdown("### ⚡ Operational Profile (Solar + Clipping)")
+        plot_df = df_sim.copy()
+        if len(plot_df) > 96 * 7:
+            plot_df = plot_df.iloc[:96*7]
+            st.caption(f"Visualizing first 7 days.")
+            
         fig_hybrid = go.Figure()
         
-        # 1. Exported Energy (Gold, Filled)
         fig_hybrid.add_trace(go.Scatter(
-            x=x_axis,
-            y=exported_solar_mw,
-            mode='lines',
-            name='Exported Solar',
-            fill='tozeroy',
-            line=dict(color='#FFD700', width=0), # Gold
-            stackgroup='one'
+            x=plot_df.index, y=plot_df['Export_MW'],
+            mode='lines', name='Solar Export',
+            fill='tozeroy', line=dict(color='#FFD700', width=0), stackgroup='one'
         ))
         
-        # 2. Clipped Energy (Green, Filled, Stacked)
-        # Note: In Plotly stackgroup, stacking adds to the previous trace.
-        # So we plot the clipped part on top of exported.
         fig_hybrid.add_trace(go.Scatter(
-            x=x_axis,
-            y=clipped_energy_mw,
-            mode='lines',
-            name='Clipped Energy',
-            fill='tonexty',
-            line=dict(color='#28a745', width=0), # Green
-            stackgroup='one'
+            x=plot_df.index, y=plot_df['Clipped_MW'],
+            mode='lines', name='Clipped Energy',
+            fill='tonexty', line=dict(color='#28a745', width=0), stackgroup='one'
         ))
         
-        # 3. Interconnection Limit (Black Dashed Line)
         fig_hybrid.add_trace(go.Scatter(
-            x=[0, 24],
+            x=[plot_df.index.min(), plot_df.index.max()],
             y=[interconnection_limit_mw, interconnection_limit_mw],
-            mode='lines',
-            name='Interconnection Limit',
-            line=dict(color='black', dash='dash', width=2)
+            mode='lines', name='Interconnection Limit',
+            line=dict(color='#dc3545', dash='dash', width=2)
         ))
         
         fig_hybrid.update_layout(
-            title="Solar Generation & Clipping Analysis (24h Profile)",
-            xaxis_title="Hour of Day",
+            title="Hybrid Asset Operation",
+            xaxis_title="Time",
             yaxis_title="Power (MW)",
-            height=500,
+            height=400,
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         
         st.plotly_chart(fig_hybrid, width="stretch")
-        
-        # Metrics
-        total_gen_mwh = np.sum(raw_solar_mw) / 4 # /4 for 15-min intervals
-        total_clipped_mwh = np.sum(clipped_energy_mw) / 4
-        clipping_loss_pct = (total_clipped_mwh / total_gen_mwh * 100) if total_gen_mwh > 0 else 0
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Generation (24h)", f"{total_gen_mwh:.1f} MWh")
-        m2.metric("Exported Energy", f"{(total_gen_mwh - total_clipped_mwh):.1f} MWh")
-        m3.metric("Clipped Energy", f"{total_clipped_mwh:.1f} MWh", f"-{clipping_loss_pct:.1f}%", delta_color="inverse")
 
 
 # ============================================================================

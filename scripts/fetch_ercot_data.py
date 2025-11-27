@@ -1,15 +1,30 @@
-"""Optimized ERCOT Data Fetcher for Supabase (V4.0 - Smart Gap Detection)
+"""
+ERCOT Price Data Fetcher (Supabase)
 Zentus - ERCOT Battery Revenue Dashboard
 
-This script intelligently fetches only missing Day-Ahead (DAM) and Real-Time (RTM)
-settlement prices from the ERCOT API. It queries the database to find incomplete days,
-fetches only what's needed, and reports any remaining gaps.
+Purpose:
+    Intelligently fetches Day-Ahead (DAM) and Real-Time (RTM) settlement prices
+    from ERCOT (via `gridstatus`) and stores them in the Supabase `ercot_prices` table.
+    It automatically detects missing data gaps and fills them.
 
-Key Features:
-- Auto-detects date range from database (earliest to yesterday)
-- Only fetches incomplete days (missing DAM or RTM data)
-- Never attempts to fetch today's data (avoids infinite loops)
-- Reports remaining gaps after fetch completion
+Usage:
+    python scripts/fetch_ercot_data.py --start 2025-01-01
+    python scripts/fetch_ercot_data.py --help
+
+Arguments:
+    --start (str): Start date (YYYY-MM-DD). Default: Earliest date in DB or 2024-01-01.
+    --end (str): End date (YYYY-MM-DD). Default: Yesterday.
+    --filter-engie (flag): Only fetch data for Engie/Broad Reach Power assets (faster).
+
+Examples:
+    # Fill all missing data from the earliest record in DB to yesterday
+    python scripts/fetch_ercot_data.py
+
+    # Fetch data for a specific range
+    python scripts/fetch_ercot_data.py --start 2025-11-20 --end 2025-11-26
+
+    # Fetch only for Engie assets (useful for quick updates)
+    python scripts/fetch_ercot_data.py --filter-engie
 """
 
 import argparse
