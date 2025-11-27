@@ -5,12 +5,13 @@ Zentus - ERCOT Battery Revenue Dashboard
 
 import streamlit as st
 
+from config.settings import COLORS
 
 
 def apply_custom_styles():
     """Apply custom CSS styling to the Streamlit app."""
 
-    st.markdown("""
+    st.markdown(f"""
         <style>
         /* --- Layout Adjustments for Fixed Nav --- */
 

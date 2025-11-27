@@ -229,7 +229,7 @@ with row2_col1:
 
             duration_hours = capacity / power if power > 0 else 0
 
-            st.markdown("""
+            st.markdown(f"""
             **Texas Battery Market (EIA-860 2024)**
 
             **Your System:**
