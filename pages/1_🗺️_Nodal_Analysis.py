@@ -5,12 +5,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from config.page_config import configure_page
 from config.settings import DEFAULT_DATA_SOURCE
 from core.data.loaders import ParquetDataLoader, SupabaseDataLoader, load_data
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
+from ui.styles.custom_css import apply_custom_styles
 
-st.set_page_config(page_title="Nodal Analysis", page_icon="🗺️", layout="wide")
+configure_page("Nodal Analysis")
+apply_custom_styles()
 
 render_header()
 render_sidebar()
