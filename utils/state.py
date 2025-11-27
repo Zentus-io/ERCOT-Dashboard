@@ -65,7 +65,7 @@ class AppState:
     charge_percentile: float = 0.25
     discharge_percentile: float = 0.75
     window_hours: int = 6
-    horizon_hours: int = 24
+    horizon_hours: int = 6
     forecast_improvement: int = 10
 
     # Data selection
