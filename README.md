@@ -293,6 +293,28 @@ The dashboard shows how revenue scales with forecast accuracy improvements.
 - Solves for optimal charge/discharge pattern
 - More sophisticated, benefits more from accuracy
 
+### Hybrid Asset Design & Optimization
+
+This module allows users to design a hybrid Solar + Storage asset and optimize the battery size to capture "clipped" energy.
+
+**1. Data Fetching (Solar Potential)**:
+
+- The system fetches **Regional Solar Potential** (Resource Availability) from ERCOT via the `ercot_generation` table.
+- This data represents the theoretical maximum power the sun provides in that specific region before any grid limits are applied.
+- The profile is normalized (0-1) and scales dynamically with the user's **Solar Capacity (MW)** input.
+
+**2. Simulation Logic (The "Value of Clipping")**:
+
+- **Clipped Energy (Green Area)**: Power that would normally be wasted because it exceeds the user-defined **Interconnection Limit (MW)** (POI limit).
+- The simulation treats this clipped energy as "free" fuel for the battery.
+- It runs a **full optimization sweep** (simulating every battery size from 0 MW up to 1.5x the solar capacity in 1 MW increments).
+- For each size, it calculates the revenue gained by capturing that free energy and discharging it during the daily price peaks (using 15-minute Real-Time Market prices).
+
+**3. Optimization Result**:
+
+- The system identifies the **Optimal Battery Size** that maximizes total revenue (Base Solar Revenue + Battery Arbitrage Revenue).
+- It quantifies the **Lost Revenue** of the current asset compared to the optimal configuration.
+
 ---
 
 ## 📊 Visualizations

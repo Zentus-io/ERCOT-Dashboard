@@ -361,7 +361,7 @@ class SupabaseDataLoader:
         Load generation data (Solar/Wind) for a specific node.
         """
         try:
-            query = self.client.table("ercot_generation").select("timestamp, gen_mw")
+            query = self.client.table("ercot_generation").select("timestamp, gen_mw, forecast_mw, potential_mw")
             query = query.eq("settlement_point", node).eq("fuel_type", fuel_type)
             
             if start_date:

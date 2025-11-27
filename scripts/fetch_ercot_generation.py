@@ -105,76 +105,72 @@ def fetch_generation_data(iso: Any, date_to_fetch: date) -> pd.DataFrame:
     print(f"DEBUG: Fetching for {date_to_fetch}")
     dfs = []
     
-    # 1. Solar (Hourly Actuals)
+    # 1. Solar (Hourly Actuals + Forecasts)
     try:
         df_solar = pd.DataFrame()
-        # Try new method name (v0.33.0+)
         if hasattr(iso, 'get_solar_actual_and_forecast_by_geographical_region_hourly'):
             df_solar = iso.get_solar_actual_and_forecast_by_geographical_region_hourly(date=date_to_fetch)
-        # Fallback to old method name
         elif hasattr(iso, 'get_hourly_solar_report'):
             df_solar = iso.get_hourly_solar_report(date=date_to_fetch)
             
         if not df_solar.empty:
-            # print(f"DEBUG: Solar columns: {df_solar.columns.tolist()}")
-            # Columns are like 'GEN CenterWest', 'GEN NorthWest'
+            # Columns: GEN CenterWest, STPPF CenterWest, PVGRPP CenterWest, COP HSL CenterWest
+            # We want to extract all of them.
+            
+            time_col = 'Time' if 'Time' in df_solar.columns else df_solar.columns[1]
+            
+            # Identify regions from GEN columns
             gen_cols = [c for c in df_solar.columns if c.startswith('GEN ') and 'SYSTEM' not in c]
+            regions = [c.replace('GEN ', '') for c in gen_cols]
             
-            if not gen_cols:
-                print(f"    ⚠️  No GEN columns found in Solar for {date_to_fetch}. Cols: {df_solar.columns.tolist()[:5]}...")
+            solar_records = []
+            for _, row in df_solar.iterrows():
+                ts = row[time_col]
+                for region in regions:
+                    solar_records.append({
+                        'timestamp': ts,
+                        'region': region,
+                        'fuel_type': 'Solar',
+                        'gen_mw': row.get(f'GEN {region}', np.nan),
+                        'forecast_mw': row.get(f'STPPF {region}', np.nan),
+                        'potential_mw': row.get(f'PVGRPP {region}', row.get(f'COP HSL {region}', np.nan))
+                    })
             
-            # Keep Time
-            time_col = 'Time' if 'Time' in df_solar.columns else df_solar.columns[1] # usually 2nd col
-            
-            # Melt
-            df_solar_long = df_solar.melt(
-                id_vars=[time_col], 
-                value_vars=gen_cols,
-                var_name='region_raw', 
-                value_name='gen_mw'
-            )
-            
-            # Clean region name: "GEN CenterWest" -> "CenterWest"
-            df_solar_long['region'] = df_solar_long['region_raw'].str.replace('GEN ', '')
-            df_solar_long['fuel_type'] = 'Solar'
-            df_solar_long['timestamp'] = df_solar_long[time_col]
-            
-            dfs.append(df_solar_long[['timestamp', 'region', 'fuel_type', 'gen_mw']])
+            dfs.append(pd.DataFrame(solar_records))
+
     except Exception as e:
         print(f"    ⚠️  Error fetching Solar for {date_to_fetch}: {e}")
 
-    # 2. Wind (Hourly Actuals)
+    # 2. Wind (Hourly Actuals + Forecasts)
     try:
         df_wind = pd.DataFrame()
-        # Try new method name (v0.33.0+)
         if hasattr(iso, 'get_wind_actual_and_forecast_by_geographical_region_hourly'):
             df_wind = iso.get_wind_actual_and_forecast_by_geographical_region_hourly(date=date_to_fetch)
-        # Fallback to old method name
         elif hasattr(iso, 'get_hourly_wind_report'):
             df_wind = iso.get_hourly_wind_report(date=date_to_fetch)
 
         if not df_wind.empty:
-            # print(f"DEBUG: Wind columns: {df_wind.columns.tolist()}")
-            # Columns are like 'GEN LZ SOUTH HOUSTON', 'GEN LZ WEST'
-            gen_cols = [c for c in df_wind.columns if c.startswith('GEN ') and 'SYSTEM' not in c]
-            
-            if not gen_cols:
-                print(f"    ⚠️  No GEN columns found in Wind for {date_to_fetch}. Cols: {df_wind.columns.tolist()[:5]}...")
-
             time_col = 'Time' if 'Time' in df_wind.columns else df_wind.columns[1]
             
-            df_wind_long = df_wind.melt(
-                id_vars=[time_col], 
-                value_vars=gen_cols,
-                var_name='region_raw', 
-                value_name='gen_mw'
-            )
+            # Columns: GEN LZ WEST, STWPF LZ WEST, WGRPP LZ WEST, COP HSL LZ WEST
+            gen_cols = [c for c in df_wind.columns if c.startswith('GEN ') and 'SYSTEM' not in c]
+            regions = [c.replace('GEN ', '') for c in gen_cols]
             
-            df_wind_long['region'] = df_wind_long['region_raw'].str.replace('GEN ', '')
-            df_wind_long['fuel_type'] = 'Wind'
-            df_wind_long['timestamp'] = df_wind_long[time_col]
+            wind_records = []
+            for _, row in df_wind.iterrows():
+                ts = row[time_col]
+                for region in regions:
+                    wind_records.append({
+                        'timestamp': ts,
+                        'region': region,
+                        'fuel_type': 'Wind',
+                        'gen_mw': row.get(f'GEN {region}', np.nan),
+                        'forecast_mw': row.get(f'STWPF {region}', np.nan),
+                        'potential_mw': row.get(f'WGRPP {region}', row.get(f'COP HSL {region}', np.nan))
+                    })
             
-            dfs.append(df_wind_long[['timestamp', 'region', 'fuel_type', 'gen_mw']])
+            dfs.append(pd.DataFrame(wind_records))
+
     except Exception as e:
         print(f"    ⚠️  Error fetching Wind for {date_to_fetch}: {e}")
         
@@ -209,8 +205,8 @@ def transform_and_map(df_gen: pd.DataFrame, assets: List[dict]) -> List[dict]:
     # Drop duplicates
     df_gen = df_gen.drop_duplicates(subset=['timestamp', 'region', 'fuel_type'])
     
-    # Lookup dict: (timestamp, region, fuel_type) -> gen_mw
-    gen_lookup = df_gen.set_index(['timestamp', 'region', 'fuel_type'])['gen_mw'].to_dict()
+    # Lookup dict: (timestamp, region, fuel_type) -> row_dict
+    gen_lookup = df_gen.set_index(['timestamp', 'region', 'fuel_type']).to_dict('index')
     
     unique_timestamps = df_gen['timestamp'].unique()
     
@@ -219,31 +215,31 @@ def transform_and_map(df_gen: pd.DataFrame, assets: List[dict]) -> List[dict]:
             # Add Solar Record
             solar_key = (ts, solar_region, 'Solar')
             if solar_key in gen_lookup:
-                val = gen_lookup[solar_key]
-                if pd.notna(val):
+                row = gen_lookup[solar_key]
+                if pd.notna(row['gen_mw']):
                     records.append({
                         'timestamp': ts.isoformat(),
                         'settlement_point': sp,
                         'fuel_type': 'Solar',
-                        'gen_mw': float(val),
-                        'is_forecast': False, # Actuals
-                        'region': solar_region,
-                        'data_source': 'gridstatus_hourly_report'
+                        'gen_mw': float(row['gen_mw']),
+                        'forecast_mw': float(row['forecast_mw']) if pd.notna(row['forecast_mw']) else None,
+                        'potential_mw': float(row['potential_mw']) if pd.notna(row['potential_mw']) else None,
+                        'region': solar_region
                     })
                 
             # Add Wind Record
             wind_key = (ts, wind_region, 'Wind')
             if wind_key in gen_lookup:
-                val = gen_lookup[wind_key]
-                if pd.notna(val):
+                row = gen_lookup[wind_key]
+                if pd.notna(row['gen_mw']):
                     records.append({
                         'timestamp': ts.isoformat(),
                         'settlement_point': sp,
                         'fuel_type': 'Wind',
-                        'gen_mw': float(val),
-                        'is_forecast': False, # Actuals
-                        'region': wind_region,
-                        'data_source': 'gridstatus_hourly_report'
+                        'gen_mw': float(row['gen_mw']),
+                        'forecast_mw': float(row['forecast_mw']) if pd.notna(row['forecast_mw']) else None,
+                        'potential_mw': float(row['potential_mw']) if pd.notna(row['potential_mw']) else None,
+                        'region': wind_region
                     })
                 
     return records

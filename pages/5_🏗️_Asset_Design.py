@@ -50,6 +50,7 @@ render_sidebar()
 
 st.header("🏗️ Hybrid Asset Design & Optimization")
 
+
 # Check if configuration is valid
 if not has_valid_config():
     st.warning(
@@ -96,6 +97,25 @@ tab1, tab2 = st.tabs(["☀️ Hybrid Design", "📈 Strategy Analysis"])
 # ============================================================================
 with tab1:
     st.subheader(f"Asset Optimization: {state.selected_node}")
+
+    with st.expander("📖 How to use this page"):
+        st.markdown("""
+        **Goal:** Design a hybrid Solar + Storage asset and optimize the battery size to capture "clipped" energy (energy lost when solar generation exceeds the grid interconnection limit).
+
+        ### 1. Configure Your Asset (Left Panel)
+        *   **Solar Capacity (MW):** The total DC capacity of your solar array.
+        *   **Interconnection Limit (MW):** The maximum power you are allowed to export to the grid (POI limit).
+        *   **Solar Profile:** Uses real historical **Solar Potential** (Resource Availability) from the database for the selected region.
+
+        ### 2. Understand the Simulation
+        *   **Yellow Curve (Resource):** The total solar energy available based on the region's weather.
+        *   **Orange Area (Export):** The energy sold to the grid (capped at the Interconnection Limit).
+        *   **Green Area (Clipping):** The "wasted" energy that exceeds the limit. This is the opportunity for your battery!
+
+        ### 3. Analyze Performance
+        *   **Current Asset:** Shows revenue for your currently selected battery (from the Sidebar).
+        *   **Optimal Asset:** The system simulates battery sizes from 0 to 1.5x Solar Capacity to find the size that maximizes total revenue (Base Solar + Battery Arbitrage of Clipped Energy).
+        """)
     
     # --- CONFIGURATION SECTION ---
     col_left, col_right = st.columns([1, 3])
@@ -134,14 +154,18 @@ with tab1:
         def get_smart_solar_profile(_df_prices, _uploaded_file=None, _node_name=None):
             """
             Generates or loads a solar profile aligned with df_prices index.
-            Priorities:
-            1. Uploaded CSV
-            2. Database (ercot_generation table)
-            3. Synthetic Bell Curve
+            Returns a DataFrame with columns ['gen_mw', 'forecast_mw', 'potential_mw'] (normalized 0-1)
+            and the source type string.
             """
             target_index = _df_prices.index
             start_date = target_index.min().date()
             end_date = target_index.max().date()
+            
+            # Initialize result DataFrame
+            result_df = pd.DataFrame(index=target_index)
+            result_df['gen_mw'] = 0.0
+            result_df['forecast_mw'] = 0.0
+            result_df['potential_mw'] = 0.0
             
             # 1. Uploaded File
             if _uploaded_file is not None:
@@ -167,7 +191,12 @@ with tab1:
                             repeats = int(np.ceil(len(target_index) / len(profile_values)))
                             aligned_values = np.tile(profile_values, repeats)[:len(target_index)]
                             
-                        return pd.Series(aligned_values, index=target_index), "Uploaded CSV"
+                        result_df['gen_mw'] = aligned_values
+                        # Assume forecast/potential same as actuals for CSV upload
+                        result_df['forecast_mw'] = aligned_values
+                        result_df['potential_mw'] = aligned_values
+                            
+                        return result_df, "Uploaded CSV"
                 except Exception as e:
                     st.error(f"Error parsing CSV: {e}")
             
@@ -186,14 +215,27 @@ with tab1:
                     if not df_gen.empty:
                         # Reindex to match target_index (fill missing with 0 or interpolate)
                         # The DB data might be hourly, target might be 15-min.
-                        aligned = df_gen['gen_mw'].reindex(target_index).interpolate(method='time').fillna(0)
                         
-                        # Normalize
-                        mx = aligned.max()
-                        if mx > 0:
-                            aligned = aligned / mx
+                        # Helper to align and normalize
+                        def align_and_norm(col_name):
+                            if col_name not in df_gen.columns:
+                                return pd.Series(0.0, index=target_index)
                             
-                        return aligned, "Database (Regional Forecast)"
+                            aligned = df_gen[col_name].reindex(target_index).interpolate(method='time').fillna(0)
+                            mx = aligned.max()
+                            if mx > 0:
+                                return aligned / mx
+                            return aligned
+
+                        result_df['gen_mw'] = align_and_norm('gen_mw')
+                        result_df['forecast_mw'] = align_and_norm('forecast_mw')
+                        result_df['potential_mw'] = align_and_norm('potential_mw')
+                        
+                        # If potential is missing (all 0), use gen_mw
+                        if result_df['potential_mw'].max() == 0:
+                             result_df['potential_mw'] = result_df['gen_mw']
+                            
+                        return result_df, "Database (Regional Forecast)"
                 except Exception as e:
                     # st.warning(f"DB Fetch Error: {e}")
                     pass
@@ -206,7 +248,11 @@ with tab1:
             days = int(np.ceil(len(target_index) / 96))
             full_profile = np.tile(daily_profile, days)[:len(target_index)]
             
-            return pd.Series(full_profile, index=target_index), "Synthetic (Bell Curve)"
+            result_df['gen_mw'] = full_profile
+            result_df['forecast_mw'] = full_profile
+            result_df['potential_mw'] = full_profile
+            
+            return result_df, "Synthetic (Bell Curve)"
 
         solar_profile, source_type = get_smart_solar_profile(df_prices, uploaded_file, state.selected_node)
         
@@ -221,8 +267,10 @@ with tab1:
         # --- SIMULATION ENGINE ---
         
         # 1. Calculate Solar Vectors
+        # Use Potential MW (Resource Availability) for simulation if available, else Actuals
+        # The profile is already normalized 0-1
         df_sim = df_prices.copy()
-        df_sim['Solar_MW'] = solar_profile * solar_capacity_mw
+        df_sim['Solar_MW'] = solar_profile['potential_mw'] * solar_capacity_mw
         df_sim['Export_MW'] = np.minimum(df_sim['Solar_MW'], interconnection_limit_mw)
         df_sim['Clipped_MW'] = np.maximum(0, df_sim['Solar_MW'] - interconnection_limit_mw)
         
@@ -245,8 +293,8 @@ with tab1:
         
         # --- OPTIMIZATION SWEEPER ---
         # We run this automatically now to compare
-        max_batt_mw = max(200, int(solar_capacity_mw)) # Sweep up to Solar Capacity
-        step_size = 10
+        max_batt_mw = int(solar_capacity_mw * 1.5) # Sweep up to 1.5x Solar Capacity
+        step_size = 1
         sizes = range(0, max_batt_mw + 1, step_size)
         revenues = []
         
@@ -293,7 +341,7 @@ with tab1:
         fig_sweep = px.line(
             x=sizes, 
             y=revenues,
-            title="Revenue Optimization Curve",
+            title="Asset Sizing Revenue Optimization",
             labels={'x': 'Battery Power (MW)', 'y': 'Total Revenue ($)'}
         )
         # Add Current Asset Marker
@@ -309,21 +357,43 @@ with tab1:
             name='Optimal Asset'
         ))
         
+        fig_sweep.update_layout(
+            legend=dict(
+                yanchor="bottom",
+                y=0.01,
+                xanchor="right",
+                x=0.99,
+                bgcolor="rgba(255, 255, 255, 0.5)"
+            )
+        )
+        
         st.plotly_chart(fig_sweep, width="stretch")
         
         # 2. Operational Chart (Representative Week)
         st.markdown("### ⚡ Operational Profile (Solar + Clipping)")
         plot_df = df_sim.copy()
+        
+        # Add actuals for comparison if available
+        plot_df['Actual_Generation_MW'] = solar_profile['gen_mw'] * solar_capacity_mw
+        
         if len(plot_df) > 96 * 7:
             plot_df = plot_df.iloc[:96*7]
             st.caption(f"Visualizing first 7 days.")
             
         fig_hybrid = go.Figure()
         
+        # Plot Potential (Resource)
+        fig_hybrid.add_trace(go.Scatter(
+            x=plot_df.index, y=plot_df['Solar_MW'],
+            mode='lines', name='Solar Potential (Resource)',
+            line=dict(color='#FFD700', width=1, dash='dot')
+        ))
+        
+        # Plot Actual Export (Simulated)
         fig_hybrid.add_trace(go.Scatter(
             x=plot_df.index, y=plot_df['Export_MW'],
-            mode='lines', name='Solar Export',
-            fill='tozeroy', line=dict(color='#FFD700', width=0), stackgroup='one'
+            mode='lines', name='Simulated Export',
+            fill='tozeroy', line=dict(color='#FFA500', width=0), stackgroup='one'
         ))
         
         fig_hybrid.add_trace(go.Scatter(

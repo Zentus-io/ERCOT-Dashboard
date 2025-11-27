@@ -63,8 +63,7 @@ with row1_col1:
             st.markdown(f"### Data Availability for **{state.selected_node}**")
             try:
                 # Fetch availability data
-                # NOTE: Caching disabled to ensure fresh data is fetched after pagination fix.
-                # @st.cache_data(ttl=3600, show_spinner=False)
+                @st.cache_data(ttl=3600, show_spinner=False)
                 def get_availability_events(node, start_date, end_date):
                     db_loader = SupabaseDataLoader()
                     availability_df = db_loader.get_node_availability(

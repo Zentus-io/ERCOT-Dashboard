@@ -2,14 +2,13 @@
 -- Stores regional or nodal generation data linked to settlement points
 
 CREATE TABLE IF NOT EXISTS ercot_generation (
-    timestamp TIMESTAMPTZ NOT NULL,
+    timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL,
     settlement_point TEXT NOT NULL,
     fuel_type TEXT NOT NULL, -- 'Solar', 'Wind'
     gen_mw FLOAT,
-    is_forecast BOOLEAN DEFAULT FALSE,
+    forecast_mw FLOAT, -- STWPF / STPPF
+    potential_mw FLOAT, -- WGRPP / PVGRPP / HSL
     region TEXT, -- e.g., 'PVGR_North', 'WGR_West', 'System'
-    data_source TEXT, -- e.g., 'gridstatus_regional_forecast', 'gridstatus_fuel_mix'
-    created_at TIMESTAMPTZ DEFAULT NOW(),
     
     -- Composite primary key to ensure uniqueness
     PRIMARY KEY (timestamp, settlement_point, fuel_type)
