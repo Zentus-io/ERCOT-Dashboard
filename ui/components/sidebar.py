@@ -1135,8 +1135,4 @@ def render_sidebar():
     if state.battery_specs != new_specs:
         update_state(battery_specs=new_specs)
         clear_simulation_cache()
-
-    # ========================================================================
-    # DATA SUMMARY & MARKET CONTEXT MOVED TO HOME
-    # ========================================================================
-    # These sections have been moved to Home.py to improve layout
+        
