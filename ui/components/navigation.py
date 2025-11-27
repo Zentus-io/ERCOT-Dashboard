@@ -17,13 +17,13 @@ def render_top_nav():
     # Define pages structure
     pages = [
         {"name": "Home", "path": "Home.py", "icon": "🏠"},
-        {"name": "Overview", "path": "pages/1_🏠_Overview.py", "icon": "📊"},
+        {"name": "Overview", "path": "pages/0_📊_Overview.py", "icon": "📊"},
         {"name": "Nodal Analysis", "path": "pages/1_🗺️_Nodal_Analysis.py", "icon": "🗺️"},
         {"name": "Price Analysis", "path": "pages/2_📈_Price_Analysis.py", "icon": "📈"},
         {"name": "Operations", "path": "pages/3_🔋_Operations.py", "icon": "🔋"},
         {"name": "Revenue", "path": "pages/4_💰_Revenue.py", "icon": "💰"},
         {"name": "Opportunity", "path": "pages/5_🎯_Opportunity.py", "icon": "🎯"},
-        {"name": "Timeline", "path": "pages/6_📊_Timeline.py", "icon": "📅"},
+        {"name": "Timeline", "path": "pages/6_📅_Timeline.py", "icon": "📅"},
         {"name": "Optimization", "path": "pages/7_⚙️_Optimization.py", "icon": "⚙️"},
     ]
 

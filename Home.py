@@ -301,12 +301,12 @@ st.markdown("""
 
 Use the top navigation to explore different aspects of battery revenue optimization:
 
-- **🏠 Overview**: Strategy performance comparison and key metrics
+- **📊 Overview**: Strategy performance comparison and key metrics
 - **📈 Price Analysis**: ERCOT price dynamics and forecast error distribution
 - **🔋 Operations**: Battery state of charge and dispatch actions
 - **💰 Revenue**: Cumulative revenue tracking and breakdown
 - **🎯 Opportunity**: Sensitivity analysis and revenue opportunity
-- **📊 Timeline**: Dispatch schedule visualization with price context
+- **📅 Timeline**: Dispatch schedule visualization with price context
 - **⚙️ Optimization**: Deep-dive into strategy behavior and decision-making
 
 ### 💡 Key Features

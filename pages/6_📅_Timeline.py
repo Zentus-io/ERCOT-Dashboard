@@ -36,7 +36,7 @@ render_sidebar()
 # MAIN CONTENT
 # ============================================================================
 
-st.header("📊 Decision Timeline")
+st.header("📅 Decision Timeline")
 
 # Check if configuration is valid
 if not has_valid_config():
