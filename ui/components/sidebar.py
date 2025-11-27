@@ -562,6 +562,7 @@ def render_sidebar():
                         state._dates_auto_selected = True
                         st.sidebar.success(
                             f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
+                        st.rerun()
                     except ValueError:
                         pass  # If update fails, just keep current dates
             else:
