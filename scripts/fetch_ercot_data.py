@@ -12,19 +12,21 @@ Key Features:
 - Reports remaining gaps after fetch completion
 """
 
-import os
-import sys
 import argparse
 import datetime
+import os
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, Optional, Set
+from typing import Any, Dict, List, Optional, Set
+
 import pandas as pd
 from dotenv import load_dotenv
-from supabase import create_client, Client
-from gridstatus.ercot import Ercot
 from gridstatus.base import Markets, NoDataFoundException
+from gridstatus.ercot import Ercot
+from postgrest.exceptions import APIError
+from supabase import Client, create_client
 from tqdm import tqdm
 
 # Add parent directory to path for imports
@@ -46,22 +48,26 @@ DEFAULT_HISTORIC_START = date(2024, 1, 1)  # Fallback if database is empty
 # HELPER FUNCTIONS
 # ============================================================================
 
-def fetch_ercot_prices_for_day(iso: Ercot, day: date, market: Markets, market_name: str, filter_nodes: Optional[Set[str]] = None) -> pd.DataFrame:
+def fetch_ercot_prices_for_day(iso: Ercot,
+                               day: date,
+                               market: Markets,
+                               market_name: str,
+                               filter_nodes: Optional[Set[str]] = None) -> pd.DataFrame:
     """Fetches ERCOT prices for a single day and market, optionally filtering by nodes."""
     try:
         prices = iso.get_spp(date=day, market=market)
         if not prices.empty:
             prices["Market"] = market_name
-            
+
             # Apply node filter if provided
             if filter_nodes:
                 # GridStatus uses 'Location' for settlement point
                 prices = prices[prices['Location'].isin(filter_nodes)]
-                
+
             return prices
     except NoDataFoundException:
         pass
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         print(f"    ⚠️  Error fetching {market_name} for {day}: {str(e)[:100]}...")
     return pd.DataFrame()
 
@@ -76,7 +82,8 @@ def transform_for_database(df: pd.DataFrame) -> list[dict]:
     # If timezone-aware, convert to Central time then remove tz; if naive, keep as-is
     if timestamps.dt.tz is not None:
         # Convert to US/Central (ERCOT's timezone), which handles DST automatically
-        df['timestamp'] = timestamps.dt.tz_convert('US/Central').dt.tz_localize(None).dt.floor('min')
+        df['timestamp'] = timestamps.dt.tz_convert(
+            'US/Central').dt.tz_localize(None).dt.floor('min')
     else:
         df['timestamp'] = timestamps.dt.floor('min')
 
@@ -87,7 +94,7 @@ def transform_for_database(df: pd.DataFrame) -> list[dict]:
     })
 
     required_cols = ['timestamp', 'settlement_point', 'market', 'price_mwh']
-    
+
     for col in required_cols:
         if col not in df_transformed.columns:
             df_transformed[col] = None
@@ -126,40 +133,59 @@ def upsert_to_supabase(supabase: Client, records: list[dict]) -> int:
             ).execute()
             total_inserted += len(batch)
         return total_inserted
-    except Exception as e:
+    except APIError as e:
         print(f"    ✗ Batch insert failed at record {total_inserted}: {str(e)[:150]}...")
         return total_inserted  # Return what was successfully inserted before failure
 
 
-def fetch_and_store_day(iso: Ercot, supabase: Client, day: date, expected_counts: dict, filter_nodes: Optional[Set[str]] = None, retry_count: int = 0) -> dict:
+def fetch_and_store_day(iso: Ercot,
+                        supabase: Client,
+                        day: date,
+                        expected_counts: dict,
+                        filter_nodes: Optional[Set[str]] = None,
+                        retry_count: int = 0) -> dict:
     """Orchestrates fetching, transforming, and storing data for a single day."""
     stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0, 'success': False}
     try:
-        dam_needed = True # Always try to fetch, upsert will handle conflicts
-        rtm_needed = True
-
         dam_prices, rtm_prices = pd.DataFrame(), pd.DataFrame()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_dam = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.DAY_AHEAD_HOURLY, "DAM", filter_nodes)
-            future_rtm = executor.submit(fetch_ercot_prices_for_day, iso, day, Markets.REAL_TIME_15_MIN, "RTM", filter_nodes)
+            future_dam = executor.submit(
+                fetch_ercot_prices_for_day,
+                iso,
+                day,
+                Markets.DAY_AHEAD_HOURLY,
+                "DAM",
+                filter_nodes)
+            future_rtm = executor.submit(
+                fetch_ercot_prices_for_day,
+                iso,
+                day,
+                Markets.REAL_TIME_15_MIN,
+                "RTM",
+                filter_nodes)
             dam_prices, rtm_prices = future_dam.result(), future_rtm.result()
 
         all_prices = [df for df in [dam_prices, rtm_prices] if not df.empty]
         stats['dam_records'], stats['rtm_records'] = len(dam_prices), len(rtm_prices)
-        
+
         if all_prices:
             combined = pd.concat(all_prices, ignore_index=True)
             records = transform_for_database(combined)
             stats['total_inserted'] = upsert_to_supabase(supabase, records)
         stats['success'] = True
         return stats
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         if retry_count < MAX_RETRIES:
-            return fetch_and_store_day(iso, supabase, day, expected_counts, filter_nodes, retry_count + 1)
-        else:
-            print(f"    ❌ Day {day} failed after {MAX_RETRIES} retries: {str(e)[:100]}...")
-            return stats
+            return fetch_and_store_day(
+                iso,
+                supabase,
+                day,
+                expected_counts,
+                filter_nodes,
+                retry_count + 1)
+        print(f"    ❌ Day {day} failed after {MAX_RETRIES} retries: {str(e)[:100]}...")
+        return stats
 
 
 def get_database_date_range(supabase: Client) -> tuple[date, date] | None:
@@ -179,7 +205,7 @@ def get_database_date_range(supabase: Client) -> tuple[date, date] | None:
                     min_date = datetime.datetime.fromisoformat(min_date_str).date()
                     max_date = datetime.datetime.fromisoformat(max_date_str).date()
                     return (min_date, max_date)
-    except Exception as e:
+    except APIError as e:
         print(f"   -> Could not get database date range: {e}")
     return None
 
@@ -193,15 +219,17 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
     try:
         # Get unique settlement points without the count parameter to avoid type error
         nodes_res = supabase.table("ercot_prices").select("settlement_point").execute()
-        unique_nodes = set(row['settlement_point'] for row in nodes_res.data if isinstance(row, dict) and row.get('settlement_point'))
+        unique_nodes = set(
+            row['settlement_point'] for row in nodes_res.data if isinstance(
+                row, dict) and row.get('settlement_point'))
         num_nodes = len(unique_nodes)
-        
+
         if num_nodes == 0:
             print("   -> No existing settlement points found. Will fetch all days in range.")
             return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
         print(f"   -> Found {num_nodes} unique settlement points in the database.")
-    except Exception as e:
+    except APIError as e:
         print(f"   -> Could not get settlement points. Will fetch all days. Error: {e}")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
@@ -213,7 +241,7 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
         }).execute()
 
         if not distinct_days_res.data or not isinstance(distinct_days_res.data, list):
-            print(f"   -> Could not get distinct days. Will fetch all days.")
+            print("   -> Could not get distinct days. Will fetch all days.")
             return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
         # Convert to set of dates for fast lookup
@@ -231,10 +259,10 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
         all_days = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
         days_to_fetch = [day for day in all_days if day not in existing_days]
 
-    except Exception as e:
+    except APIError as e:
         print(f"   -> Could not get distinct days (function may not exist). Error: {e}")
-        print(f"   -> Run add_fast_gap_detection.sql to add the optimized function.")
-        print(f"   -> Falling back to fetching all days in range.")
+        print("   -> Run add_fast_gap_detection.sql to add the optimized function.")
+        print("   -> Falling back to fetching all days in range.")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
     if not days_to_fetch:
@@ -299,14 +327,22 @@ def main():
     parser = argparse.ArgumentParser(
         description="Smart ERCOT data fetcher that only fetches missing data from Supabase.",
         epilog="Examples:\n"
-               "  python fetch_ercot_data.py                          # Fetch all missing data from DB start to yesterday\n"
-               "  python fetch_ercot_data.py --start 2024-01-01       # Fetch from specific date to yesterday\n"
-               "  python fetch_ercot_data.py --start 2024-01-01 --end 2024-12-31  # Fetch specific range",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD). Default: earliest date in database (or 2024-01-01 if empty).")
-    parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD). Default: yesterday (never today to avoid infinite loops).")
-    parser.add_argument("--filter-engie", action="store_true", help="Only fetch data for Engie/Broad Reach Power assets.")
+        "  python fetch_ercot_data.py                          # Fetch all missing data from DB start to yesterday\n"
+        "  python fetch_ercot_data.py --start 2024-01-01       # Fetch from specific date to yesterday\n"
+        "  python fetch_ercot_data.py --start 2024-01-01 --end 2024-12-31  # Fetch specific range",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--start",
+        type=str,
+        help="Start date (YYYY-MM-DD). Default: earliest date in database (or 2024-01-01 if empty).")
+    parser.add_argument(
+        "--end",
+        type=str,
+        help="End date (YYYY-MM-DD). Default: yesterday (never today to avoid infinite loops).")
+    parser.add_argument(
+        "--filter-engie",
+        action="store_true",
+        help="Only fetch data for Engie/Broad Reach Power assets.")
     args = parser.parse_args()
 
     # Load Engie assets if filter is enabled
@@ -314,14 +350,15 @@ def main():
     if args.filter_engie:
         try:
             # Path to the CSV file
-            csv_path = Path("/home/boujuan/Documents/ZENTUS/ERCOT/DATA/results/engie_asset_mapping_final.csv")
+            csv_path = Path(
+                "/home/boujuan/Documents/ZENTUS/ERCOT/DATA/results/engie_asset_mapping_final.csv")
             if csv_path.exists():
                 df_engie = pd.read_csv(csv_path)
                 engie_nodes = set(df_engie['Settlement Point'].unique())
                 print(f"🎯 Filtering for {len(engie_nodes)} Engie asset settlement points.")
             else:
                 print(f"⚠️  Warning: Engie asset CSV not found at {csv_path}. Fetching all nodes.")
-        except Exception as e:
+        except (IOError, pd.errors.ParserError) as e:
             print(f"⚠️  Error loading Engie assets: {e}. Fetching all nodes.")
 
     load_dotenv()
@@ -332,15 +369,15 @@ def main():
         print("❌ ERROR: Supabase credentials not found in .env file.")
         return 1
 
-    print("="*80)
+    print("=" * 80)
     print("Zentus - Smart ERCOT Data Fetcher (V4.0)")
-    print("="*80)
+    print("=" * 80)
 
     try:
         print("\n🔌 Connecting to Supabase...")
         supabase: Client = create_client(supabase_url, supabase_key)
         print("✅ Supabase connected.")
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         print(f"❌ Initialization failed: {e}")
         return 1
 
@@ -349,7 +386,8 @@ def main():
     if args.end:
         end_date = datetime.datetime.strptime(args.end, "%Y-%m-%d").date()
         if end_date > yesterday:
-            print(f"⚠️  End date capped at yesterday ({yesterday}) to avoid fetching incomplete data.")
+            print(
+                f"⚠️  End date capped at yesterday ({yesterday}) to avoid fetching incomplete data.")
             end_date = yesterday
     else:
         end_date = yesterday
@@ -379,12 +417,12 @@ def main():
         print("\n🔌 Initializing ERCOT API client...")
         ercot = Ercot()
         print("✅ ERCOT client initialized.")
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         print(f"❌ ERCOT client initialization failed: {e}")
         return 1
 
     print(f"\n📅 Fetching data for {len(days_to_fetch)} incomplete day(s) existing data...")
-    
+
     total_stats = {'dam_records': 0, 'rtm_records': 0, 'total_inserted': 0}
     failed_days_count = 0
 
@@ -402,10 +440,11 @@ def main():
                 pbar.set_postfix({'Status': 'Failed'})
             pbar.update(1)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("📜 Fetch Summary")
-    print("="*80)
-    print(f"✅ Successfully processed {len(days_to_fetch) - failed_days_count}/{len(days_to_fetch)} days.")
+    print("=" * 80)
+    print(
+        f"✅ Successfully processed {len(days_to_fetch) - failed_days_count}/{len(days_to_fetch)} days.")
     print(f"📈 DAM records fetched: {total_stats['dam_records']:,}")
     print(f"📈 RTM records fetched: {total_stats['rtm_records']:,}")
     print(f"💾 Total records upserted: {total_stats['total_inserted']:,}")
@@ -415,16 +454,16 @@ def main():
     # Check for remaining gaps after fetch completion
     gap_report = check_remaining_gaps(supabase, start_date, end_date)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     if gap_report['has_gaps']:
         print("⚠️  Fetch complete with gaps remaining")
-        print("="*80)
+        print("=" * 80)
         print(f"Run the script again to retry fetching the {gap_report['total_incomplete']} incomplete day(s).")
         return 1
-    else:
-        print("✅ Fetch complete - All data validated!")
-        print("="*80)
-        return 0
+    print("✅ Fetch complete - All data validated!")
+    print("=" * 80)
+    return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

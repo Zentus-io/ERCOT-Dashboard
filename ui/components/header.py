@@ -3,10 +3,12 @@ Header Component
 Zentus - ERCOT Battery Revenue Dashboard
 """
 
-import streamlit as st
 from pathlib import Path
-from config.settings import DATA_NOTE
+
+import streamlit as st
+
 from ui.components.navigation import render_top_nav
+from utils.state import get_state
 
 
 def render_header():
@@ -46,12 +48,7 @@ def render_header():
             """, unsafe_allow_html=True)
 
     # Data availability notice
-    from utils.state import get_state
     state = get_state()
-
-    eia_note = ""
-    if state.eia_battery_data is not None:
-        eia_note = " Battery presets based on EIA-860 data."
 
     # Dynamic data note based on source
     if state.data_source == 'database':
@@ -65,11 +62,11 @@ def render_header():
 
     st.markdown(f"""
     <div class='data-note'>
-        {note_content}{eia_note}
+        {note_content}
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    
+
     # Render top navigation
     render_top_nav()

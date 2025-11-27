@@ -1,8 +1,21 @@
-import streamlit as st
+"""
+Simulation runner utilities for battery optimization simulations.
+
+This module provides functions to run and cache battery simulations across
+different scenarios (baseline, improved, optimal, theoretical max).
+"""
 from concurrent.futures import ThreadPoolExecutor
-from utils.state import get_state
+
+import streamlit as st
+
 from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
+from core.battery.strategies import (
+    LinearOptimizationStrategy,
+    MPCStrategy,
+    RollingWindowStrategy,
+    ThresholdStrategy,
+)
+from utils.state import get_state
 
 
 def _should_rerun_simulation(scenario: str) -> bool:
@@ -54,20 +67,20 @@ def run_or_get_cached_simulation():
     if (state.simulation_results['baseline'] is not None and
         state.simulation_results['improved'] is not None and
         state.simulation_results['optimal'] is not None and
-        state.simulation_results['theoretical_max'] is not None):
+            state.simulation_results['theoretical_max'] is not None):
         return (
             state.simulation_results['baseline'],
             state.simulation_results['improved'],
             state.simulation_results['optimal'],
             state.simulation_results['theoretical_max']
         )
-        
+
     # If not cached, run simulations
-    # We need node_data for this. 
+    # We need node_data for this.
     # Ideally this function should be called where node_data is available or we fetch it here.
-    # To avoid circular dependency or complex data fetching here, let's assume the caller 
+    # To avoid circular dependency or complex data fetching here, let's assume the caller
     # might want to handle data loading, but for convenience we can try to load it if state has it.
-    
+
     if state.price_data is None or state.selected_node is None or state.battery_specs is None:
         return None, None, None, None
 
@@ -88,7 +101,7 @@ def run_or_get_cached_simulation():
     if _should_rerun_simulation('baseline'):
         scenarios_to_run['baseline'] = ('baseline', 0.0)
     if _should_rerun_simulation('improved'):
-        scenarios_to_run['improved'] = ('improved', state.forecast_improvement/100)
+        scenarios_to_run['improved'] = ('improved', state.forecast_improvement / 100)
     if _should_rerun_simulation('optimal'):
         scenarios_to_run['optimal'] = ('optimal', 1.0)
     if _should_rerun_simulation('theoretical_max'):
@@ -132,7 +145,8 @@ def run_or_get_cached_simulation():
                 # Submit all tasks
                 futures = {}
                 for scenario_name, (_, improvement_factor) in scenarios_to_run.items():
-                    future = executor.submit(run_single_simulation, scenario_name, improvement_factor)
+                    future = executor.submit(
+                        run_single_simulation, scenario_name, improvement_factor)
                     futures[scenario_name] = future
 
                 # Collect results and update progress

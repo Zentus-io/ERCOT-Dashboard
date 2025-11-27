@@ -22,20 +22,20 @@ Usage:
     python fetch_ercot_api.py --report DAM --start 2025-01-01 --end 2025-11-24
 """
 
+import argparse
+import io
 import os
 import sys
-import argparse
-import requests
-import zipfile
-import io
 import time
-from datetime import datetime, date, timedelta
+import zipfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+import polars as pl
+import requests
 from dotenv import load_dotenv
 from tqdm import tqdm
-import polars as pl
 
 # ============================================================================
 # CONFIGURATION
@@ -203,7 +203,7 @@ class ERCOTAPIClient:
                     "current_page": data.get("_meta", {}).get("currentPage", 1),
                 }
 
-            except requests.exceptions.RequestException as e:
+            except requests.exceptions.RequestException as e:  # pylint: disable=broad-except
                 if retry < MAX_RETRIES - 1:
                     wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
                     print(f"   Error listing archives: {e}. Retrying in {wait_time}s...")
@@ -229,7 +229,7 @@ class ERCOTAPIClient:
             response.raise_for_status()
             return response.content
 
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException as e:  # pylint: disable=broad-except
             print(f"   Error downloading {doc_id}: {e}")
             return None
 
@@ -255,14 +255,13 @@ class ERCOTAPIClient:
                     print(f"   Rate limited (429). Waiting {wait_time}s...")
                     time.sleep(wait_time)
                     return self.download_bulk_archives(emil_id, doc_ids, retry_count + 1)
-                else:
-                    print(f"   Rate limit exceeded after {MAX_RETRIES} retries")
-                    return None
+                print(f"   Rate limit exceeded after {MAX_RETRIES} retries")
+                return None
 
             response.raise_for_status()
             return response.content
 
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException as e:  # pylint: disable=broad-except
             print(f"   Error in bulk download: {e}")
             return None
 
@@ -355,7 +354,7 @@ def consolidate_csv_files(
         try:
             df = pl.read_csv(csv_file, schema_overrides=schema_overrides, infer_schema_length=1000)
             dfs.append(df)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"   Warning: Could not read {csv_file.name}: {e}")
 
     if not dfs:
@@ -428,12 +427,12 @@ def fetch_report(
     output_dir = output_base / report["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"Fetching: {report['name']}")
     print(f"EMIL ID: {emil_id}")
     print(f"Date Range: {start_date} to {end_date}")
     print(f"Output: {output_dir}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Check for existing files if skip_existing is enabled
     existing_files = set()
@@ -457,7 +456,8 @@ def fetch_report(
         all_archives.extend(archives)
         total_pages = result.get("total_pages", 1)
 
-        print(f"   Page {page}/{total_pages}: Found {len(archives)} archives (Total: {len(all_archives)})")
+        print(
+            f"   Page {page}/{total_pages}: Found {len(archives)} archives (Total: {len(all_archives)})")
 
         if page >= total_pages:
             break
@@ -490,9 +490,16 @@ def fetch_report(
         total_records = 0
         if consolidate:
             print(f"\n3. Consolidating existing CSV files to {output_format}...")
-            consolidated_file = output_dir / f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
-            total_records = consolidate_csv_files(output_dir, consolidated_file, output_format=output_format)
-        return {"success": True, "files_downloaded": 0, "records": total_records, "output_dir": str(output_dir), "skipped": True}
+            consolidated_file = output_dir / \
+                f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
+            total_records = consolidate_csv_files(
+                output_dir, consolidated_file, output_format=output_format)
+        return {
+            "success": True,
+            "files_downloaded": 0,
+            "records": total_records,
+            "output_dir": str(output_dir),
+            "skipped": True}
 
     # Step 2: Download archives in bulk batches
     print(f"\n2. Downloading archives (bulk limit: {report['bulk_limit']} per request)...")
@@ -515,13 +522,13 @@ def fetch_report(
                     total_files_saved.extend(saved)
                     batch_success = True
                     break
-                else:
-                    if retry < MAX_RETRIES - 1:
-                        wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
-                        print(f"   Retry {retry + 1}/{MAX_RETRIES} for batch {batch_idx + 1} in {wait_time}s...")
-                        time.sleep(wait_time)
+                if retry < MAX_RETRIES - 1:
+                    wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
+                    print(
+                        f"   Retry {retry + 1}/{MAX_RETRIES} for batch {batch_idx + 1} in {wait_time}s...")
+                    time.sleep(wait_time)
 
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-except
                 print(f"   Error in batch {batch_idx + 1}: {e}")
                 if retry < MAX_RETRIES - 1:
                     wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
@@ -539,8 +546,10 @@ def fetch_report(
     total_records = 0
     if consolidate and total_files_saved:
         print(f"\n3. Consolidating CSV files to {output_format}...")
-        consolidated_file = output_dir / f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
-        total_records = consolidate_csv_files(output_dir, consolidated_file, output_format=output_format)
+        consolidated_file = output_dir / \
+            f"{report_key.lower()}_consolidated_{start_date}_{end_date}.csv"
+        total_records = consolidate_csv_files(
+            output_dir, consolidated_file, output_format=output_format)
 
     return {
         "success": True,

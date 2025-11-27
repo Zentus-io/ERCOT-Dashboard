@@ -103,17 +103,17 @@ The system automatically detects Supabase credentials and uses the database if c
 
 ## 🏗️ Project Structure
 
-```
+```text
 ERCOT-Dashboard/
-├── Home.py                         # Streamlit entry point (Main Page)
-│
-├── pages/                          # Multi-page analysis views
-│   ├── 1_🏠_Overview.py           # Strategy performance comparison
+├── Home.py                         # Main Entry Point (Streamlit App)
+├── pages/                          # Analysis Pages
+│   ├── 0_📊_Overview.py           # Strategy performance comparison
+│   ├── 1_🗺️_Nodal_Analysis.py     # Nodal analysis
 │   ├── 2_📈_Price_Analysis.py     # Price dynamics and forecast errors
 │   ├── 3_🔋_Operations.py         # SOC and dispatch analysis
 │   ├── 4_💰_Revenue.py            # Revenue tracking over time
 │   ├── 5_🎯_Opportunity.py        # Sensitivity analysis
-│   ├── 6_📊_Timeline.py           # Dispatch timeline visualization
+│   ├── 6_📅_Timeline.py           # Gantt-style dispatch visualization
 │   └── 7_⚙️_Optimization.py      # Strategy deep-dive
 │
 ├── core/                           # Business logic (OOP design)
@@ -233,7 +233,7 @@ The dashboard will automatically use the database when credentials are configure
 
 ## 📈 Current Data
 
-### CSV Mode (Default)
+### Default CSV Data
 
 - **Date**: July 20, 2025 (24 hours)
 - **Nodes**: 5 wind farm settlement points
@@ -259,7 +259,7 @@ The dashboard will automatically use the database when credentials are configure
 
 ### Revenue Opportunity
 
-**Revenue Opportunity = Optimal Strategy Revenue - Baseline Strategy Revenue**
+`Revenue Opportunity = Optimal Strategy Revenue - Baseline Strategy Revenue`
 
 This metric quantifies the value of improved forecasting:
 
@@ -424,4 +424,4 @@ Potential additions:
 
 ---
 
-**Built with ❤️ by Zentus - Making renewable energy more predictable and profitable**
+Built with ❤️ by Zentus - Making renewable energy more predictable and profitable

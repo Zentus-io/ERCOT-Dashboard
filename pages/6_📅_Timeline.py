@@ -6,18 +6,17 @@ This page provides a gantt-style timeline showing when the battery
 charges, discharges, or holds across different scenarios.
 """
 
+
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
+from ui.styles.custom_css import apply_custom_styles
+from utils.simulation_runner import run_or_get_cached_simulation
 from utils.state import get_state, has_valid_config
-from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
-from pathlib import Path
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -37,11 +36,12 @@ render_sidebar()
 # MAIN CONTENT
 # ============================================================================
 
-st.header("📊 Decision Timeline")
+st.header("📅 Decision Timeline")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -86,12 +86,11 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
-from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
     baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
 
-    if baseline_result is None:
+    if not baseline_result or not improved_result or not optimal_result or not theoretical_max_result:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
 
@@ -206,14 +205,18 @@ if view_mode == "Detailed (Hourly)":
     add_dispatch_bars(fig_timeline, baseline_result.dispatch_df, 1, state.battery_specs.power_mw)
     add_dispatch_bars(fig_timeline, improved_result.dispatch_df, 2, state.battery_specs.power_mw)
     add_dispatch_bars(fig_timeline, optimal_result.dispatch_df, 3, state.battery_specs.power_mw)
-    add_dispatch_bars(fig_timeline, theoretical_max_result.dispatch_df, 4, state.battery_specs.power_mw)
+    add_dispatch_bars(
+        fig_timeline,
+        theoretical_max_result.dispatch_df,
+        4,
+        state.battery_specs.power_mw)
 
     # Add price context to row 5
     fig_timeline.add_trace(go.Scatter(
         x=node_data['timestamp'],
         y=node_data['price_mwh_rt'],
         name='Real-Time Price',
-        line=dict(color='#0A5F7A', width=2),
+        line={"color": '#0A5F7A', "width": 2},
         showlegend=True
     ), row=5, col=1)
 
@@ -223,7 +226,7 @@ if view_mode == "Detailed (Hourly)":
         y=charge_times['actual_price'],
         mode='markers',
         name='Charge Decisions',
-        marker=dict(color='#28A745', size=10, symbol='triangle-down'),
+        marker={"color": '#28A745', "size": 10, "symbol": 'triangle-down'},
         hovertemplate='Charge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>',
         showlegend=True
     ), row=5, col=1)
@@ -233,7 +236,7 @@ if view_mode == "Detailed (Hourly)":
         y=discharge_times['actual_price'],
         mode='markers',
         name='Discharge Decisions',
-        marker=dict(color='#DC3545', size=10, symbol='triangle-up'),
+        marker={"color": '#DC3545', "size": 10, "symbol": 'triangle-up'},
         hovertemplate='Discharge<br>Time: %{x}<br>Price: $%{y:.2f}/MWh<extra></extra>',
         showlegend=True
     ), row=5, col=1)
@@ -244,12 +247,20 @@ if view_mode == "Detailed (Hourly)":
         bargap=0.1,
         title_text=f"Battery Dispatch Timeline with Price Context - {state.strategy_type} vs LP Benchmark",
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1)
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.01, "xanchor": "right", "x": 1}
     )
 
     # Fix y-axis range to [0, 1] for dispatch rows (rows 1-4)
     for row in range(1, 5):
-        fig_timeline.update_yaxes(range=[0, 1], autorange=False, fixedrange=True, visible=False, row=row, col=1)
+        fig_timeline.update_yaxes(
+            range=[
+                0,
+                1],
+            autorange=False,
+            fixedrange=True,
+            visible=False,
+            row=row,
+            col=1)
 
     # Configure price chart y-axis (row 5)
     fig_timeline.update_yaxes(title_text="Price ($/MWh)", row=5, col=1)
@@ -276,14 +287,14 @@ else:
         # Resample to daily
         df = dispatch_df.copy()
         df['date'] = df['timestamp'].dt.date
-        
+
         # Calculate daily charge and discharge
         daily_charge = df[df['dispatch'] == 'charge'].groupby('date')['energy_mwh'].sum()
         daily_discharge = df[df['dispatch'] == 'discharge'].groupby('date')['energy_mwh'].sum()
-        
+
         # Align indexes
         all_dates = sorted(list(set(daily_charge.index) | set(daily_discharge.index)))
-        
+
         # Add traces
         fig.add_trace(go.Bar(
             x=all_dates,
@@ -292,7 +303,7 @@ else:
             marker_color='#28A745',
             showlegend=(row_num == 1)
         ), row=row_num, col=1)
-        
+
         fig.add_trace(go.Bar(
             x=all_dates,
             y=[daily_discharge.get(d, 0) for d in all_dates],
@@ -311,7 +322,7 @@ else:
         barmode='group',
         title_text=f"Daily Aggregated Dispatch - {state.strategy_type} vs LP Benchmark",
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1}
     )
     fig_timeline.update_yaxes(title_text="Energy (MWh)")
 
@@ -361,7 +372,8 @@ with section2:
     col4, col5, col6 = st.columns(3)
 
     lp_charge_times = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'charge']
-    lp_discharge_times = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
+    lp_discharge_times = theoretical_max_result.dispatch_df[
+        theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
 
     with col4:
         st.metric("Charge Count", theoretical_max_result.charge_count)
