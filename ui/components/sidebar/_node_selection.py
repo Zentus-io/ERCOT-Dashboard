@@ -13,7 +13,7 @@ from utils.state import clear_simulation_cache, get_state, update_date_range, up
 from ._date_utils import find_best_date_range
 
 
-def render_node_selector(available_nodes: list) -> str:
+def render_node_selector(available_nodes: list) -> str | None:
     """
     Render settlement point selector.
 
@@ -43,7 +43,7 @@ def render_node_selector(available_nodes: list) -> str:
     return selected_node
 
 
-def handle_node_change(old_node: str, new_node: str) -> None:
+def handle_node_change(old_node: str | None, new_node: str | None) -> None:
     """
     Handle node selection change and auto-select best date range.
 
