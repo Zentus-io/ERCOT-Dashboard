@@ -105,15 +105,15 @@ The system automatically detects Supabase credentials and uses the database if c
 
 ```text
 ERCOT-Dashboard/
-├── Home.py                         # Streamlit entry point (Main Page)
-│
-├── pages/                          # Multi-page analysis views
-│   ├── 1_🏠_Overview.py           # Strategy performance comparison
+├── Home.py                         # Main Entry Point (Streamlit App)
+├── pages/                          # Analysis Pages
+│   ├── 0_📊_Overview.py           # Strategy performance comparison
+│   ├── 1_🗺️_Nodal_Analysis.py     # Nodal analysis
 │   ├── 2_📈_Price_Analysis.py     # Price dynamics and forecast errors
 │   ├── 3_🔋_Operations.py         # SOC and dispatch analysis
 │   ├── 4_💰_Revenue.py            # Revenue tracking over time
 │   ├── 5_🎯_Opportunity.py        # Sensitivity analysis
-│   ├── 6_📊_Timeline.py           # Dispatch timeline visualization
+│   ├── 6_📅_Timeline.py           # Gantt-style dispatch visualization
 │   └── 7_⚙️_Optimization.py      # Strategy deep-dive
 │
 ├── core/                           # Business logic (OOP design)

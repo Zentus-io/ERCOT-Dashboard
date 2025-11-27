@@ -137,9 +137,7 @@ class ERCOTAPIClient:
             expires_in = int(data.get("expires_in", 3600))
             self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
 
-            print(
-                f"   Authentication successful. Token expires at {
-                    self.token_expiry.strftime('%H:%M:%S')}")
+            print(f"   Authentication successful. Token expires at {self.token_expiry.strftime('%H:%M:%S')}")
             return True
 
         except requests.exceptions.RequestException as e:
@@ -191,9 +189,7 @@ class ERCOTAPIClient:
                 # Handle rate limiting specifically
                 if response.status_code == 429:
                     wait_time = REQUEST_DELAY_ON_429 * (retry + 1)
-                    print(
-                        f"   Rate limited (429). Waiting {wait_time}s before retry {
-                            retry + 1}/{MAX_RETRIES}...")
+                    print(f"   Rate limited (429). Waiting {wait_time}s before retry {retry + 1}/{MAX_RETRIES}...")
                     time.sleep(wait_time)
                     continue
 
@@ -389,17 +385,11 @@ def consolidate_csv_files(
         output_file = output_file.with_suffix(".parquet")
         combined.write_parquet(output_file, compression="snappy")
         file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        print(
-            f"   Saved consolidated file: {output_file} ({
-                len(combined):,} records, {
-                file_size_mb:.1f} MB)")
+        print(f"   Saved consolidated file: {output_file} ({len(combined):,} records, {file_size_mb:.1f} MB)")
     else:
         combined.write_csv(output_file)
         file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        print(
-            f"   Saved consolidated file: {output_file} ({
-                len(combined):,} records, {
-                file_size_mb:.1f} MB)")
+        print(f"   Saved consolidated file: {output_file} ({len(combined):,} records, {file_size_mb:.1f} MB)")
 
     return len(combined)
 
@@ -546,10 +536,7 @@ def fetch_report(
 
         if not batch_success:
             failed_count = len(batch_ids)
-            print(
-                f"   WARNING: Batch {
-                    batch_idx +
-                    1} failed after {MAX_RETRIES} retries ({failed_count} files)")
+            print(f"   WARNING: Batch {batch_idx + 1} failed after {MAX_RETRIES} retries ({failed_count} files)")
 
         time.sleep(REQUEST_DELAY)
 
