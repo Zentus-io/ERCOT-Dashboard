@@ -28,6 +28,7 @@ from core.data.loaders import SupabaseDataLoader
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from ui.styles.custom_css import apply_custom_styles
+from utils.simulation_runner import run_or_get_cached_simulation
 from utils.state import get_date_range_str, get_state, has_valid_config
 
 # ============================================================================
@@ -156,6 +157,7 @@ with tab1:
             Generates or loads a solar profile aligned with df_prices index.
             Returns a DataFrame with columns ['gen_mw', 'forecast_mw', 'potential_mw'] (normalized 0-1)
             and the source type string.
+            # Cache invalidation trigger
             """
             target_index = _df_prices.index
             start_date = target_index.min().date()
@@ -216,12 +218,21 @@ with tab1:
                         # Reindex to match target_index (fill missing with 0 or interpolate)
                         # The DB data might be hourly, target might be 15-min.
                         
-                        # Helper to align and normalize
+                        # Ensure both indices are TZ-naive for alignment
+                        if df_gen.index.tz is not None:
+                            df_gen.index = df_gen.index.tz_convert(None)
+                        
+                        # Helper to align and norm
                         def align_and_norm(col_name):
                             if col_name not in df_gen.columns:
                                 return pd.Series(0.0, index=target_index)
                             
-                            aligned = df_gen[col_name].reindex(target_index).interpolate(method='time').fillna(0)
+                            # Ensure target_index is also naive (it should be, but be safe)
+                            safe_target = target_index
+                            if safe_target.tz is not None:
+                                safe_target = safe_target.tz_convert(None)
+                                
+                            aligned = df_gen[col_name].reindex(safe_target).interpolate(method='time').fillna(0)
                             mx = aligned.max()
                             if mx > 0:
                                 return aligned / mx
@@ -273,23 +284,55 @@ with tab1:
         df_sim['Solar_MW'] = solar_profile['potential_mw'] * solar_capacity_mw
         df_sim['Export_MW'] = np.minimum(df_sim['Solar_MW'], interconnection_limit_mw)
         df_sim['Clipped_MW'] = np.maximum(0, df_sim['Solar_MW'] - interconnection_limit_mw)
+        # --- REVENUE CALCULATION ---
         
-        # 2. Base Solar Revenue
-        # RTM Price is usually 15-min, so divide by 4 for MWh
+        # 1. Base Solar Revenue (Same for everyone)
         df_sim['Solar_Revenue'] = (df_sim['Export_MW'] * df_sim['price_mwh_rt']) / 4
+        base_solar_revenue = df_sim['Solar_Revenue'].sum()
         
-        # 3. Hybrid Arbitrage Simulation (Vectorized)
-        # Strategy: Capture clipped energy, discharge at daily peak price
+        # Pre-calculate Daily Stats (Used for Heuristic & Sweep)
         df_sim['Date'] = df_sim.index.date
-        
         daily_stats = df_sim.groupby('Date').agg({
             'Clipped_MW': 'sum', # Sum of MW per interval
-            'price_mwh_rt': 'max'
-        }).rename(columns={'Clipped_MW': 'Daily_Clipped_Sum_MW', 'price_mwh_rt': 'Daily_Max_Price'})
-        
+            'price_mwh_rt': ['max', 'min']
+        })
+        # Flatten columns
+        daily_stats.columns = ['Daily_Clipped_Sum_MW', 'Daily_Max_Price', 'Daily_Min_Price']
         daily_stats['Daily_Clipped_MWh'] = daily_stats['Daily_Clipped_Sum_MW'] / 4
         
-        batt_eff = state.battery_specs.efficiency
+        # 2. Battery Revenue (Current Asset)
+        # Toggle for Full Simulation vs Heuristic
+        use_full_sim = st.toggle("Run Full Simulation (Slower)", value=False, help="Run detailed dispatch simulation respecting strategy & forecast settings.")
+        
+        current_batt_revenue = 0.0
+        sim_details = ""
+        
+        if use_full_sim:
+            with st.spinner("Running detailed simulation..."):
+                # Run simulation using the centralized runner
+                # This respects the sidebar settings (Strategy, Forecast, etc.)
+                baseline_res, improved_res, optimal_res, theoretical_res = run_or_get_cached_simulation()
+                
+                if improved_res:
+                    current_batt_revenue = improved_res.total_revenue
+                    sim_details = f"Strategy: {state.strategy_type} | Forecast: {state.forecast_improvement}%"
+                else:
+                    st.error("Simulation failed. Check data.")
+        else:
+            # Heuristic: Simple Arbitrage (Clipped Energy * Daily Peak Price)
+            # Uses the pre-calculated daily stats
+            
+            daily_clipped_mwh = daily_stats['Daily_Clipped_MWh']
+            daily_peak_price = daily_stats['Daily_Max_Price']
+            
+            batt_eff = state.battery_specs.efficiency
+            
+            # Revenue = Min(Clipped_MWh, Power * 1h) * Peak_Price * Efficiency
+            daily_batt_revenue = np.minimum(daily_clipped_mwh, current_power) * daily_peak_price * batt_eff
+            current_batt_revenue = daily_batt_revenue.sum()
+            sim_details = "Heuristic: Perfect Peak Discharge (1h Duration)"
+
+        current_hybrid_rev = df_sim['Solar_Revenue'].sum() + current_batt_revenue
         
         # --- OPTIMIZATION SWEEPER ---
         # We run this automatically now to compare
@@ -298,29 +341,57 @@ with tab1:
         sizes = range(0, max_batt_mw + 1, step_size)
         revenues = []
         
-        # Pre-calculate for speed
+        # Base Solar Revenue (Export only)
+        base_solar_revenue = df_sim['Solar_Revenue'].sum()
+        
+        # Extract arrays for vectorized operations in loop
         clipped_mwh = daily_stats['Daily_Clipped_MWh'].values
         max_prices = daily_stats['Daily_Max_Price'].values
+        min_prices = daily_stats['Daily_Min_Price'].values
+        
+        # Ensure batt_eff is defined for the sweep
+        batt_eff = state.battery_specs.efficiency
         
         for size_mw in sizes:
-            # Heuristic: Discharge at Peak Price limited by Power (1 hour duration assumption for peak)
-            # Volume = min(Daily_Clipped_MWh, Size_MW * 1h)
-            # Revenue = Volume * Max_Price * Efficiency
-            daily_rev = np.minimum(clipped_mwh, size_mw * 1.0) * max_prices * batt_eff
-            total_arb = daily_rev.sum()
-            revenues.append(df_sim['Solar_Revenue'].sum() + total_arb)
+            if size_mw == 0:
+                revenues.append(base_solar_revenue)
+                continue
+                
+            # Heuristic: 
+            # 1. Discharge Clipped Energy at Peak Price (Free energy source)
+            # 2. Arbitrage Grid Energy for remaining capacity (Buy Min, Sell Max)
             
+            # Capacity in MWh (assuming 1h duration for power constraint in this simple heuristic)
+            # Real battery might have 2h or 4h, but for "Power" sweep we assume 1h or proportional
+            # To make it fair with "Current Asset" which might be 2h, we should ideally use duration.
+            # But this is a "Power" sweep. Let's stick to 1h for the sweep x-axis meaning.
+            
+            capacity_mwh = size_mw * 1.0 
+            
+            # 1. Clipped Capture
+            vol_clipped = np.minimum(clipped_mwh, capacity_mwh)
+            rev_clipped = vol_clipped * max_prices * batt_eff
+            
+            # 2. Grid Arbitrage (Remaining capacity)
+            # We can fill the rest of the battery from the grid at Min Price
+            vol_grid = np.maximum(0, capacity_mwh - vol_clipped)
+            spread = max_prices - min_prices
+            # Only arbitrage if spread is positive
+            spread = np.maximum(0, spread)
+            rev_grid = vol_grid * spread * batt_eff
+            
+            total_daily_rev = rev_clipped + rev_grid
+            total_arb = total_daily_rev.sum()
+            
+            revenues.append(base_solar_revenue + total_arb)
+                
         # Find Optimal
         optimal_idx = np.argmax(revenues)
         optimal_size = sizes[optimal_idx]
         optimal_revenue = revenues[optimal_idx]
         
-        # Calculate Current Asset Performance
-        current_daily_rev = np.minimum(clipped_mwh, current_power * 1.0) * max_prices * batt_eff
-        current_hybrid_rev = df_sim['Solar_Revenue'].sum() + current_daily_rev.sum()
-        
         lost_revenue = optimal_revenue - current_hybrid_rev
-        
+            
         # --- METRICS & COMPARISON ---
         st.markdown("### 📊 Performance Comparison")
         
@@ -375,10 +446,6 @@ with tab1:
         
         # Add actuals for comparison if available
         plot_df['Actual_Generation_MW'] = solar_profile['gen_mw'] * solar_capacity_mw
-        
-        if len(plot_df) > 96 * 7:
-            plot_df = plot_df.iloc[:96*7]
-            st.caption(f"Visualizing first 7 days.")
             
         fig_hybrid = go.Figure()
         
