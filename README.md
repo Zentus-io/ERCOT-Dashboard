@@ -52,7 +52,7 @@ The dashboard provides 7 specialized analysis pages:
 2. **📈 Price Analysis** - Price dynamics, forecast errors, and extreme events
 3. **🔋 Operations** - State of charge tracking and dispatch action distribution
 4. **💰 Revenue** - Cumulative revenue tracking and pricing analysis
-5. **🎯 Opportunity** - Sensitivity analysis across forecast improvement levels
+5. **🏗️ Asset Design** - Hybrid asset configuration and sensitivity analysis
 6. **📊 Timeline** - Gantt-style dispatch visualization showing charge/discharge patterns
 7. **⚙️ Optimization** - Deep-dive into strategy decision-making logic
 
@@ -112,7 +112,7 @@ ERCOT-Dashboard/
 │   ├── 2_📈_Price_Analysis.py     # Price dynamics and forecast errors
 │   ├── 3_🔋_Operations.py         # SOC and dispatch analysis
 │   ├── 4_💰_Revenue.py            # Revenue tracking over time
-│   ├── 5_🎯_Opportunity.py        # Sensitivity analysis
+│   ├── 5_🏗️_Asset_Design.py       # Hybrid asset design & sensitivity analysis
 │   ├── 6_📅_Timeline.py           # Gantt-style dispatch visualization
 │   └── 7_⚙️_Optimization.py      # Strategy deep-dive
 │
