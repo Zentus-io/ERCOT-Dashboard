@@ -63,10 +63,15 @@ with row1_col1:
             st.markdown(f"### Data Availability for **{state.selected_node}**")
             try:
                 # Fetch availability data
-                @st.cache_data(ttl=3600, show_spinner=False)
-                def get_availability_events(node):
+                # NOTE: Caching disabled to ensure fresh data is fetched after pagination fix.
+                # @st.cache_data(ttl=3600, show_spinner=False)
+                def get_availability_events(node, start_date, end_date):
                     db_loader = SupabaseDataLoader()
-                    availability_df = db_loader.get_node_availability(node)
+                    availability_df = db_loader.get_node_availability(
+                        node, 
+                        start_date=start_date, 
+                        end_date=end_date
+                    )
 
                     events = []
                     if not availability_df.empty:
@@ -93,7 +98,11 @@ with row1_col1:
                             })
                     return events
 
-                calendar_events = get_availability_events(state.selected_node)
+                calendar_events = get_availability_events(
+                    state.selected_node, 
+                    state.start_date, 
+                    state.end_date
+                )
 
                 calendar_options = {
                     "headerToolbar": {

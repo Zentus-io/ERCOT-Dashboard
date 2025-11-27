@@ -57,10 +57,19 @@ class SupabaseDataLoader:
                 "timestamp", (end_date + timedelta(days=1)).isoformat()
             )
 
-            # Increase limit to ensure we get all data for the date range
-            # 30 days * 24 hours * 4 intervals = ~2880 rows per market type
-            # Total ~6000 rows max for one node. Supabase default is 1000.
-            data = query.limit(10000).execute().data
+            # Fetch all data using pagination to bypass 1000-row limit
+            data = []
+            start = 0
+            batch_size = 1000
+            
+            while True:
+                response = query.range(start, start + batch_size - 1).execute()
+                if not response.data:
+                    break
+                data.extend(response.data)
+                if len(response.data) < batch_size:
+                    break
+                start += batch_size
 
             if not data:
                 return pd.DataFrame()
@@ -178,26 +187,66 @@ class SupabaseDataLoader:
             st.warning(f"An unexpected error occurred fetching date range: {e}")
             return None, None
 
-    def get_node_availability(self, node: str) -> pd.DataFrame:
+    def get_node_availability(
+        self,
+        node: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> pd.DataFrame:
         """
         Fetches daily data availability for a specific node.
         Returns a DataFrame with 'date' and 'completeness' (0-100).
+        
+        Parameters
+        ----------
+        node : str
+            Settlement point name
+        start_date : Optional[date]
+            Start date for availability query (inclusive)
+        end_date : Optional[date]
+            End date for availability query (inclusive)
         """
         try:
             # Query to get counts per day
             # Note: This is a simplified approach. For large datasets,
             # a database view or RPC would be more performant.
             # We fetch only timestamps for the node to minimize data transfer.
-            response = self.client.table("ercot_prices") \
+            query = self.client.table("ercot_prices") \
                 .select("timestamp") \
                 .eq("settlement_point", node) \
-                .eq("market", "RTM") \
-                .execute()
+                .eq("market", "RTM")
+            
+            # Apply date range filters if provided
+            if start_date:
+                query = query.gte("timestamp", start_date.isoformat())
+            if end_date:
+                # Add one day to end_date to include the entire end day
+                end_dt = date(end_date.year, end_date.month, end_date.day) + timedelta(days=1)
+                query = query.lt("timestamp", end_dt.isoformat())
+            
+            # Fetch all data using pagination to bypass 1000-row limit
+            all_data = []
+            start = 0
+            batch_size = 1000
+            
+            while True:
+                # Range is inclusive
+                response = query.range(start, start + batch_size - 1).execute()
+                
+                if not response.data:
+                    break
+                    
+                all_data.extend(response.data)
+                
+                if len(response.data) < batch_size:
+                    break
+                    
+                start += batch_size
 
-            if not response.data:
+            if not all_data:
                 return pd.DataFrame(columns=['date', 'completeness'])
 
-            df = pd.DataFrame(response.data)
+            df = pd.DataFrame(all_data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['date'] = df['timestamp'].dt.date  # type: ignore[attr-defined]
 
