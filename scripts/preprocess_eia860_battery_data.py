@@ -8,10 +8,12 @@ Author: Zentus
 Date: November 2025
 """
 
-import polars as pl
-import pandas as pd
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import pandas as pd
+import polars as pl
+
 
 def main():
     """Main preprocessing pipeline for EIA-860 battery data."""
@@ -45,7 +47,7 @@ def main():
     except FileNotFoundError:
         print(f"   ✗ Error: Input file not found at {input_file}")
         sys.exit(1)
-    except Exception as e:
+    except (ValueError, IOError) as e:
         print(f"   ✗ Error loading Excel file: {e}")
         sys.exit(1)
 
@@ -70,7 +72,7 @@ def main():
     # Convert to Polars with string inference disabled for safety
     try:
         df = pl.from_pandas(df_pandas, include_index=False)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         # Fallback: save to CSV and load with Polars (more robust)
         print(f"   ⚠ Direct conversion failed, using CSV intermediate: {e}")
         temp_csv = project_dir / 'data' / 'temp_conversion.csv'
@@ -78,7 +80,7 @@ def main():
         df = pl.read_csv(temp_csv, infer_schema_length=10000)
         temp_csv.unlink()  # Delete temp file
 
-    print(f"   ✓ Cleaned and converted to Polars DataFrame")
+    print("   ✓ Cleaned and converted to Polars DataFrame")
 
     # Step 3: Filter for Texas (ERCOT) batteries only
     print("\n[3/6] Filtering for Texas batteries...")
@@ -161,8 +163,8 @@ def main():
     # Sort by capacity (largest first)
     df_optimized = df_optimized.sort('nameplate_power_mw', descending=True)
 
-    print(f"   ✓ Added 3 derived columns")
-    print(f"   ✓ Optimized data types")
+    print("   ✓ Added 3 derived columns")
+    print("   ✓ Optimized data types")
 
     # Step 6: Save as Parquet
     print("\n[6/6] Saving optimized Parquet file...")
@@ -183,7 +185,7 @@ def main():
         print(f"   ✓ Input size:  {input_size_mb:.2f} MB")
         print(f"   ✓ Output size: {output_size_mb:.2f} MB")
         print(f"   ✓ Compression: {compression_ratio:.1f}% reduction")
-    except Exception as e:
+    except IOError as e:
         print(f"   ✗ Error saving Parquet file: {e}")
         sys.exit(1)
 
@@ -209,7 +211,8 @@ def main():
 
     # Technology breakdown
     print("\nStorage Technologies:")
-    tech_counts = df_optimized.group_by('storage_technology').agg(pl.len().alias('count')).sort('count', descending=True)
+    tech_counts = df_optimized.group_by('storage_technology').agg(
+        pl.len().alias('count')).sort('count', descending=True)
     for row in tech_counts.iter_rows():
         tech, count = row
         if tech:  # Skip null values
@@ -222,6 +225,7 @@ def main():
     print(f"\nOutput file: {output_file}")
     print(f"Load in Python with: df = pl.read_parquet('{output_file.name}')")
     print()
+
 
 if __name__ == "__main__":
     main()

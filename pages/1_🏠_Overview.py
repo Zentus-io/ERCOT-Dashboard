@@ -6,16 +6,16 @@ This page provides a high-level comparison of dispatch strategies
 and key performance metrics.
 """
 
+
+import plotly.graph_objects as go
 import streamlit as st
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
+from ui.styles.custom_css import apply_custom_styles
+from utils.simulation_runner import run_or_get_cached_simulation
 from utils.state import get_state, has_valid_config
-from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
-from pathlib import Path
-import plotly.graph_objects as go
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -39,7 +39,8 @@ st.header("📊 Revenue Analysis")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -81,12 +82,11 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
-from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
     baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
 
-    if baseline_result is None:
+    if not baseline_result or not improved_result or not optimal_result or not theoretical_max_result:
         st.error("⚠️ Failed to run simulations. Please check data availability.")
         st.stop()
 
@@ -94,7 +94,7 @@ with st.spinner('Running battery simulations...'):
 # KEY METRICS
 # ============================================================================
 
-st.info(f"""
+st.info("""
 **How to use this dashboard:**
 Your **{state.strategy_type}** strategy is tested with **3 forecast quality scenarios**, plus a theoretical benchmark:
 1. **Baseline (DA Only)** - Strategy uses only day-ahead forecasts
@@ -115,7 +115,8 @@ theoretical_max_revenue = theoretical_max_result.total_revenue
 opportunity_vs_naive = optimal_revenue - naive_revenue
 opportunity_vs_improved = improved_revenue - naive_revenue
 improvement_pct = (opportunity_vs_improved / abs(naive_revenue)) * 100 if naive_revenue != 0 else 0
-strategy_capture_pct = (optimal_revenue / theoretical_max_revenue) * 100 if theoretical_max_revenue > 0 else 0
+strategy_capture_pct = (optimal_revenue / theoretical_max_revenue) * \
+    100 if theoretical_max_revenue > 0 else 0
 
 with col1:
     st.metric(
@@ -213,9 +214,12 @@ with col1:
     st.progress(discharge_pct / 100, text=f"Discharging: {discharge_pct:.1f}%")
 
 with col2:
-    st.markdown(f"### 📈 Improved")
-    st.metric("Revenue", f"${improved_revenue:,.0f}",
-             delta=f"+${opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${opportunity_vs_improved:,.0f}")
+    st.markdown("### 📈 Improved")
+    st.metric(
+        "Revenue", f"${
+            improved_revenue:,.0f}", delta=f"+${
+            opportunity_vs_improved:,.0f}" if opportunity_vs_improved >= 0 else f"${
+                opportunity_vs_improved:,.0f}")
     st.metric("Charge Events", improved_result.charge_count)
     st.metric("Discharge Events", improved_result.discharge_count)
     charge_pct = (improved_result.charge_count / len(node_data)) * 100
@@ -225,8 +229,11 @@ with col2:
 
 with col3:
     st.markdown("### ⭐ Strategy Max")
-    st.metric("Revenue", f"${optimal_revenue:,.0f}",
-             delta=f"+${opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${opportunity_vs_naive:,.0f}")
+    st.metric(
+        "Revenue", f"${
+            optimal_revenue:,.0f}", delta=f"+${
+            opportunity_vs_naive:,.0f}" if opportunity_vs_naive >= 0 else f"${
+                opportunity_vs_naive:,.0f}")
     st.metric("Charge Events", optimal_result.charge_count)
     st.metric("Discharge Events", optimal_result.discharge_count)
     charge_pct = (optimal_result.charge_count / len(node_data)) * 100
@@ -237,8 +244,11 @@ with col3:
 with col4:
     st.markdown("### 🎯 LP Benchmark")
     gap_to_theoretical = theoretical_max_revenue - optimal_revenue
-    st.metric("Revenue", f"${theoretical_max_revenue:,.0f}",
-             delta=f"+${gap_to_theoretical:,.0f} vs strategy" if gap_to_theoretical >= 0 else f"${gap_to_theoretical:,.0f}")
+    st.metric(
+        "Revenue", f"${
+            theoretical_max_revenue:,.0f}", delta=f"+${
+            gap_to_theoretical:,.0f} vs strategy" if gap_to_theoretical >= 0 else f"${
+                gap_to_theoretical:,.0f}")
     st.metric("Charge Events", theoretical_max_result.charge_count)
     st.metric("Discharge Events", theoretical_max_result.discharge_count)
     charge_pct = (theoretical_max_result.charge_count / len(node_data)) * 100
@@ -253,11 +263,18 @@ with col4:
 st.markdown("---")
 st.markdown("### Revenue Comparison")
 
-revenue_data = {
-    'Scenario': ['Baseline\n(DA Only)', f'Improved\n(+{state.forecast_improvement}%)', 'Strategy\nMax', 'LP\nBenchmark'],
-    'Revenue': [naive_revenue, improved_revenue, optimal_revenue, theoretical_max_revenue],
-    'Color': ['#6B7280', '#4A9FB8', '#0A5F7A', '#28a745']
-}
+revenue_data = {'Scenario': ['Baseline\n(DA Only)',
+                             f'Improved\n(+{state.forecast_improvement}%)',
+                             'Strategy\nMax',
+                             'LP\nBenchmark'],
+                'Revenue': [naive_revenue,
+                            improved_revenue,
+                            optimal_revenue,
+                            theoretical_max_revenue],
+                'Color': ['#6B7280',
+                          '#4A9FB8',
+                          '#0A5F7A',
+                          '#28a745']}
 
 fig_revenue_bars = go.Figure()
 fig_revenue_bars.add_trace(go.Bar(
@@ -285,8 +302,12 @@ st.plotly_chart(fig_revenue_bars, width="stretch")
 st.markdown("### Strategy Insights")
 
 if state.strategy_type == "Rolling Window Optimization":
-    improvement_rate = ((improved_revenue - naive_revenue) / abs(naive_revenue) * 100) if naive_revenue != 0 else 0
-    st.info(f"""
+    improvement_rate = (
+        (improved_revenue -
+         naive_revenue) /
+        abs(naive_revenue) *
+        100) if naive_revenue != 0 else 0
+    st.info("""
     **Rolling Window Strategy** with {state.window_hours}-hour lookahead window:
     - Achieves {improvement_rate:+.1f}% revenue improvement with {state.forecast_improvement}% better forecasts
     - Naturally handles temporal constraints (must charge before discharge)
@@ -295,8 +316,8 @@ if state.strategy_type == "Rolling Window Optimization":
     - **More robust** to forecast errors than threshold-based
     """)
 else:  # Threshold-Based
-    st.warning(f"""
-    **Threshold-Based Strategy** using {int(state.charge_percentile*100)}th/{int(state.discharge_percentile*100)}th percentiles:
+    st.warning("""
+    **Threshold-Based Strategy** using {int(state.charge_percentile * 100)}th/{int(state.discharge_percentile * 100)}th percentiles:
     - May show non-monotonic improvement (small forecast gains can reduce revenue)
     - Sensitive to threshold parameter selection
     - Simple and interpretable but suboptimal for arbitrage

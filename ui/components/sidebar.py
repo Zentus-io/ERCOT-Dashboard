@@ -6,19 +6,31 @@ This component renders the shared configuration sidebar
 that persists across all pages.
 """
 
-import streamlit as st
-from pathlib import Path
 from datetime import date, timedelta
+from pathlib import Path
+
 import pandas as pd
-from core.battery.battery import BatterySpecs
-from core.data.loaders import SupabaseDataLoader, UploadedFileLoader, ParquetDataLoader
-from utils.state import (
-    get_state, update_state, clear_simulation_cache, needs_data_reload,
-    get_cache_key, update_date_range, get_date_range_str, clear_data_cache
-)
+import streamlit as st
+from postgrest.exceptions import APIError
+
 from config.settings import (
-    DEFAULT_BATTERY, BATTERY_PRESETS, SUPABASE_URL, SUPABASE_KEY,
-    DEFAULT_DAYS_BACK, MAX_DAYS_RANGE, DEFAULT_STRATEGY
+    BATTERY_PRESETS,
+    DEFAULT_BATTERY,
+    DEFAULT_DAYS_BACK,
+    MAX_DAYS_RANGE,
+    SUPABASE_KEY,
+    SUPABASE_URL,
+)
+from core.battery.battery import BatterySpecs
+from core.data.loaders import ParquetDataLoader, SupabaseDataLoader, UploadedFileLoader
+from utils.state import (
+    clear_data_cache,
+    clear_simulation_cache,
+    get_cache_key,
+    get_state,
+    needs_data_reload,
+    update_date_range,
+    update_state,
 )
 
 
@@ -27,17 +39,15 @@ def load_node_list(source: str = 'csv'):
     """
     Load available settlement points.
     """
-    data_dir = Path(__file__).parent.parent.parent / 'data'
-    
     if source == 'database':
         try:
             db_loader = SupabaseDataLoader()
             nodes = db_loader.get_available_nodes()
             if nodes:
                 return nodes
-        except Exception as e:
+        except APIError as e:
             st.warning(f"⚠️ Database error fetching nodes: {str(e)}")
-            
+
     elif source == 'local_parquet':
         try:
             state = get_state()
@@ -47,7 +57,7 @@ def load_node_list(source: str = 'csv'):
                 if nodes:
                     return nodes
             return []
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             st.warning(f"⚠️ Error fetching nodes from uploaded files: {str(e)}")
 
     # Fallback if DB/Parquet failed or empty
@@ -71,20 +81,17 @@ def load_node_prices(
         try:
             db_loader = SupabaseDataLoader()
             return db_loader.load_prices(node=node, start_date=start_date, end_date=end_date)
-        except Exception as e:
+        except APIError as e:
             st.warning(f"⚠️ Database error: {str(e)}. Falling back to CSV.")
-            
+
     elif source == 'local_parquet':
         try:
             # Import here to avoid circular imports if any, or just use the one from loaders
-            # But we need to make sure ParquetDataLoader is available. 
-            # It is imported from core.data.loaders in the file header? 
-            # No, only DataLoader and SupabaseDataLoader are imported.
-            # Need to fix imports too.
-            from core.data.loaders import ParquetDataLoader
+            # But we need to make sure ParquetDataLoader is available.
+            # It is imported from core.data.loaders in the file header?
             loader = ParquetDataLoader(data_dir)
             return loader.load_prices(node=node)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             st.warning(f"⚠️ Parquet error: {str(e)}. Falling back to CSV.")
 
     elif source == 'uploaded':
@@ -94,17 +101,16 @@ def load_node_prices(
                 loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
                 # Apply date filtering if specified
                 df = loader.load_prices(node=node)
-                
+
                 if not df.empty and (start_date or end_date):
                     if start_date:
-                        df = df[df['timestamp'].dt.date >= start_date]
+                        df = df[df['timestamp'].dt.date >= start_date]  # type: ignore
                     if end_date:
-                        df = df[df['timestamp'].dt.date <= end_date]
+                        df = df[df['timestamp'].dt.date <= end_date]  # type: ignore
                 return df
             return pd.DataFrame()
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             st.warning(f"⚠️ Upload error: {str(e)}")
-
 
     # Fallback
     return pd.DataFrame()
@@ -114,7 +120,7 @@ def load_node_prices(
 def load_eia_data():
     try:
         return SupabaseDataLoader().load_eia_batteries()
-    except Exception as e:
+    except APIError as e:
         st.warning(f"Could not load battery data: {e}")
         return pd.DataFrame()
 
@@ -148,7 +154,8 @@ def find_best_date_range(node: str, min_completeness: float = 95.0):
             return None
 
         # Filter for high-quality data
-        availability_df = availability_df[availability_df['completeness'] >= min_completeness].copy()
+        availability_df = availability_df[availability_df['completeness']
+                                          >= min_completeness].copy()
 
         if availability_df.empty:
             return None
@@ -201,7 +208,7 @@ def find_best_date_range(node: str, min_completeness: float = 95.0):
 
         return None
 
-    except Exception as e:
+    except APIError as e:
         st.warning(f"⚠️ Could not auto-select date range: {str(e)}")
         return None
 
@@ -228,12 +235,11 @@ def render_sidebar():
     # ========================================================================
     # DATA SOURCE SELECTION
     # ========================================================================
-    
+
     def on_data_source_change():
         """Callback for data source change"""
         # The new value is already in st.session_state when this runs
         # We just need to ensure our custom state object is updated
-        pass
 
     if SUPABASE_URL and SUPABASE_KEY:
         data_source_ui = st.sidebar.radio(
@@ -243,7 +249,8 @@ def render_sidebar():
                 'database': 0,
                 'local_parquet': 1
             }.get(state.data_source, 0),
-            help="**Database**: Multi-day historical data from Supabase\n**Local Parquet**: Upload your own DAM/RTM parquet files",
+            help=("**Database**: Multi-day historical data from Supabase\n"
+                  "**Local Parquet**: Upload your own DAM/RTM parquet files"),
             key="data_source_radio",
             on_change=on_data_source_change
         )
@@ -297,26 +304,29 @@ def render_sidebar():
                         date.today() - timedelta(days=DEFAULT_DAYS_BACK),
                         date.today()
                     )
-            except Exception as e:
+            except APIError as e:
                 st.sidebar.error(f"⚠️ Cannot fetch date range: {str(e)}")
                 state.available_date_range = (
                     date.today() - timedelta(days=DEFAULT_DAYS_BACK),
                     date.today()
                 )
 
-        earliest, latest = state.available_date_range or (
-            date.today() - timedelta(days=DEFAULT_DAYS_BACK),
-            date.today()
-        )
+        date_range_to_unpack = state.available_date_range
+        if not date_range_to_unpack:
+            date_range_to_unpack = (
+                date.today() - timedelta(days=DEFAULT_DAYS_BACK),
+                date.today()
+            )
+        earliest, latest = date_range_to_unpack
 
         # Ensure state dates are within available range
-        if state.start_date < earliest:
+        if earliest and state.start_date < earliest:
             state.start_date = earliest
-        if state.start_date > latest:
+        if latest and state.start_date > latest:
             state.start_date = latest
-        if state.end_date < earliest:
+        if earliest and state.end_date < earliest:
             state.end_date = earliest
-        if state.end_date > latest:
+        if latest and state.end_date > latest:
             state.end_date = latest
 
         # Date range picker (Single input for range to save space and show full dates)
@@ -327,7 +337,7 @@ def render_sidebar():
             max_value=latest,
             help=f"Data available from {earliest} to {latest}"
         )
-        
+
         # Handle range selection
         if len(date_range_input) == 2:
             start_date, end_date = date_range_input
@@ -341,7 +351,8 @@ def render_sidebar():
         else:
             date_diff = (end_date - start_date).days
             if date_diff > MAX_DAYS_RANGE:
-                st.sidebar.error(f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
+                st.sidebar.error(
+                    f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
             elif start_date != state.start_date or end_date != state.end_date:
                 # User manually changed dates - update and mark as manual selection
                 try:
@@ -364,26 +375,26 @@ def render_sidebar():
         try:
             loader = UploadedFileLoader(state.uploaded_dam_file, state.uploaded_rtm_file)
             date_range = loader.get_date_range()
-            
-            if date_range[0] and date_range[1]:
+
+            if date_range[0] is not None and date_range[1] is not None:
                 parquet_earliest, parquet_latest = date_range
             else:
                 parquet_earliest = date(2025, 1, 1)
                 parquet_latest = date(2025, 12, 31)
-        except:
+        except BaseException:
             parquet_earliest = date(2025, 1, 1)
             parquet_latest = date(2025, 12, 31)
 
         st.sidebar.info(f"📌 Data available: {parquet_earliest} to {parquet_latest}")
 
         # Ensure state dates are within parquet range
-        if state.start_date < parquet_earliest:
+        if parquet_earliest and state.start_date < parquet_earliest:
             state.start_date = parquet_earliest
-        if state.start_date > parquet_latest:
+        if parquet_latest and state.start_date > parquet_latest:
             state.start_date = parquet_latest
-        if state.end_date < parquet_earliest:
+        if parquet_earliest and state.end_date < parquet_earliest:
             state.end_date = parquet_earliest
-        if state.end_date > parquet_latest:
+        if parquet_latest and state.end_date > parquet_latest:
             state.end_date = parquet_latest
 
         # Date range picker
@@ -408,7 +419,8 @@ def render_sidebar():
         else:
             date_diff = (end_date - start_date).days
             if date_diff > MAX_DAYS_RANGE:
-                st.sidebar.error(f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
+                st.sidebar.error(
+                    f"⚠️ Maximum range: {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
             elif start_date != state.start_date or end_date != state.end_date:
                 try:
                     update_date_range(start_date, end_date)
@@ -431,12 +443,12 @@ def render_sidebar():
     if 'data_source_ui' in locals() and data_source_ui == 'Local Parquet':
         st.sidebar.markdown("---")
         st.sidebar.subheader("📁 Custom Data Upload")
-        
+
         st.sidebar.markdown("**Upload ERCOT Price Files**")
 
         def on_file_upload():
             """Callback for file uploads to ensure immediate state update"""
-            # Access the file uploaders directly from session state if needed, 
+            # Access the file uploaders directly from session state if needed,
             # but st.file_uploader returns the value directly.
             # We update the state object here to ensure it's fresh for the rest of the script.
             state = get_state()
@@ -444,7 +456,7 @@ def render_sidebar():
                 state.uploaded_dam_file = st.session_state.dam_upload
             if st.session_state.get('rtm_upload'):
                 state.uploaded_rtm_file = st.session_state.rtm_upload
-            
+
             # If both files are present, switch to local_parquet immediately
             if state.uploaded_dam_file and state.uploaded_rtm_file:
                 state.data_source = 'local_parquet'
@@ -466,42 +478,42 @@ def render_sidebar():
             key='rtm_upload',
             on_change=on_file_upload
         )
-        
+
         # Update state with uploaded files (redundant with callback but safe)
         if dam_file:
             state.uploaded_dam_file = dam_file
         if rtm_file:
             state.uploaded_rtm_file = rtm_file
-            
+
         # File Status Indicators
         if state.uploaded_dam_file:
-            st.sidebar.success(f"✅ DAM: {state.uploaded_dam_file.name}")
+            st.sidebar.success(f"✅ DAM: {state.uploaded_dam_file.name}")  # type: ignore
         else:
             st.sidebar.warning("⚠️ Waiting for DAM file...")
-            
+
         if state.uploaded_rtm_file:
-            st.sidebar.success(f"✅ RTM: {state.uploaded_rtm_file.name}")
+            st.sidebar.success(f"✅ RTM: {state.uploaded_rtm_file.name}")  # type: ignore
         else:
             st.sidebar.warning("⚠️ Waiting for RTM file...")
-            
+
         # Global status
         if not (state.uploaded_dam_file and state.uploaded_rtm_file):
-             st.sidebar.info("ℹ️ Using previous data until both files are uploaded.")
+            st.sidebar.info("ℹ️ Using previous data until both files are uploaded.")
 
     # ========================================================================
     # LOAD DATA (Two-step process)
     # ========================================================================
-    
+
     # 1. Load Node List
     # Determine actual source for node list
-    # If pending upload, we might not have nodes yet. 
+    # If pending upload, we might not have nodes yet.
     # But if we are in 'local_parquet' mode (files uploaded), we load from files.
     # If we are pending (files missing), state.data_source is still the OLD source (csv/db).
     # So we just load from state.data_source.
-    
+
     nodes = load_node_list(source=state.data_source)
     state.available_nodes = nodes
-    
+
     # ========================================================================
     # NODE SELECTION
     # ========================================================================
@@ -525,13 +537,13 @@ def render_sidebar():
             # Check if current range is valid for the new node
             db_loader = SupabaseDataLoader()
             current_availability = db_loader.get_node_availability(selected_node)
-            
+
             # Filter for current date range
             if not current_availability.empty:
                 mask = (current_availability['date'] >= state.start_date) & \
                        (current_availability['date'] <= state.end_date)
                 range_stats = current_availability[mask]
-                
+
                 # Calculate average completeness for the current range
                 if not range_stats.empty:
                     avg_completeness = range_stats['completeness'].mean()
@@ -539,7 +551,7 @@ def render_sidebar():
                     avg_completeness = 0
             else:
                 avg_completeness = 0
-            
+
             # Only auto-select if current range is poor (<95% complete)
             if avg_completeness < 95:
                 best_range = find_best_date_range(selected_node)
@@ -548,7 +560,8 @@ def render_sidebar():
                     try:
                         update_date_range(start_date, end_date)
                         state._dates_auto_selected = True
-                        st.sidebar.success(f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
+                        st.sidebar.success(
+                            f"✅ Auto-selected {(end_date - start_date).days + 1} days with complete data")
                     except ValueError:
                         pass  # If update fails, just keep current dates
             else:
@@ -557,22 +570,27 @@ def render_sidebar():
                 pass
 
     # 2. Load Price Data for Selected Node
-    if needs_data_reload() or state.price_data is None or state.price_data.empty or (state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
+    if needs_data_reload() or state.price_data is None or state.price_data.empty or (
+            state.selected_node and 'node' in state.price_data.columns and state.price_data['node'].iloc[0] != state.selected_node):
         if state.selected_node:
             with st.spinner(f'Loading data for {state.selected_node}...'):
                 # Determine actual source to use
                 # For local_parquet, we now ALWAYS use uploaded files
                 actual_source = state.data_source
                 file_sig = None
-                
+
                 if state.data_source == 'local_parquet':
                     actual_source = 'uploaded'
                     # Generate signature to invalidate cache when files change
                     if state.uploaded_dam_file and state.uploaded_rtm_file:
-                        dam_sig = f"{state.uploaded_dam_file.name}_{state.uploaded_dam_file.size}"
-                        rtm_sig = f"{state.uploaded_rtm_file.name}_{state.uploaded_rtm_file.size}"
+                        dam_name = state.uploaded_dam_file.name  # type: ignore[attr-defined]
+                        dam_size = state.uploaded_dam_file.size  # type: ignore[attr-defined]
+                        rtm_name = state.uploaded_rtm_file.name  # type: ignore[attr-defined]
+                        rtm_size = state.uploaded_rtm_file.size  # type: ignore[attr-defined]
+                        dam_sig = f"{dam_name}_{dam_size}"
+                        rtm_sig = f"{rtm_name}_{rtm_size}"
                         file_sig = f"{dam_sig}_{rtm_sig}"
-                    
+
                 price_data = load_node_prices(
                     source=actual_source,
                     node=state.selected_node,
@@ -581,13 +599,12 @@ def render_sidebar():
                     file_signature=file_sig
                 )
                 state.price_data = price_data
-                
+
                 # Load EIA data once
                 if state.eia_battery_data is None:
                     state.eia_battery_data = load_eia_data()
-                    
-                state._data_cache_key = get_cache_key()
 
+                state._data_cache_key = get_cache_key()
 
     # ========================================================================
     # STRATEGY SELECTION
@@ -679,7 +696,7 @@ def render_sidebar():
             key="window_slider",
             on_change=on_window_change
         )
-            
+
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
 
@@ -708,12 +725,18 @@ def render_sidebar():
     st.sidebar.markdown("**Forecast Scenario:**")
 
     # Initialize master forecast value and widget states
+    # Determine what values to use
     if 'forecast_master' not in st.session_state:
-        st.session_state.forecast_master = float(state.forecast_improvement)
+        init_forecast = float(state.forecast_improvement)
+    else:
+        init_forecast = st.session_state.forecast_master
+
+    # Always ensure all three values exist and are synchronized
+    st.session_state.forecast_master = init_forecast
     if 'forecast_slider' not in st.session_state:
-        st.session_state.forecast_slider = int(state.forecast_improvement)
+        st.session_state.forecast_slider = int(init_forecast)
     if 'forecast_input' not in st.session_state:
-        st.session_state.forecast_input = float(state.forecast_improvement)
+        st.session_state.forecast_input = init_forecast
 
     # Callbacks to synchronize both widgets
     def on_slider_change():
@@ -745,6 +768,7 @@ def render_sidebar():
             "Forecast Accuracy (%):",
             min_value=0,
             max_value=100,
+            value=st.session_state.forecast_slider,
             step=5,
             help="% of the forecast error to correct (0% = DA only, 100% = perfect RT knowledge)",
             key="forecast_slider",
@@ -758,8 +782,9 @@ def render_sidebar():
             "value",
             min_value=0.0,
             max_value=100.0,
+            value=st.session_state.forecast_input,
             step=0.1,
-            format="%.1f",
+            format="%.1",
             help="Enter precise value with decimals",
             key="forecast_input",
             on_change=on_input_change,
@@ -778,11 +803,34 @@ def render_sidebar():
     if state.eia_battery_data is not None:
         preset_options = ["Custom", "Current Asset"] + [v['name'] for v in BATTERY_PRESETS.values()]
 
+        # Initialize battery preset in session state if not present
+        # IMPORTANT: We must initialize BEFORE creating the widget
+        if 'battery_preset_value' not in st.session_state:
+            st.session_state.battery_preset_value = "Custom"
+
+        # Find the index for the stored preset value
+        try:
+            preset_index = preset_options.index(st.session_state.battery_preset_value)
+        except (ValueError, AttributeError):
+            preset_index = 0  # Default to "Custom"
+            st.session_state.battery_preset_value = "Custom"
+
+        # Callback to persist selection to our custom state variable
+        def on_preset_change():
+            # Store the selected value in our persistent state variable
+            st.session_state.battery_preset_value = st.session_state.battery_preset_widget
+
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
+            index=preset_index,
+            key="battery_preset_widget",
+            on_change=on_preset_change,
             help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."
         )
+
+        # Ensure our persistent value is in sync
+        st.session_state.battery_preset_value = battery_preset
 
         # Set defaults based on preset
         if battery_preset == "Custom":
@@ -791,19 +839,23 @@ def render_sidebar():
         elif battery_preset == "Current Asset":
             # Load Engie assets
             engie_data = load_engie_data()
-            
+
             # Find asset matching selected node
             if not engie_data.empty and state.selected_node:
                 # Match on settlement_point
                 asset_match = engie_data[engie_data['settlement_point'] == state.selected_node]
-                
+
                 if not asset_match.empty:
                     # Use the first match
                     asset = asset_match.iloc[0]
-                    default_power = int(asset['nameplate_power_mw']) if pd.notna(asset['nameplate_power_mw']) else DEFAULT_BATTERY['power_mw']
-                    default_capacity = int(asset['nameplate_energy_mwh']) if pd.notna(asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
-                    
-                    st.sidebar.success(f"✅ Matched: {asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
+                    default_power = int(asset['nameplate_power_mw']) if pd.notna(
+                        asset['nameplate_power_mw']) else DEFAULT_BATTERY['power_mw']
+                    default_capacity = int(asset['nameplate_energy_mwh']) if pd.notna(
+                        asset['nameplate_energy_mwh']) else DEFAULT_BATTERY['capacity_mwh']
+
+                    st.sidebar.success(
+                        f"✅ Matched: {
+                            asset['plant_name']} ({default_power} MW / {default_capacity} MWh)")
                 else:
                     st.sidebar.warning(f"⚠️ No asset found for {state.selected_node}")
                     default_capacity = DEFAULT_BATTERY['capacity_mwh']
@@ -812,7 +864,7 @@ def render_sidebar():
                 st.sidebar.warning("⚠️ No asset data available or node not selected")
                 default_capacity = DEFAULT_BATTERY['capacity_mwh']
                 default_power = DEFAULT_BATTERY['power_mw']
-                
+
         elif battery_preset == BATTERY_PRESETS['Small']['name']:
             default_capacity = BATTERY_PRESETS['Small']['capacity_mwh']
             default_power = BATTERY_PRESETS['Small']['power_mw']
@@ -820,7 +872,8 @@ def render_sidebar():
             default_capacity = BATTERY_PRESETS['Medium']['capacity_mwh']
             default_power = BATTERY_PRESETS['Medium']['power_mw']
         elif battery_preset == BATTERY_PRESETS['Large']['name']:
-            default_capacity = int(state.eia_battery_data['Nameplate Energy Capacity (MWh)'].quantile(0.9))
+            default_capacity = int(
+                state.eia_battery_data['Nameplate Energy Capacity (MWh)'].quantile(0.9))
             default_power = int(state.eia_battery_data['Nameplate Capacity (MW)'].quantile(0.9))
         elif battery_preset == BATTERY_PRESETS['Very Large']['name']:
             default_capacity = BATTERY_PRESETS['Very Large']['capacity_mwh']
@@ -830,6 +883,9 @@ def render_sidebar():
             default_capacity = DEFAULT_BATTERY['capacity_mwh']
             default_power = DEFAULT_BATTERY['power_mw']
     else:
+        # No EIA data available - force Custom mode
+        if 'battery_preset_value' not in st.session_state:
+            st.session_state.battery_preset_value = "Custom"
         battery_preset = "Custom"
         default_capacity = DEFAULT_BATTERY['capacity_mwh']
         default_power = DEFAULT_BATTERY['power_mw']
@@ -840,46 +896,54 @@ def render_sidebar():
 
     # Track preset changes - update sliders when preset switches
     if 'last_battery_preset' not in st.session_state:
-        st.session_state.last_battery_preset = battery_preset
+        st.session_state.last_battery_preset = st.session_state.get(
+            'battery_preset_value', 'Custom')
 
     # Track node changes for Current Asset updates
     if 'last_selected_node' not in st.session_state:
         st.session_state.last_selected_node = state.selected_node
 
-    preset_changed = (st.session_state.last_battery_preset != battery_preset)
-    node_changed = (st.session_state.last_selected_node != state.selected_node)
+    preset_changed = (st.session_state.last_battery_preset !=
+                      st.session_state.get('battery_preset_value', 'Custom'))
+    node_changed = st.session_state.last_selected_node != state.selected_node
 
     if preset_changed:
-        st.session_state.last_battery_preset = battery_preset
+        st.session_state.last_battery_preset = st.session_state.get(
+            'battery_preset_value', 'Custom')
     if node_changed:
         st.session_state.last_selected_node = state.selected_node
 
-    # Initialize or update session state for capacity
-    # Update if preset changed OR if we are in "Current Asset" mode and the node changed
-    should_update_defaults = preset_changed or (battery_preset == "Current Asset" and node_changed)
+    # Determine if we should force update from preset/defaults
+    should_update_defaults = preset_changed or (
+        st.session_state.get(
+            'battery_preset_value',
+            'Custom') == "Current Asset" and node_changed)
 
+    # Initialize session state values - prioritize existing state, then presets, then defaults
+    # This ensures consistency when switching between pages
+
+    # Determine what values to use
     if should_update_defaults:
-        # Update Capacity
-        st.session_state.capacity_master = float(default_capacity)
-        st.session_state.capacity_slider = float(default_capacity)
-        st.session_state.capacity_input = float(default_capacity)
-        
-        # Update Power
-        st.session_state.power_master = float(default_power)
-        st.session_state.power_slider = float(default_power)
-        st.session_state.power_input = float(default_power)
-        st.rerun()
+        # Preset changed - use new preset values
+        init_capacity = float(default_capacity)
+    elif 'capacity_master' not in st.session_state:
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_capacity = float(state.battery_specs.capacity_mwh)
+        else:
+            init_capacity = float(default_capacity)
+    else:
+        # Already initialized, use existing values
+        init_capacity = st.session_state.capacity_master
 
-    if 'capacity_master' not in st.session_state:
-        st.session_state.capacity_master = float(default_capacity)
-        st.session_state.capacity_slider = float(default_capacity)
-        st.session_state.capacity_input = float(default_capacity)
-    elif 'capacity_slider' not in st.session_state:
-        st.session_state.capacity_slider = float(default_capacity)
-    elif 'capacity_input' not in st.session_state:
-        st.session_state.capacity_input = float(default_capacity)
+    # Always ensure all three values exist and are synchronized
+    st.session_state.capacity_master = init_capacity
+    if 'capacity_slider' not in st.session_state or should_update_defaults:
+        st.session_state.capacity_slider = init_capacity
+    if 'capacity_input' not in st.session_state or should_update_defaults:
+        st.session_state.capacity_input = init_capacity
 
-    # Callbacks
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_capacity_slider_change():
         new_val = float(st.session_state.capacity_slider)
         st.session_state.capacity_master = new_val
@@ -893,13 +957,14 @@ def render_sidebar():
     # Two-column layout
     col1, col2 = st.sidebar.columns([2.25, 1])
 
-    is_disabled = (battery_preset != "Custom")
+    is_disabled = battery_preset != "Custom"
 
     with col1:
         st.slider(
             "Energy Capacity (MWh):",
             min_value=5.0,
             max_value=1000.0,
+            value=st.session_state.capacity_slider,
             step=10.0,
             help="Total energy storage capacity of the battery",
             disabled=is_disabled,
@@ -913,8 +978,9 @@ def render_sidebar():
             "MWh",
             min_value=5.0,
             max_value=1000.0,
+            value=st.session_state.capacity_input,
             step=10.0,
-            format="%.1f",
+            format="%.1",
             help="Enter precise capacity",
             disabled=is_disabled,
             key="capacity_input",
@@ -925,17 +991,29 @@ def render_sidebar():
     # Use master value
     capacity = st.session_state.capacity_master
 
-    # Initialize session state for power (only if not already present)
-    if 'power_master' not in st.session_state:
-        st.session_state.power_master = float(default_power)
-        st.session_state.power_slider = float(default_power)
-        st.session_state.power_input = float(default_power)
-    elif 'power_slider' not in st.session_state:
-        st.session_state.power_slider = float(default_power)
-    elif 'power_input' not in st.session_state:
-        st.session_state.power_input = float(default_power)
+    # Initialize session state for power - prioritize existing state, then presets, then defaults
+    # Determine what values to use
+    if should_update_defaults:
+        # Preset changed - use new preset values
+        init_power = float(default_power)
+    elif 'power_master' not in st.session_state:
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_power = float(state.battery_specs.power_mw)
+        else:
+            init_power = float(default_power)
+    else:
+        # Already initialized, use existing values
+        init_power = st.session_state.power_master
 
-    # Callbacks
+    # Always ensure all three values exist and are synchronized
+    st.session_state.power_master = init_power
+    if 'power_slider' not in st.session_state or should_update_defaults:
+        st.session_state.power_slider = init_power
+    if 'power_input' not in st.session_state or should_update_defaults:
+        st.session_state.power_input = init_power
+
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_power_slider_change():
         new_val = float(st.session_state.power_slider)
         st.session_state.power_master = new_val
@@ -949,13 +1027,14 @@ def render_sidebar():
     # Two-column layout
     col1, col2 = st.sidebar.columns([2.25, 1])
 
-    is_disabled = (battery_preset != "Custom")
+    is_disabled = battery_preset != "Custom"
 
     with col1:
         st.slider(
             "Power Capacity (MW):",
             min_value=5.0,
             max_value=500.0,
+            value=st.session_state.power_slider,
             step=5.0,
             help="Maximum charge/discharge rate",
             disabled=is_disabled,
@@ -969,8 +1048,9 @@ def render_sidebar():
             "MW",
             min_value=5.0,
             max_value=500.0,
+            value=st.session_state.power_input,
             step=5.0,
-            format="%.1f",
+            format="%.1",
             help="Enter precise power",
             disabled=is_disabled,
             key="power_input",
@@ -981,22 +1061,33 @@ def render_sidebar():
     # Use master value
     power = st.session_state.power_master
 
-    # Initialize session state for efficiency
+    # Initialize session state for efficiency - prioritize existing state, then defaults
+    # Determine what values to use
     if 'efficiency_master' not in st.session_state:
-        st.session_state.efficiency_master = DEFAULT_BATTERY['efficiency']
-    if 'efficiency_slider' not in st.session_state:
-        st.session_state.efficiency_slider = DEFAULT_BATTERY['efficiency']
-    if 'efficiency_input' not in st.session_state:
-        st.session_state.efficiency_input = DEFAULT_BATTERY['efficiency']
+        # First initialization - use existing state if available
+        if state.battery_specs is not None:
+            init_efficiency = float(state.battery_specs.efficiency)
+        else:
+            init_efficiency = DEFAULT_BATTERY['efficiency']
+    else:
+        # Already initialized, use existing values (efficiency doesn't change with presets)
+        init_efficiency = st.session_state.efficiency_master
 
-    # Callbacks
+    # Always ensure all three values exist and are synchronized
+    st.session_state.efficiency_master = init_efficiency
+    if 'efficiency_slider' not in st.session_state:
+        st.session_state.efficiency_slider = init_efficiency
+    if 'efficiency_input' not in st.session_state:
+        st.session_state.efficiency_input = init_efficiency
+
+    # Callbacks - synchronize all three values (master, slider, input)
     def on_efficiency_slider_change():
-        new_val = st.session_state.efficiency_slider
+        new_val = float(st.session_state.efficiency_slider)
         st.session_state.efficiency_master = new_val
         st.session_state.efficiency_input = new_val
 
     def on_efficiency_input_change():
-        new_val = st.session_state.efficiency_input
+        new_val = float(st.session_state.efficiency_input)
         st.session_state.efficiency_master = new_val
         # Round to nearest 0.05 for slider
         st.session_state.efficiency_slider = round(new_val / 0.05) * 0.05
@@ -1009,6 +1100,7 @@ def render_sidebar():
             "Round-trip Efficiency:",
             min_value=0.5,
             max_value=1.0,
+            value=st.session_state.efficiency_slider,
             step=0.05,  # Keep current step
             help="Energy efficiency for charge/discharge cycle (100% = theoretical perfect efficiency)",
             key="efficiency_slider",
@@ -1018,11 +1110,12 @@ def render_sidebar():
     with col2:
         st.write("")  # Alignment
         st.number_input(
-            "eff",
+            "ef",
             min_value=0.70,
             max_value=1.00,
+            value=st.session_state.efficiency_input,
             step=0.01,  # Finer precision
-            format="%.2f",
+            format="%.2",
             help="Enter precise efficiency (0.70-1.00)",
             key="efficiency_input",
             on_change=on_efficiency_input_change,
@@ -1042,7 +1135,6 @@ def render_sidebar():
     if state.battery_specs != new_specs:
         update_state(battery_specs=new_specs)
         clear_simulation_cache()
-
 
     # ========================================================================
     # DATA SUMMARY & MARKET CONTEXT MOVED TO HOME

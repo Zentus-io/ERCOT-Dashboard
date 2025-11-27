@@ -4,14 +4,15 @@ Zentus - ERCOT Battery Revenue Dashboard
 
 This module implements the Strategy pattern for battery dispatch algorithms.
 """
-
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, Optional
-import pandas as pd
+
 import numpy as np
-import os
-from .battery import Battery
+import pandas as pd
+
+from .battery import Battery, BatterySpecs
 
 
 def calculate_dt(price_df: pd.DataFrame) -> float:
@@ -32,11 +33,10 @@ def calculate_dt(price_df: pd.DataFrame) -> float:
         - Defaults to 1.0 if cannot determine
     """
     if 'timestamp' in price_df.columns and len(price_df) > 1:
-        dt = (price_df['timestamp'].iloc[1] - price_df['timestamp'].iloc[0]).total_seconds() / 3600.0
+        dt = (price_df['timestamp'].iloc[1] -
+              price_df['timestamp'].iloc[0]).total_seconds() / 3600.0
         return dt
-    else:
-        # Default to hourly if cannot determine
-        return 1.0
+    return 1.0
 
 
 @dataclass
@@ -201,14 +201,14 @@ class ThresholdStrategy(DispatchStrategy):
             energy = battery.charge(battery.specs.power_mw, dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
 
-        elif decision_price > self.discharge_threshold and battery.can_discharge(battery.specs.power_mw):
+        if decision_price > self.discharge_threshold and battery.can_discharge(
+                battery.specs.power_mw):
             # Discharge at max power for this time step
             energy = battery.discharge(battery.specs.power_mw, dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
 
-        else:
-            # Hold
-            return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+        # Hold
+        return DispatchDecision('hold', 0, 0, decision_price, actual_price)
 
     def get_metadata(self) -> dict:
         """Return strategy metadata."""
@@ -270,19 +270,20 @@ class RollingWindowStrategy(DispatchStrategy):
         )
 
         # Decision logic: charge at minimum, discharge at maximum
-        if np.isclose(decision_price, window_prices.min()) and battery.can_charge(battery.specs.power_mw):
+        if (np.isclose(decision_price, window_prices.min()) and
+                battery.can_charge(battery.specs.power_mw)):
             # Charge: cheapest period in window
             energy = battery.charge(battery.specs.power_mw, dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
 
-        elif np.isclose(decision_price, window_prices.max()) and battery.can_discharge(battery.specs.power_mw):
+        if (np.isclose(decision_price, window_prices.max()) and
+                battery.can_discharge(battery.specs.power_mw)):
             # Discharge: most expensive period in window
             energy = battery.discharge(battery.specs.power_mw, dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
 
-        else:
-            # Hold
-            return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+        # Hold
+        return DispatchDecision('hold', 0, 0, decision_price, actual_price)
 
     def get_metadata(self) -> dict:
         """Return strategy metadata."""
@@ -292,17 +293,14 @@ class RollingWindowStrategy(DispatchStrategy):
         }
 
 
-
 def solve_linear_optimization(
     prices: np.ndarray,
     dt: float,
     battery_specs: 'BatterySpecs',
-    initial_soc: float,
-    final_soc_min: float = 0.0
+    initial_soc: float
 ) -> pd.DataFrame:
     """
     Solves the linear optimization problem for a given price series and battery state.
-    
     Parameters
     ----------
     prices : np.ndarray
@@ -313,17 +311,14 @@ def solve_linear_optimization(
         Battery specifications
     initial_soc : float
         Initial state of charge (MWh)
-    final_soc_min : float
-        Minimum required SOC at the end of the horizon (MWh)
-        
     Returns
     -------
     pd.DataFrame
         Optimization results with columns: charge_mw, discharge_mw, soc_mwh
     """
-    from scipy.optimize import linprog
-    from scipy import sparse
-    
+    from scipy import sparse  # pylint: disable=import-outside-toplevel
+    from scipy.optimize import linprog  # pylint: disable=import-outside-toplevel
+
     n_steps = len(prices)
     if n_steps == 0:
         return pd.DataFrame({
@@ -334,15 +329,15 @@ def solve_linear_optimization(
 
     # Variables vector x: [Charge_0...N-1, Discharge_0...N-1, SOC_0...N-1]
     # Total variables = 3 * n_steps
-    
+
     # 1. Objective Function: Minimize Cost - Revenue
     # Minimize: Sum(Price * C * dt) - Sum(Price * D * dt)
-    
+
     c_charge = prices * dt
     c_discharge = -prices * dt
     c_soc = np.zeros(n_steps)
     c = np.concatenate([c_charge, c_discharge, c_soc])
-    
+
     # 2. Bounds
     min_soc_mwh = battery_specs.min_soc * battery_specs.capacity_mwh
     max_soc_mwh = battery_specs.max_soc * battery_specs.capacity_mwh
@@ -351,55 +346,54 @@ def solve_linear_optimization(
     bounds_d = [(0, battery_specs.power_mw)] * n_steps
     bounds_soc = [(min_soc_mwh, max_soc_mwh)] * n_steps
     bounds = bounds_c + bounds_d + bounds_soc
-    
+
     # 3. Equality Constraints (Dynamics)
     eff = battery_specs.one_way_efficiency
     coeff_c = -(eff * dt)
-    coeff_d = (dt / eff)
-    
+    coeff_d = dt / eff
+
     # Construct A_eq matrix (n_steps rows, 3*n_steps cols)
     rows_soc_t = np.arange(n_steps)
-    cols_soc_t = np.arange(2*n_steps, 3*n_steps)
+    cols_soc_t = np.arange(2 * n_steps, 3 * n_steps)
     vals_soc_t = np.ones(n_steps)
-    
+
     rows_soc_prev = np.arange(1, n_steps)
-    cols_soc_prev = np.arange(2*n_steps, 3*n_steps - 1)
+    cols_soc_prev = np.arange(2 * n_steps, 3 * n_steps - 1)
     vals_soc_prev = -np.ones(n_steps - 1)
-    
+
     rows_c = np.arange(n_steps)
     cols_c = np.arange(n_steps)
     vals_c = np.full(n_steps, coeff_c)
-    
+
     rows_d = np.arange(n_steps)
-    cols_d = np.arange(n_steps, 2*n_steps)
+    cols_d = np.arange(n_steps, 2 * n_steps)
     vals_d = np.full(n_steps, coeff_d)
-    
+
     rows = np.concatenate([rows_soc_t, rows_soc_prev, rows_c, rows_d])
     cols = np.concatenate([cols_soc_t, cols_soc_prev, cols_c, cols_d])
     vals = np.concatenate([vals_soc_t, vals_soc_prev, vals_c, vals_d])
-    
-    A_eq = sparse.coo_matrix((vals, (rows, cols)), shape=(n_steps, 3*n_steps))
-    
+
+    A_eq = sparse.coo_matrix((vals, (rows, cols)), shape=(n_steps, 3 * n_steps))
+
     # RHS vector b_eq
     b_eq = np.zeros(n_steps)
     b_eq[0] = initial_soc
-    
+
     # Solve
     res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
-    
+
     if res.success:
         return pd.DataFrame({
             'charge_mw': res.x[:n_steps],
-            'discharge_mw': res.x[n_steps:2*n_steps],
-            'soc_mwh': res.x[2*n_steps:]
+            'discharge_mw': res.x[n_steps:2 * n_steps],
+            'soc_mwh': res.x[2 * n_steps:]
         })
-    else:
-        # Fallback: do nothing
-        return pd.DataFrame({
-            'charge_mw': np.zeros(n_steps),
-            'discharge_mw': np.zeros(n_steps),
-            'soc_mwh': np.full(n_steps, initial_soc)
-        })
+    # Fallback: do nothing
+    return pd.DataFrame({
+        'charge_mw': np.zeros(n_steps),
+        'discharge_mw': np.zeros(n_steps),
+        'soc_mwh': np.full(n_steps, initial_soc)
+    })
 
 
 class LinearOptimizationStrategy(DispatchStrategy):
@@ -418,22 +412,23 @@ class LinearOptimizationStrategy(DispatchStrategy):
                current_idx: int,
                price_df: pd.DataFrame,
                improvement_factor: float) -> DispatchDecision:
-        
+
         if not self._optimization_run:
             # Run optimization for the whole horizon once
             dt = calculate_dt(price_df)
             self._dt = dt
 
-            prices = (price_df['price_mwh_da'] + price_df['forecast_error'] * improvement_factor).to_numpy()
+            prices = (price_df['price_mwh_da'] +
+                      price_df['forecast_error'] * improvement_factor).to_numpy()
 
             # DIAGNOSTIC LOGGING
             if os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
-                print(f"\n=== LP Diagnostics ===")
+                print("\n=== LP Diagnostics ===")
                 print(f"Dataset total: {len(price_df)} timesteps")
                 print(f"Sees full dataset: ALL {len(prices)} steps")
                 print(f"Price range: ${prices.min():.2f} - ${prices.max():.2f}")
                 print(f"Time step (dt): {dt:.2f} hours")
-                print(f"Improvement factor: {improvement_factor*100:.0f}%")
+                print(f"Improvement factor: {improvement_factor * 100:.0f}%")
 
             self._dispatch_plan = solve_linear_optimization(
                 prices=prices,
@@ -442,7 +437,7 @@ class LinearOptimizationStrategy(DispatchStrategy):
                 initial_soc=battery.soc
             )
             self._optimization_run = True
-            
+
         # Get planned action
         if self._dispatch_plan is not None and current_idx < len(self._dispatch_plan):
             charge_mw = self._dispatch_plan.iloc[current_idx]['charge_mw']
@@ -450,20 +445,19 @@ class LinearOptimizationStrategy(DispatchStrategy):
         else:
             charge_mw = 0
             discharge_mw = 0
-            
+
         # Get prices
         row = price_df.iloc[current_idx]
         decision_price = row['price_mwh_da'] + row['forecast_error'] * improvement_factor
         actual_price = row['price_mwh_rt']
-        
+
         if discharge_mw > 0.001:
             energy = battery.discharge(discharge_mw, self._dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
-        elif charge_mw > 0.001:
+        if charge_mw > 0.001:
             energy = battery.charge(charge_mw, self._dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
-        else:
-            return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+        return DispatchDecision('hold', 0, 0, decision_price, actual_price)
 
     def get_metadata(self) -> dict:
         return {
@@ -475,55 +469,61 @@ class LinearOptimizationStrategy(DispatchStrategy):
 class MPCStrategy(DispatchStrategy):
     """
     Model Predictive Control (MPC) strategy.
-    
     Solves a linear optimization problem over a rolling horizon at each time step.
     Implements the first action of the optimal plan and repeats.
-    
     Attributes
     ----------
     horizon_hours : int
         Lookahead horizon in hours (default: 24)
     """
-    
+
     def __init__(self, horizon_hours: int = 24):
         self.horizon_hours = horizon_hours
-        
+
     def decide(self,
                battery: Battery,
                current_idx: int,
                price_df: pd.DataFrame,
                improvement_factor: float) -> DispatchDecision:
-        
+
         # Get time step duration
         dt = calculate_dt(price_df)
-        
+
         # Determine horizon in steps
         horizon_steps = max(1, int(self.horizon_hours / dt))
-        
+
         # Slice data for horizon
         # Note: We use the 'decision prices' (forecasts) for optimization
         horizon_end = min(current_idx + horizon_steps, len(price_df))
         horizon_df = price_df.iloc[current_idx:horizon_end]
-        
-        if horizon_df.empty:
-             return DispatchDecision('hold', 0, 0, 0, 0)
 
-        prices = (horizon_df['price_mwh_da'] + horizon_df['forecast_error'] * improvement_factor).to_numpy()
+        if horizon_df.empty:
+            return DispatchDecision('hold', 0, 0, 0, 0)
+
+        prices = (horizon_df['price_mwh_da'] +
+                  horizon_df['forecast_error'] * improvement_factor).to_numpy()
 
         # DIAGNOSTIC LOGGING (only on first timestep)
         if current_idx == 0 and os.getenv('MPC_DIAGNOSTICS', 'false').lower() == 'true':
             print(f"\n=== MPC Diagnostics (Horizon={self.horizon_hours}h) ===")
             print(f"Dataset total: {len(price_df)} timesteps")
-            print(f"Horizon window: [{current_idx}:{horizon_end}] = {horizon_end - current_idx} steps")
+            print(
+                f"Horizon window: [{current_idx}:{horizon_end}] = {
+                    horizon_end -
+                    current_idx} steps")
             print(f"Expected horizon steps: {horizon_steps}")
-            print(f"Prices seen in horizon: min=${prices.min():.2f}, max=${prices.max():.2f}, mean=${prices.mean():.2f}")
+            print(
+                f"Prices seen: min=${
+                    prices.min():.2f}, max=${
+                    prices.max():.2f}, mean=${
+                    prices.mean():.2f}")
             print(f"Time step (dt): {dt:.2f} hours")
-            print(f"Improvement factor: {improvement_factor*100:.0f}%")
+            print(f"Improvement factor: {improvement_factor * 100:.0f}%")
 
             # Sanity check: Verify horizon slicing is correct
             actual_horizon_length = horizon_end - current_idx
             if actual_horizon_length != min(horizon_steps, len(price_df)):
-                print(f"⚠️  WARNING: Horizon length mismatch!")
+                print("⚠️  WARNING: Horizon length mismatch!")
                 print(f"   Expected: {min(horizon_steps, len(price_df))} steps")
                 print(f"   Actual: {actual_horizon_length} steps")
 
@@ -532,13 +532,8 @@ class MPCStrategy(DispatchStrategy):
             prices=prices,
             dt=dt,
             battery_specs=battery.specs,
-            initial_soc=battery.soc,
-            # Optional: Enforce some final SOC to prevent draining battery at end of every horizon
-            # For now, we leave it as 0 to allow flexibility, but in reality one might want 
-            # final_soc >= initial_soc or similar.
-            final_soc_min=0.0 
+            initial_soc=battery.soc
         )
-        
         # Take first action
         if not plan.empty:
             charge_mw = plan.iloc[0]['charge_mw']
@@ -546,20 +541,19 @@ class MPCStrategy(DispatchStrategy):
         else:
             charge_mw = 0
             discharge_mw = 0
-            
+
         # Get prices for return object
         row = price_df.iloc[current_idx]
         decision_price = row['price_mwh_da'] + row['forecast_error'] * improvement_factor
         actual_price = row['price_mwh_rt']
-        
+
         if discharge_mw > 0.001:
             energy = battery.discharge(discharge_mw, dt)
             return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
-        elif charge_mw > 0.001:
+        if charge_mw > 0.001:
             energy = battery.charge(charge_mw, dt)
             return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
-        else:
-            return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+        return DispatchDecision('hold', 0, 0, decision_price, actual_price)
 
     def get_metadata(self) -> dict:
         return {

@@ -1,12 +1,14 @@
-import streamlit as st
+from pathlib import Path
+from typing import Literal, Optional
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from core.data.loaders import load_data, ParquetDataLoader, SupabaseDataLoader
+import streamlit as st
+
+from config.settings import DEFAULT_DATA_SOURCE
+from core.data.loaders import ParquetDataLoader, SupabaseDataLoader, load_data
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from config.settings import DEFAULT_DATA_SOURCE
-from pathlib import Path
 
 st.set_page_config(page_title="Nodal Analysis", page_icon="🗺️", layout="wide")
 
@@ -21,6 +23,9 @@ This tool scans available nodes to find the best opportunities for battery stora
 
 # Configuration
 source = st.session_state.get('data_source', DEFAULT_DATA_SOURCE)
+if source not in ('database', 'local_parquet'):
+    st.error(f"Invalid data source: {source}. Must be 'database' or 'local_parquet'.")
+    st.stop()
 st.info(f"Current Data Source: **{source}**")
 
 if source == 'local_parquet':
@@ -28,7 +33,7 @@ if source == 'local_parquet':
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_node_data_cached(source: str, node: str) -> pd.DataFrame:
+def load_node_data_cached(source: Literal['database', 'local_parquet'], node: str) -> pd.DataFrame:
     """
     Load and cache node data for 1 hour.
     Uses polars for fast parquet I/O when source is 'local_parquet'.
@@ -36,7 +41,7 @@ def load_node_data_cached(source: str, node: str) -> pd.DataFrame:
     return load_data(source=source, node=node)
 
 
-def analyze_single_node(source: str, node: str) -> dict:
+def analyze_single_node(source: Literal['database', 'local_parquet'], node: str) -> Optional[dict]:
     """
     Analyze a single node and return metrics.
     Returns None if node has no data or error occurs.
@@ -62,12 +67,12 @@ def analyze_single_node(source: str, node: str) -> dict:
             'Revenue Score': round(revenue_score, 2),
             'Data Points': len(df)
         }
-    except Exception as e:
+    except Exception:
         return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_nodal_assessment(source: str) -> tuple[pd.DataFrame, dict]:
+def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[pd.DataFrame, dict]:
     """
     Run nodal assessment with caching.
     Returns (results_df, node_data_cache) where node_data_cache contains data for top nodes.
@@ -97,7 +102,7 @@ def run_nodal_assessment(source: str) -> tuple[pd.DataFrame, dict]:
     # Analyze each node
     total = len(nodes)
     for i, node in enumerate(nodes):
-        status_text.text(f"Analyzing node {i+1}/{total}: {node}")
+        status_text.text(f"Analyzing node {i + 1}/{total}: {node}")
 
         result = analyze_single_node(source, node)
         if result:
@@ -255,4 +260,5 @@ else:
         loader = SupabaseDataLoader()
         nodes = loader.get_available_nodes()
         if nodes:
-            st.success(f"✅ Ready to analyze **{min(50, len(nodes))}** nodes from database (max 50 for performance).")
+            st.success(
+                f"✅ Ready to analyze **{min(50, len(nodes))}** nodes from database (max 50 for performance).")
