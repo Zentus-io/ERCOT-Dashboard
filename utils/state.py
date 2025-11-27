@@ -5,14 +5,16 @@ Zentus - ERCOT Battery Revenue Dashboard
 This module provides centralized session state management for the Streamlit app.
 """
 
-import streamlit as st
-import pandas as pd
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple
 from datetime import date, timedelta
+from typing import Dict, Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+
+from config.settings import DEFAULT_DATA_SOURCE, DEFAULT_DAYS_BACK, MAX_DAYS_RANGE
 from core.battery.battery import BatterySpecs
 from core.battery.simulator import SimulationResult
-from config.settings import DEFAULT_DATA_SOURCE, DEFAULT_DAYS_BACK, MAX_DAYS_RANGE
 
 
 @dataclass
@@ -60,7 +62,8 @@ class AppState:
     # Battery configuration
     battery_specs: Optional[BatterySpecs] = None
 
-    # Strategy settings (practical dispatch strategies only - LP is used as benchmark, not a strategy)
+    # Strategy settings (practical dispatch strategies only - LP is used as
+    # benchmark, not a strategy)
     strategy_type: str = "Threshold-Based"  # Options: "Threshold-Based", "Rolling Window Optimization"
     charge_percentile: float = 0.25
     discharge_percentile: float = 0.75
@@ -72,7 +75,10 @@ class AppState:
     selected_node: Optional[str] = None
 
     # Date range selection (for database mode)
-    start_date: date = field(default_factory=lambda: date.today() - timedelta(days=DEFAULT_DAYS_BACK))
+    start_date: date = field(
+        default_factory=lambda: date.today() -
+        timedelta(
+            days=DEFAULT_DAYS_BACK))
     end_date: date = field(default_factory=date.today)
     data_source: str = DEFAULT_DATA_SOURCE  # 'csv' or 'database'
 
@@ -101,7 +107,6 @@ class AppState:
     uploaded_dam_file: Optional[object] = None  # BytesIO from st.file_uploader
     uploaded_rtm_file: Optional[object] = None  # BytesIO from st.file_uploader
     using_uploaded_files: bool = False  # Track if user is using uploaded files
-
 
 
 def init_state():
@@ -310,7 +315,8 @@ def update_date_range(start_date: date, end_date: date):
 
     date_diff = (end_date - start_date).days
     if date_diff > MAX_DAYS_RANGE:
-        raise ValueError(f"Date range cannot exceed {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
+        raise ValueError(
+            f"Date range cannot exceed {MAX_DAYS_RANGE} days (selected: {date_diff} days)")
 
     # Update state
     state = get_state()

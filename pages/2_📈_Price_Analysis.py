@@ -6,17 +6,18 @@ This page provides detailed price dynamics analysis including
 DA vs RT price comparison, statistics, and forecast error distribution.
 """
 
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
+from ui.components.charts import apply_standard_chart_styling
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config, get_date_range_str
-from pathlib import Path
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
-import numpy as np
+from ui.styles.custom_css import apply_custom_styles
+from utils.state import get_date_range_str, get_state, has_valid_config
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -40,7 +41,8 @@ st.header("📈 Price Analysis")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -97,7 +99,7 @@ fig_price.add_trace(go.Scatter(
     x=node_data['timestamp'],
     y=node_data['price_mwh_rt'],
     name='Real-Time Price',
-    line=dict(color='#0A5F7A', width=2),
+    line={"color": '#0A5F7A', "width": 2},
     hovertemplate='RT: $%{y:.2f}/MWh<extra></extra>'
 ))
 
@@ -105,7 +107,7 @@ fig_price.add_trace(go.Scatter(
     x=node_data['timestamp'],
     y=node_data['price_mwh_da'],
     name='Day-Ahead Price',
-    line=dict(color='#FF6B35', width=2, dash='dash'),
+    line={"color": '#FF6B35', "width": 2, "dash": 'dash'},
     hovertemplate='DA: $%{y:.2f}/MWh<extra></extra>'
 ))
 
@@ -117,7 +119,7 @@ if len(negative_rt) > 0:
         y=negative_rt['price_mwh_rt'],
         mode='markers',
         name='Negative RT Prices',
-        marker=dict(color='red', size=10, symbol='x'),
+        marker={"color": 'red', "size": 10, "symbol": 'x'},
         hovertemplate='Negative Price: $%{y:.2f}/MWh<extra></extra>'
     ))
 
@@ -149,11 +151,10 @@ fig_price.update_layout(
     yaxis_title="Price ($/MWh)",
     height=500,
     hovermode='x unified',
-    yaxis=dict(fixedrange=False),
-    xaxis=dict(fixedrange=False)
+    yaxis={"fixedrange": False},
+    xaxis={"fixedrange": False}
 )
 
-from ui.components.charts import apply_standard_chart_styling
 apply_standard_chart_styling(fig_price)
 
 st.plotly_chart(fig_price, width="stretch", config={'scrollZoom': True})
@@ -186,7 +187,7 @@ with col1:
             f"${node_data['price_mwh_rt'].max():.2f}",
             f"${node_data['price_mwh_rt'].mean():.2f}",
             f"{(node_data['price_mwh_rt'] < 0).sum()} hours",
-            f"{node_data['extreme_event'].sum()} hours ({node_data['extreme_event'].sum()/len(node_data)*100:.1f}%)"
+            f"{node_data['extreme_event'].sum()} hours ({node_data['extreme_event'].sum() / len(node_data) * 100:.1f}%)"
         ]
     }
     st.table(pd.DataFrame(stats_data))
@@ -201,7 +202,7 @@ with col2:
     # Freedman-Diaconis rule: bin_width = 2 * IQR / n^(1/3)
     q75, q25 = np.percentile(forecast_data, [75, 25])
     iqr = q75 - q25
-    bin_width_fd = 2 * iqr / (n ** (1/3))
+    bin_width_fd = 2 * iqr / (n ** (1 / 3))
 
     # Calculate number of bins
     data_range = forecast_data.max() - forecast_data.min()

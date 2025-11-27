@@ -5,10 +5,19 @@ Zentus - ERCOT Battery Revenue Dashboard
 This module provides the high-level simulation orchestrator.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 import pandas as pd
+import streamlit as st
+
 from .battery import Battery, BatterySpecs
-from .strategies import DispatchStrategy, ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
+from .strategies import (
+    DispatchStrategy,
+    LinearOptimizationStrategy,
+    MPCStrategy,
+    RollingWindowStrategy,
+    ThresholdStrategy,
+)
 
 
 @dataclass
@@ -59,127 +68,17 @@ class SimulationResult:
     metadata: dict
 
 
-import streamlit as st
-
-@st.cache_data(show_spinner=False)
-def run_simulation_cached(
-    price_df: pd.DataFrame,
-    battery_specs: dict,
-    strategy_params: dict,
-    improvement_factor: float = 0.0
-) -> SimulationResult:
-    """
-    Cached simulation runner.
-    Takes simple types (dicts) instead of objects to ensure hashability.
-    """
-    # Reconstruct objects
-    specs = BatterySpecs(**battery_specs)
-    
-    # Reconstruct strategy
-    strategy_type = strategy_params.get('type', 'Threshold-Based')
-    
-    if strategy_type == 'Threshold-Based':
-        strategy = ThresholdStrategy(
-            charge_percentile=strategy_params.get('charge_percentile', 0.25),
-            discharge_percentile=strategy_params.get('discharge_percentile', 0.75)
-        )
-    elif strategy_type == 'Rolling Window Optimization':
-        strategy = RollingWindowStrategy(
-            window_hours=strategy_params.get('window_hours', 6)
-        )
-    elif strategy_type == 'Linear Optimization (Perfect Foresight)':
-        strategy = LinearOptimizationStrategy()
-    elif strategy_type == 'MPC (Rolling Horizon)':
-        strategy = MPCStrategy(
-            horizon_hours=strategy_params.get('horizon_hours', 24)
-        )
-    else:
-        # Default fallback
-        strategy = ThresholdStrategy(0.25, 0.75)
-
-    # Run simulation logic (extracted from original run method)
-    if price_df.empty:
-        return SimulationResult(
-            dispatch_df=pd.DataFrame(),
-            total_revenue=0.0,
-            charge_cost=0.0,
-            discharge_revenue=0.0,
-            charge_count=0,
-            discharge_count=0,
-            hold_count=0,
-            soc_timestamps=[],
-            soc_values=[],
-            metadata={}
-        )
-
-    battery = Battery(specs)
-    battery.reset()
-
-    decisions = []
-    soc_history = []
-    revenue_history = []
-    soc_timestamps = [price_df.iloc[0]['timestamp']]
-    soc_values = [battery.soc]
-
-    total_revenue = 0.0
-    charge_cost = 0.0
-    discharge_revenue = 0.0
-
-    for idx in range(len(price_df)):
-        soc_history.append(battery.soc)
-        revenue_history.append(total_revenue)
-
-        decision = strategy.decide(battery, idx, price_df, improvement_factor)
-        decisions.append(decision)
-
-        if decision.action == 'charge':
-            cost = decision.energy_mwh * decision.actual_price
-            total_revenue -= cost
-            charge_cost += cost
-        elif decision.action == 'discharge':
-            revenue = decision.energy_mwh * decision.actual_price
-            total_revenue += revenue
-            discharge_revenue += revenue
-
-        # Visualization updates
-        row = price_df.iloc[idx]
-        if decision.action != 'hold':
-            if abs(decision.energy_mwh) >= specs.power_mw:
-                duration_hours = 1.0
-            else:
-                duration_hours = abs(decision.energy_mwh) / specs.power_mw
-            
-            soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
-            soc_values.append(battery.soc)
-            
-            if duration_hours < 1.0:
-                soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
-                soc_values.append(battery.soc)
-        else:
-            soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
-            soc_values.append(battery.soc)
-
-    result_df = price_df.copy()
-    result_df['dispatch'] = [d.action for d in decisions]
-    result_df['power'] = [d.power_mw for d in decisions]
-    result_df['energy_mwh'] = [d.energy_mwh for d in decisions]
-    result_df['decision_price'] = [d.decision_price for d in decisions]
-    result_df['actual_price'] = [d.actual_price for d in decisions]
-    result_df['soc'] = soc_history
-    result_df['cumulative_revenue'] = revenue_history
-
-    return SimulationResult(
-        dispatch_df=result_df,
-        total_revenue=total_revenue,
-        charge_cost=charge_cost,
-        discharge_revenue=discharge_revenue,
-        charge_count=sum(1 for d in decisions if d.action == 'charge'),
-        discharge_count=sum(1 for d in decisions if d.action == 'discharge'),
-        hold_count=sum(1 for d in decisions if d.action == 'hold'),
-        soc_timestamps=soc_timestamps,
-        soc_values=soc_values,
-        metadata=strategy.get_metadata()
-    )
+@dataclass
+class SimulationState:
+    """Holds the state of the simulation."""
+    decisions: list = field(default_factory=list)
+    soc_history: list = field(default_factory=list)
+    revenue_history: list = field(default_factory=list)
+    soc_timestamps: list = field(default_factory=list)
+    soc_values: list = field(default_factory=list)
+    total_revenue: float = 0.0
+    charge_cost: float = 0.0
+    discharge_revenue: float = 0.0
 
 
 class BatterySimulator:
@@ -190,6 +89,155 @@ class BatterySimulator:
 
     def __init__(self, specs: BatterySpecs):
         self.specs = specs
+
+    @staticmethod
+    def _reconstruct_strategy(strategy_params: dict) -> DispatchStrategy:
+        """Reconstructs the strategy object from the strategy parameters."""
+        strategy_type = strategy_params.get('type', 'Threshold-Based')
+
+        if strategy_type == 'Threshold-Based':
+            return ThresholdStrategy(
+                charge_percentile=strategy_params.get('charge_percentile', 0.25),
+                discharge_percentile=strategy_params.get('discharge_percentile', 0.75)
+            )
+        if strategy_type == 'Rolling Window Optimization':
+            return RollingWindowStrategy(
+                window_hours=strategy_params.get('window_hours', 6)
+            )
+        if strategy_type == 'Linear Optimization (Perfect Foresight)':
+            return LinearOptimizationStrategy()
+        if strategy_type == 'MPC (Rolling Horizon)':
+            return MPCStrategy(
+                horizon_hours=strategy_params.get('horizon_hours', 24)
+            )
+        # Default fallback
+        return ThresholdStrategy(0.25, 0.75)
+
+    @staticmethod
+    def _initialize_simulation_state(price_df: pd.DataFrame, battery: Battery) -> SimulationState:
+        """Initializes the variables used in the simulation."""
+        state = SimulationState()
+        state.soc_timestamps = [price_df.iloc[0]['timestamp']]
+        state.soc_values = [battery.soc]
+        return state
+
+    @staticmethod
+    def _run_simulation_loop(
+        price_df: pd.DataFrame,
+        battery: Battery,
+        strategy: DispatchStrategy,
+        improvement_factor: float,
+        state: SimulationState
+    ) -> None:
+        """Runs the main simulation loop."""
+        for idx in range(len(price_df)):
+            state.soc_history.append(battery.soc)
+            state.revenue_history.append(state.total_revenue)
+
+            decision = strategy.decide(battery, idx, price_df, improvement_factor)
+            state.decisions.append(decision)
+
+            if decision.action == 'charge':
+                cost = decision.energy_mwh * decision.actual_price
+                state.total_revenue -= cost
+                state.charge_cost += cost
+            elif decision.action == 'discharge':
+                revenue = decision.energy_mwh * decision.actual_price
+                state.total_revenue += revenue
+                state.discharge_revenue += revenue
+
+            # Visualization updates
+            row = price_df.iloc[idx]
+            if decision.action != 'hold':
+                if abs(decision.energy_mwh) >= battery.specs.power_mw:
+                    duration_hours = 1.0
+                else:
+                    duration_hours = abs(decision.energy_mwh) / battery.specs.power_mw
+
+                state.soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=duration_hours))
+                state.soc_values.append(battery.soc)
+
+                if duration_hours < 1.0:
+                    state.soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                    state.soc_values.append(battery.soc)
+            else:
+                state.soc_timestamps.append(row['timestamp'] + pd.Timedelta(hours=1))
+                state.soc_values.append(battery.soc)
+
+    @staticmethod
+    def _create_result_df(
+        price_df: pd.DataFrame,
+        state: SimulationState
+    ) -> pd.DataFrame:
+        """Creates the final result dataframe."""
+        result_df = price_df.copy()
+        result_df['dispatch'] = [d.action for d in state.decisions]
+        result_df['power'] = [d.power_mw for d in state.decisions]
+        result_df['energy_mwh'] = [d.energy_mwh for d in state.decisions]
+        result_df['decision_price'] = [d.decision_price for d in state.decisions]
+        result_df['actual_price'] = [d.actual_price for d in state.decisions]
+        result_df['soc'] = state.soc_history
+        result_df['cumulative_revenue'] = state.revenue_history
+        return result_df
+
+    @staticmethod
+    @st.cache_data(show_spinner=False)
+    def run_simulation_cached(
+        price_df: pd.DataFrame,
+        battery_specs: dict,
+        strategy_params: dict,
+        improvement_factor: float = 0.0
+    ) -> SimulationResult:
+        """
+        Cached simulation runner.
+        Takes simple types (dicts) instead of objects to ensure hashability.
+        """
+        # Reconstruct objects
+        specs = BatterySpecs(**battery_specs)
+        strategy = BatterySimulator._reconstruct_strategy(strategy_params)
+
+        # Run simulation logic (extracted from original run method)
+        if price_df.empty:
+            return SimulationResult(
+                dispatch_df=pd.DataFrame(),
+                total_revenue=0.0,
+                charge_cost=0.0,
+                discharge_revenue=0.0,
+                charge_count=0,
+                discharge_count=0,
+                hold_count=0,
+                soc_timestamps=[],
+                soc_values=[],
+                metadata={}
+            )
+
+        battery = Battery(specs)
+        battery.reset()
+
+        state = BatterySimulator._initialize_simulation_state(price_df, battery)
+
+        BatterySimulator._run_simulation_loop(
+            price_df,
+            battery,
+            strategy,
+            improvement_factor,
+            state
+        )
+
+        result_df = BatterySimulator._create_result_df(price_df, state)
+
+        return SimulationResult(
+            dispatch_df=result_df,
+            total_revenue=state.total_revenue,
+            charge_cost=state.charge_cost,
+            discharge_revenue=state.discharge_revenue,
+            charge_count=sum(1 for d in state.decisions if d.action == 'charge'),
+            discharge_count=sum(1 for d in state.decisions if d.action == 'discharge'),
+            hold_count=sum(1 for d in state.decisions if d.action == 'hold'),
+            soc_timestamps=state.soc_timestamps,
+            soc_values=state.soc_values,
+            metadata=strategy.get_metadata()
+        )
 
     def run(
             self,
@@ -208,22 +256,22 @@ class BatterySimulator:
             'min_soc': self.specs.min_soc,
             'initial_soc': self.specs.initial_soc
         }
-        
+
         # Extract strategy params
         metadata = strategy.get_metadata()
         strategy_params = {'type': metadata.get('strategy', 'Unknown')}
-        
+
         if isinstance(strategy, ThresholdStrategy):
             strategy_params['charge_percentile'] = strategy.charge_percentile
             strategy_params['discharge_percentile'] = strategy.discharge_percentile
-        
+
         if isinstance(strategy, RollingWindowStrategy):
             strategy_params['window_hours'] = strategy.window_hours
 
         if isinstance(strategy, MPCStrategy):
             strategy_params['horizon_hours'] = strategy.horizon_hours
-            
-        return run_simulation_cached(
+
+        return self.run_simulation_cached(
             price_df,
             battery_specs_dict,
             strategy_params,

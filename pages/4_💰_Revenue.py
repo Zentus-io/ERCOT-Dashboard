@@ -6,16 +6,17 @@ This page provides cumulative revenue tracking over time
 with detailed breakdown of costs and revenues.
 """
 
+
+import plotly.graph_objects as go
 import streamlit as st
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
+from ui.components.charts import apply_standard_chart_styling
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config, get_date_range_str
-from core.battery.simulator import BatterySimulator
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy
-from pathlib import Path
-import plotly.graph_objects as go
+from ui.styles.custom_css import apply_custom_styles
+from utils.simulation_runner import run_or_get_cached_simulation
+from utils.state import get_date_range_str, get_state, has_valid_config
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -39,7 +40,8 @@ st.header("💰 Revenue Comparison")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -84,7 +86,6 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
-from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
     baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
@@ -106,7 +107,7 @@ fig_revenue.add_trace(go.Scatter(
     x=theoretical_max_result.dispatch_df['timestamp'],
     y=theoretical_max_result.dispatch_df['cumulative_revenue'],
     name='LP Benchmark (Theoretical Max)',
-    line=dict(color='#28A745', width=3),
+    line={"color": '#28A745', "width": 3},
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -115,7 +116,7 @@ fig_revenue.add_trace(go.Scatter(
     x=optimal_result.dispatch_df['timestamp'],
     y=optimal_result.dispatch_df['cumulative_revenue'],
     name='Strategy Max (100% Forecast)',
-    line=dict(color='#0A5F7A', width=2.5),
+    line={"color": '#0A5F7A', "width": 2.5},
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -123,7 +124,7 @@ fig_revenue.add_trace(go.Scatter(
     x=improved_result.dispatch_df['timestamp'],
     y=improved_result.dispatch_df['cumulative_revenue'],
     name=f'Improved Forecast (+{state.forecast_improvement}%)',
-    line=dict(color='#FFC107', width=2),
+    line={"color": '#FFC107', "width": 2},
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -131,7 +132,7 @@ fig_revenue.add_trace(go.Scatter(
     x=baseline_result.dispatch_df['timestamp'],
     y=baseline_result.dispatch_df['cumulative_revenue'],
     name='Baseline (Day-Ahead)',
-    line=dict(color='#DC3545', width=2, dash='dash'),
+    line={"color": '#DC3545', "width": 2, "dash": 'dash'},
     hovertemplate='$%{y:,.0f}<extra></extra>'
 ))
 
@@ -144,7 +145,6 @@ fig_revenue.update_layout(
     hovermode='x unified'
 )
 
-from ui.components.charts import apply_standard_chart_styling
 apply_standard_chart_styling(fig_revenue)
 
 st.plotly_chart(fig_revenue, width="stretch")
@@ -162,9 +162,13 @@ optimal_revenue = optimal_result.total_revenue
 theoretical_max_revenue = theoretical_max_result.total_revenue
 
 opportunity_vs_baseline = improved_revenue - baseline_revenue
-improvement_pct = (opportunity_vs_baseline / abs(baseline_revenue)) * 100 if baseline_revenue != 0 else 0
+improvement_pct = (opportunity_vs_baseline / abs(baseline_revenue)) * \
+    100 if baseline_revenue != 0 else 0
 max_opportunity = optimal_revenue - baseline_revenue
-strategy_capture_pct = (optimal_revenue / theoretical_max_revenue * 100) if theoretical_max_revenue > 0 else 0
+strategy_capture_pct = (
+    optimal_revenue /
+    theoretical_max_revenue *
+    100) if theoretical_max_revenue > 0 else 0
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -273,8 +277,10 @@ with col4:
     st.metric("Net Revenue", f"${theoretical_max_revenue:,.0f}")
 
     # Calculate average prices
-    theoretical_charge_df = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'charge']
-    theoretical_discharge_df = theoretical_max_result.dispatch_df[theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
+    theoretical_charge_df = theoretical_max_result.dispatch_df[
+        theoretical_max_result.dispatch_df['dispatch'] == 'charge']
+    theoretical_discharge_df = theoretical_max_result.dispatch_df[
+        theoretical_max_result.dispatch_df['dispatch'] == 'discharge']
 
     if len(theoretical_charge_df) > 0:
         avg_charge_price = theoretical_charge_df['actual_price'].mean()

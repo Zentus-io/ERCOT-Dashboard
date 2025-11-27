@@ -6,20 +6,16 @@ This page provides deep dive into the selected dispatch strategy,
 showing how it works and comparing decisions between scenarios.
 """
 
+
+import plotly.graph_objects as go
 import streamlit as st
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
+from ui.styles.custom_css import apply_custom_styles
+from utils.simulation_runner import run_or_get_cached_simulation
 from utils.state import get_state, has_valid_config
-from core.battery.simulator import BatterySimulator
-from core.battery.strategies import (
-    ThresholdStrategy,
-    RollingWindowStrategy
-)
-from pathlib import Path
-import plotly.graph_objects as go
-import pandas as pd
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -43,7 +39,8 @@ st.header("⚙️ Optimization Analysis")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -84,7 +81,6 @@ if state.battery_specs is None:
 # RUN SIMULATIONS
 # ============================================================================
 
-from utils.simulation_runner import run_or_get_cached_simulation
 
 with st.spinner('Running battery simulations...'):
     baseline_result, improved_result, optimal_result, theoretical_max_result = run_or_get_cached_simulation()
@@ -95,7 +91,8 @@ with st.spinner('Running battery simulations...'):
 
 # Strategy Selection (from Sidebar)
 strategy_name = state.strategy_type
-st.info(f"**Current Strategy:** {strategy_name} | **LP Benchmark** always shown as theoretical maximum")
+st.info(
+    f"**Current Strategy:** {strategy_name} | **LP Benchmark** always shown as theoretical maximum")
 
 if strategy_name == "Threshold-Based":
     st.markdown("Simple logic: Charge when price < Xth percentile, Discharge when price > Yth percentile.")
@@ -112,22 +109,22 @@ if state.strategy_type == "MPC (Rolling Horizon)":
     # MPC STRATEGY ANALYSIS
     st.markdown(f"### MPC Strategy (Horizon: {state.horizon_hours} hours)")
 
-    st.info(f"""
+    st.info("""
     **How it works:**
     - At each hour, solves a full Linear Programming optimization for the next {state.horizon_hours} hours.
     - Implements ONLY the first hour's decision.
     - Moves forward one hour and repeats (Rolling Horizon).
-    
+
     **Advantages:**
     - **Industry Standard:** The gold standard for battery dispatch.
     - **Optimal Planning:** Considers future constraints (e.g., "I need to be empty tomorrow morning to charge cheap solar").
     - **Robust:** Re-optimizes every hour, naturally correcting for forecast errors as new data arrives.
     """)
-    
+
     # Show example of MPC vs Rolling Window vs Perfect Foresight
     st.markdown("---")
     st.markdown("### MPC vs. Other Strategies")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**MPC vs. Rolling Window**")
@@ -135,10 +132,10 @@ if state.strategy_type == "MPC (Rolling Horizon)":
         - **Rolling Window** is "greedy" - it just looks for min/max prices.
         - **MPC** optimizes *volume* - it knows exactly how much to charge/discharge to hit SOC targets.
         """)
-        
+
     with col2:
         st.markdown("**MPC vs. Perfect Foresight**")
-        st.markdown(f"""
+        st.markdown("""
         - **Perfect Foresight** sees the *entire simulation period* at once.
         - **MPC** only sees the next {state.horizon_hours} hours.
         - MPC re-optimizes at each time step (every 15 min or 1 hour depending on data).
@@ -148,7 +145,7 @@ elif state.strategy_type == "Rolling Window Optimization":
     # ROLLING WINDOW STRATEGY ANALYSIS
     st.markdown(f"### Rolling Window Strategy (Lookahead: {state.window_hours} hours)")
 
-    st.info(f"""
+    st.info("""
     **How it works:**
     - At each hour, look ahead {state.window_hours} hours into the future
     - Charge if current price is the MINIMUM in the window (cheap now, might be expensive later)
@@ -187,79 +184,84 @@ elif state.strategy_type == "Rolling Window Optimization":
         # Find the index in the original node_data
         filtered = node_data[node_data['timestamp'] == example_timestamp]
         if filtered.empty:
-            st.warning(f"Could not find example timestamp {example_timestamp} in node_data. Skipping example.")
+            st.warning(
+                f"Could not find example timestamp {example_timestamp} in node_data. Skipping example.")
         else:
             example_idx = filtered.index[0]
             window_end = min(example_idx + state.window_hours, len(node_data))
 
-            st.markdown(f"**Example Hour: Improved forecast made DIFFERENT decision than baseline**")
+            st.markdown("**Example Hour: Improved forecast made DIFFERENT decision than baseline**")
             st.markdown(f"**Time:** {example_timestamp}")
 
-        col1, col2 = st.columns(2)
+            col1, col2 = st.columns(2)
 
-        with col1:
-            st.markdown("**Baseline Decision:**")
-            st.markdown(f"- Action: **{example['dispatch_baseline'].upper()}**")
-            st.markdown(f"- Price: ${example['actual_price_baseline']:.2f}/MWh")
+            with col1:
+                st.markdown("**Baseline Decision:**")
+                st.markdown(f"- Action: **{example['dispatch_baseline'].upper()}**")
+                st.markdown(f"- Price: ${example['actual_price_baseline']:.2f}/MWh")
 
-        with col2:
-            st.markdown("**Improved Decision:**")
-            st.markdown(f"- Action: **{example['dispatch_improved'].upper()}**")
-            st.markdown(f"- Price: ${example['actual_price_improved']:.2f}/MWh")
+            with col2:
+                st.markdown("**Improved Decision:**")
+                st.markdown(f"- Action: **{example['dispatch_improved'].upper()}**")
+                st.markdown(f"- Price: ${example['actual_price_improved']:.2f}/MWh")
 
-        # Show window prices
-        window_data = node_data.iloc[example_idx:window_end].copy()
-        fig_window = go.Figure()
+            # Show window prices
+            window_data = node_data.iloc[example_idx:window_end].copy()
+            fig_window = go.Figure()
 
-        fig_window.add_trace(go.Scatter(
-            x=window_data['timestamp'],
-            y=window_data['price_mwh_rt'],
-            mode='lines+markers',
-            name='RT Price',
-            line=dict(color='#0A5F7A')
-        ))
+            fig_window.add_trace(go.Scatter(
+                x=window_data['timestamp'],
+                y=window_data['price_mwh_rt'],
+                mode='lines+markers',
+                name='RT Price',
+                line={"color": '#0A5F7A'}
+            ))
 
-        # Add vertical line at decision point
-        fig_window.add_shape(
-            type="line",
-            x0=example_timestamp,
-            x1=example_timestamp,
-            y0=0,
-            y1=1,
-            yref="paper",
-            line=dict(color="red", width=2, dash="dash")
-        )
-        fig_window.add_annotation(
-            x=example_timestamp,
-            y=1,
-            yref="paper",
-            text="Decision Point",
-            showarrow=False,
-            yshift=10
-        )
+            # Add vertical line at decision point
+            fig_window.add_shape(
+                type="line",
+                x0=example_timestamp,
+                x1=example_timestamp,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line={"color": "red", "width": 2, "dash": "dash"}
+            )
+            fig_window.add_annotation(
+                x=example_timestamp,
+                y=1,
+                yref="paper",
+                text="Decision Point",
+                showarrow=False,
+                yshift=10
+            )
 
-        fig_window.update_layout(
-            title=f"{state.window_hours}-Hour Lookahead Window",
-            xaxis_title="Time",
-            yaxis_title="Price ($/MWh)",
-            height=300
-        )
+            fig_window.update_layout(
+                title=f"{state.window_hours}-Hour Lookahead Window",
+                xaxis_title="Time",
+                yaxis_title="Price ($/MWh)",
+                height=300
+            )
 
-        st.plotly_chart(fig_window, width="stretch")
+            st.plotly_chart(fig_window, width="stretch")
 
-        # Show all different decisions
-        st.markdown("---")
-        st.markdown("### All Decision Differences")
-        st.markdown(f"**Total hours where decisions differed:** {len(different_decisions)}")
+            # Show all different decisions
+            st.markdown("---")
+            st.markdown("### All Decision Differences")
+            st.markdown(f"**Total hours where decisions differed:** {len(different_decisions)}")
 
-        differences_summary = different_decisions[[
-            'timestamp',
-            'dispatch_baseline',
-            'dispatch_improved',
-            'actual_price_baseline'
-        ]].copy()
-        differences_summary.columns = ['Timestamp', 'Baseline Action', 'Improved Action', 'Price ($/MWh)']
-        st.dataframe(differences_summary, width="stretch")
+            differences_summary = different_decisions[[
+                'timestamp',
+                'dispatch_baseline',
+                'dispatch_improved',
+                'actual_price_baseline'
+            ]].copy()
+            differences_summary.columns = [
+                'Timestamp',
+                'Baseline Action',
+                'Improved Action',
+                'Price ($/MWh)']
+            st.dataframe(differences_summary, width="stretch")
 
     else:
         st.info("Baseline and improved strategies made identical decisions for all hours with current parameters.")
@@ -267,8 +269,8 @@ elif state.strategy_type == "Rolling Window Optimization":
 else:
     # THRESHOLD-BASED STRATEGY ANALYSIS
     st.markdown("### Threshold-Based Strategy")
-    st.markdown(f"**Charge threshold:** {int(state.charge_percentile*100)}th percentile")
-    st.markdown(f"**Discharge threshold:** {int(state.discharge_percentile*100)}th percentile")
+    st.markdown(f"**Charge threshold:** {int(state.charge_percentile * 100)}th percentile")
+    st.markdown(f"**Discharge threshold:** {int(state.discharge_percentile * 100)}th percentile")
 
     # Calculate thresholds
     decision_prices = node_data['price_mwh_da']
@@ -380,12 +382,16 @@ to evaluate how well your practical strategies perform.
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("#### LP Mathematical Formulation")
-    st.latex(r"\text{Maximize: } \sum_{t} \left( P_t^{discharge} - P_t^{charge} \right) \times price_t \times \Delta t")
+    st.latex(
+        r"\text{Maximize: } \sum_{t} \left( P_t^{discharge} - P_t^{charge} \right) \times price_t \times \Delta t")
     st.markdown("**Subject to:** SOC limits, power limits, energy balance with efficiency")
 
 with col2:
     st.markdown("#### LP Benchmark Results")
-    strategy_capture = (optimal_result.total_revenue / theoretical_max_result.total_revenue * 100) if theoretical_max_result.total_revenue > 0 else 0
+    strategy_capture = (
+        optimal_result.total_revenue /
+        theoretical_max_result.total_revenue *
+        100) if theoretical_max_result.total_revenue > 0 else 0
     gap = theoretical_max_result.total_revenue - optimal_result.total_revenue
     st.metric("LP Max Revenue", f"${theoretical_max_result.total_revenue:,.0f}")
     st.metric("Your Strategy Captures", f"{strategy_capture:.1f}%")
@@ -404,7 +410,10 @@ with col1:
     st.markdown("**Baseline (DA Only)**")
     st.metric("Revenue", f"${baseline_result.total_revenue:,.0f}")
     st.metric("Total Actions", baseline_result.charge_count + baseline_result.discharge_count)
-    efficiency_baseline = (baseline_result.total_revenue / baseline_result.discharge_revenue * 100) if baseline_result.discharge_revenue > 0 else 0
+    efficiency_baseline = (
+        baseline_result.total_revenue /
+        baseline_result.discharge_revenue *
+        100) if baseline_result.discharge_revenue > 0 else 0
     st.metric("Efficiency", f"{efficiency_baseline:.1f}%")
     st.caption("Revenue / Discharge Revenue")
 
@@ -412,7 +421,10 @@ with col2:
     st.markdown(f"**Improved (+{state.forecast_improvement}%)**")
     st.metric("Revenue", f"${improved_result.total_revenue:,.0f}")
     st.metric("Total Actions", improved_result.charge_count + improved_result.discharge_count)
-    efficiency_improved = (improved_result.total_revenue / improved_result.discharge_revenue * 100) if improved_result.discharge_revenue > 0 else 0
+    efficiency_improved = (
+        improved_result.total_revenue /
+        improved_result.discharge_revenue *
+        100) if improved_result.discharge_revenue > 0 else 0
     st.metric("Efficiency", f"{efficiency_improved:.1f}%")
     st.caption("Revenue / Discharge Revenue")
 
@@ -420,15 +432,24 @@ with col3:
     st.markdown("**Strategy Max (100%)**")
     st.metric("Revenue", f"${optimal_result.total_revenue:,.0f}")
     st.metric("Total Actions", optimal_result.charge_count + optimal_result.discharge_count)
-    efficiency_optimal = (optimal_result.total_revenue / optimal_result.discharge_revenue * 100) if optimal_result.discharge_revenue > 0 else 0
+    efficiency_optimal = (
+        optimal_result.total_revenue /
+        optimal_result.discharge_revenue *
+        100) if optimal_result.discharge_revenue > 0 else 0
     st.metric("Efficiency", f"{efficiency_optimal:.1f}%")
     st.caption("Revenue / Discharge Revenue")
 
 with col4:
     st.markdown("**LP Benchmark**")
     st.metric("Revenue", f"${theoretical_max_result.total_revenue:,.0f}")
-    st.metric("Total Actions", theoretical_max_result.charge_count + theoretical_max_result.discharge_count)
-    efficiency_lp = (theoretical_max_result.total_revenue / theoretical_max_result.discharge_revenue * 100) if theoretical_max_result.discharge_revenue > 0 else 0
+    st.metric(
+        "Total Actions",
+        theoretical_max_result.charge_count +
+        theoretical_max_result.discharge_count)
+    efficiency_lp = (
+        theoretical_max_result.total_revenue /
+        theoretical_max_result.discharge_revenue *
+        100) if theoretical_max_result.discharge_revenue > 0 else 0
     st.metric("Efficiency", f"{efficiency_lp:.1f}%")
     st.caption("Theoretical maximum")
 

@@ -8,16 +8,17 @@ Date: November 2025
 Run with: streamlit run Home.py
 """
 
+import pandas as pd
 import streamlit as st
+from streamlit_calendar import calendar
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
+from config.settings import DEFAULT_BATTERY
+from core.data.loaders import SupabaseDataLoader
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import init_state, get_state, get_date_range_str
-from core.data.loaders import SupabaseDataLoader
-from streamlit_calendar import calendar
-import pandas as pd
-from config.settings import BATTERY_PRESETS, DEFAULT_BATTERY
+from ui.styles.custom_css import apply_custom_styles
+from utils.state import get_date_range_str, get_state, init_state
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -66,22 +67,22 @@ with row1_col1:
                 def get_availability_events(node):
                     db_loader = SupabaseDataLoader()
                     availability_df = db_loader.get_node_availability(node)
-                    
+
                     events = []
                     if not availability_df.empty:
                         for _, row in availability_df.iterrows():
                             completeness = row['completeness']
                             event_date = row['date']
-                            
+
                             if completeness >= 95:
-                                color = "#28a745" # Green
+                                color = "#28a745"  # Green
                                 title = f"{completeness:.0f}%"
                             elif completeness > 0:
-                                color = "#ffc107" # Yellow
+                                color = "#ffc107"  # Yellow
                                 title = f"{completeness:.0f}%"
                             else:
-                                continue # Don't show empty days
-                                
+                                continue  # Don't show empty days
+
                             events.append({
                                 "title": title,
                                 "start": event_date.isoformat(),
@@ -93,7 +94,7 @@ with row1_col1:
                     return events
 
                 calendar_events = get_availability_events(state.selected_node)
-                
+
                 calendar_options = {
                     "headerToolbar": {
                         "left": "prev,next today",
@@ -101,19 +102,19 @@ with row1_col1:
                         "right": "dayGridMonth"
                     },
                     "initialView": "dayGridMonth",
-                    #"height": 400, # Reduced height for better fit
+                    # "height": 400, # Reduced height for better fit
                     "selectable": True,
                 }
-                
+
                 # Use a stable key to prevent re-mounting issues
                 calendar(
                     events=calendar_events,
                     options=calendar_options,
                     key="main_data_availability_calendar"
                 )
-                
+
                 st.caption("Green: Complete Data (>95%) | Yellow: Partial Data | Empty: No Data")
-                
+
             except Exception as e:
                 st.error(f"Could not load calendar: {str(e)}")
     else:
@@ -135,7 +136,8 @@ with row1_col2:
                 node_data_slice = state.price_data[state.price_data['node'] == state.selected_node]
             elif 'settlement_point' in state.price_data.columns:
                 # Fallback if data hasn't been renamed yet
-                node_data_slice = state.price_data[state.price_data['settlement_point'] == state.selected_node]
+                node_data_slice = state.price_data[state.price_data['settlement_point']
+                                                   == state.selected_node]
             else:
                 st.error("❌ Price data has unexpected column names")
                 node_data_slice = None
@@ -158,7 +160,8 @@ with row1_col2:
             st.metric("Number of Settlements", len(node_data))
 
             # Extreme events
-            extreme_count = int(node_data['extreme_event'].sum()) if 'extreme_event' in node_data.columns else 0
+            extreme_count = int(node_data['extreme_event'].sum()
+                                ) if 'extreme_event' in node_data.columns else 0
             st.metric("Extreme Events (>$10 spread)", extreme_count)
 
             # Data completeness (database mode only)
@@ -172,18 +175,19 @@ with row1_col2:
                 else:
                     # Default to 15 minutes if only one row (safe assumption for RTM)
                     freq_minutes = 15
-                
+
                 # Avoid division by zero
-                if freq_minutes <= 0: freq_minutes = 60
-                
+                if freq_minutes <= 0:
+                    freq_minutes = 60
+
                 # Calculate actual hours of data available
                 actual_hours = len(node_data) * (freq_minutes / 60)
-                
+
                 # Calculate expected hours based on selected date range
                 # (End Date - Start Date + 1) * 24 hours
                 days_selected = (state.end_date - state.start_date).days + 1
                 expected_hours = days_selected * 24
-                
+
                 completeness = (actual_hours / expected_hours) * 100
 
                 # Update metric to show actual hours (calculated)
@@ -213,15 +217,19 @@ with row2_col1:
     if state.eia_battery_data is not None:
         with st.expander("💡 ERCOT Battery Market Context", expanded=False):
             # Get current capacity/power from state or defaults
-            capacity = state.battery_specs.capacity_mwh if state.battery_specs else DEFAULT_BATTERY['capacity_mwh']
-            power = state.battery_specs.power_mw if state.battery_specs else DEFAULT_BATTERY['power_mw']
-            
-            percentile_energy = (state.eia_battery_data['Nameplate Energy Capacity (MWh)'] < capacity).mean() * 100
-            percentile_power = (state.eia_battery_data['Nameplate Capacity (MW)'] < power).mean() * 100
+            capacity = (state.battery_specs.capacity_mwh if state.battery_specs
+                        else DEFAULT_BATTERY['capacity_mwh'])
+            power = (state.battery_specs.power_mw if state.battery_specs
+                     else DEFAULT_BATTERY['power_mw'])
+
+            percentile_energy = (
+                state.eia_battery_data['Nameplate Energy Capacity (MWh)'] < capacity).mean() * 100
+            percentile_power = (
+                state.eia_battery_data['Nameplate Capacity (MW)'] < power).mean() * 100
 
             duration_hours = capacity / power if power > 0 else 0
 
-            st.markdown(f"""
+            st.markdown("""
             **Texas Battery Market (EIA-860 2024)**
 
             **Your System:**
@@ -239,11 +247,17 @@ with row2_col1:
             """)
 
             if percentile_energy < 50:
-                st.info("Your system is smaller than average - representative of typical merchant battery operators.")
+                st.info(
+                    "Your system is smaller than average - representative of typical "
+                    "merchant battery operators.")
             elif percentile_energy > 80:
-                st.success("Your system is in the top 20% by size - representative of large utility-scale projects.")
+                st.success(
+                    "Your system is in the top 20% by size - representative of large "
+                    "utility-scale projects.")
             else:
-                st.info("Your system is mid-sized - representative of the average Texas battery market.")
+                st.info(
+                    "Your system is mid-sized - representative of the average Texas "
+                    "battery market.")
     else:
         with st.expander("💡 ERCOT Battery Market Context", expanded=False):
             st.info("EIA-860 data not loaded.")
@@ -253,7 +267,7 @@ with row2_col2:
     with st.expander("📂 Data File Format Guide", expanded=False):
         st.markdown("""
         When uploading custom data files, please ensure they follow these formats:
-        
+
         **DAM Prices (Day-Ahead Market)**
         - **Format:** CSV or Parquet
         - **Required Columns:**
@@ -261,7 +275,7 @@ with row2_col2:
             - `DeliveryDate`: Date of delivery (YYYY-MM-DD)
             - `HourEnding`: Hour ending (1-24)
             - `SettlementPointPrice` (or `Price`, `LMP`): Price in $/MWh
-            
+
         **RTM Prices (Real-Time Market)**
         - **Format:** CSV or Parquet
         - **Required Columns:**
@@ -270,7 +284,7 @@ with row2_col2:
             - `DeliveryHour`: Hour of delivery (0-23 or 1-24)
             - `DeliveryInterval`: Interval (1-4 for 15-min markets)
             - `SettlementPointPrice` (or `Price`, `LMP`): Price in $/MWh
-            
+
         **Notes:**
         - Column names are case-insensitive and flexible (e.g., 'Price' works for 'SettlementPointPrice').
         - Timestamps will be automatically constructed from Date + Hour + Interval.

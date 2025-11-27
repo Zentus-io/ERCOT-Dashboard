@@ -103,7 +103,7 @@ The system automatically detects Supabase credentials and uses the database if c
 
 ## 🏗️ Project Structure
 
-```
+```text
 ERCOT-Dashboard/
 ├── Home.py                         # Streamlit entry point (Main Page)
 │
@@ -233,7 +233,7 @@ The dashboard will automatically use the database when credentials are configure
 
 ## 📈 Current Data
 
-### CSV Mode (Default)
+### Default CSV Data
 
 - **Date**: July 20, 2025 (24 hours)
 - **Nodes**: 5 wind farm settlement points
@@ -259,7 +259,7 @@ The dashboard will automatically use the database when credentials are configure
 
 ### Revenue Opportunity
 
-**Revenue Opportunity = Optimal Strategy Revenue - Baseline Strategy Revenue**
+`Revenue Opportunity = Optimal Strategy Revenue - Baseline Strategy Revenue`
 
 This metric quantifies the value of improved forecasting:
 
@@ -424,4 +424,4 @@ Potential additions:
 
 ---
 
-**Built with ❤️ by Zentus - Making renewable energy more predictable and profitable**
+Built with ❤️ by Zentus - Making renewable energy more predictable and profitable

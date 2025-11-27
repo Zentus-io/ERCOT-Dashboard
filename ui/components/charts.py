@@ -1,8 +1,9 @@
 """
 This module provides utilities for generating and styling Plotly charts.
 """
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.graph_objects as go
+
 
 def _get_all_x_data(fig_data):
     """Helper function to collect all x-data from figure traces."""
@@ -18,6 +19,7 @@ def _get_all_x_data(fig_data):
             except TypeError:
                 pass
     return all_x
+
 
 def apply_standard_chart_styling(fig: go.Figure):
     """
@@ -70,8 +72,8 @@ def apply_standard_chart_styling(fig: go.Figure):
                 "y0": 0,
                 "x1": current_date,
                 "y1": 1,
-                "xref": "x",
-                "yref": "paper",
+                "xre": "x",
+                "yre": "paper",
                 "line": {"color": "rgba(128, 128, 128, 0.5)", "width": 1, "dash": "dot"}
             })
             current_date += pd.Timedelta(days=1)

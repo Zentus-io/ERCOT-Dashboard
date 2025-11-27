@@ -103,13 +103,13 @@ class Battery:
         """Get current SOC as fraction of capacity."""
         return self.soc / self.specs.capacity_mwh
 
-    def can_charge(self, power_mw: float) -> bool:
+    def can_charge(self, _power_mw: float) -> bool:
         """
         Check if battery can accept charge.
 
         Parameters
         ----------
-        power_mw : float
+        _power_mw : float
             Requested charge power (MW)
 
         Returns
@@ -119,13 +119,13 @@ class Battery:
         """
         return self.soc < self.specs.capacity_mwh * self.specs.max_soc
 
-    def can_discharge(self, power_mw: float) -> bool:
+    def can_discharge(self, _power_mw: float) -> bool:
         """
         Check if battery can discharge.
 
         Parameters
         ----------
-        power_mw : float
+        _power_mw : float
             Requested discharge power (MW)
 
         Returns

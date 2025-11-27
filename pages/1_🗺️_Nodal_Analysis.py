@@ -1,13 +1,14 @@
-import streamlit as st
+from pathlib import Path
+from typing import Literal, Optional
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from typing import Literal, Optional
-from core.data.loaders import load_data, ParquetDataLoader, SupabaseDataLoader
+import streamlit as st
+
+from config.settings import DEFAULT_DATA_SOURCE
+from core.data.loaders import ParquetDataLoader, SupabaseDataLoader, load_data
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from config.settings import DEFAULT_DATA_SOURCE
-from pathlib import Path
 
 st.set_page_config(page_title="Nodal Analysis", page_icon="🗺️", layout="wide")
 
@@ -66,7 +67,7 @@ def analyze_single_node(source: Literal['database', 'local_parquet'], node: str)
             'Revenue Score': round(revenue_score, 2),
             'Data Points': len(df)
         }
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -101,7 +102,7 @@ def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[
     # Analyze each node
     total = len(nodes)
     for i, node in enumerate(nodes):
-        status_text.text(f"Analyzing node {i+1}/{total}: {node}")
+        status_text.text(f"Analyzing node {i + 1}/{total}: {node}")
 
         result = analyze_single_node(source, node)
         if result:
@@ -259,4 +260,5 @@ else:
         loader = SupabaseDataLoader()
         nodes = loader.get_available_nodes()
         if nodes:
-            st.success(f"✅ Ready to analyze **{min(50, len(nodes))}** nodes from database (max 50 for performance).")
+            st.success(
+                f"✅ Ready to analyze **{min(50, len(nodes))}** nodes from database (max 50 for performance).")

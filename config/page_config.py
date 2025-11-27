@@ -2,11 +2,12 @@
 Streamlit Page Configuration
 Zentus - ERCOT Battery Revenue Dashboard
 """
-
-import streamlit as st
 from pathlib import Path
 from typing import Optional
-from .settings import APP_TITLE, APP_ICON
+
+import streamlit as st
+
+from .settings import APP_ICON, APP_TITLE
 
 
 def configure_page(page_title: Optional[str] = None):

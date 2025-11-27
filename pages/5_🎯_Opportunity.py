@@ -6,21 +6,26 @@ This page provides sensitivity analysis showing revenue impact
 across different forecast improvement levels and strategy comparison.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+
 from config.page_config import configure_page
-from ui.styles.custom_css import apply_custom_styles
+from core.battery.battery import BatterySpecs
+from core.battery.simulator import BatterySimulator
+from core.battery.strategies import (
+    LinearOptimizationStrategy,
+    MPCStrategy,
+    RollingWindowStrategy,
+    ThresholdStrategy,
+)
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
-from utils.state import get_state, has_valid_config, get_date_range_str
-from core.battery.simulator import BatterySimulator
-from core.battery.battery import BatterySpecs
-from core.battery.strategies import ThresholdStrategy, RollingWindowStrategy, LinearOptimizationStrategy, MPCStrategy
-from pathlib import Path
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from ui.styles.custom_css import apply_custom_styles
+from utils.state import get_date_range_str, get_state, has_valid_config
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -44,7 +49,8 @@ st.header("🎯 Revenue Opportunity Analysis")
 
 # Check if configuration is valid
 if not has_valid_config():
-    st.warning("⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
+    st.warning(
+        "⚠️ Please configure battery specifications and select a settlement point in the sidebar to begin analysis.")
     st.stop()
 
 # Get state
@@ -93,6 +99,8 @@ The gap between your selected strategy and LP shows potential gains from strateg
 """)
 
 # Reduce points for performance (0, 10, 20... 100)
+
+
 def run_sensitivity_analysis(
     node_data: pd.DataFrame,
     battery_specs: BatterySpecs,
@@ -155,6 +163,7 @@ def run_sensitivity_analysis(
 
     return list(improvement_range), revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear
 
+
 def run_window_sensitivity_analysis(
     node_data: pd.DataFrame,
     battery_specs: BatterySpecs,
@@ -165,13 +174,13 @@ def run_window_sensitivity_analysis(
     """
     window_range = range(2, 49, 2)  # 2 to 48 hours
     revenue_window = []
-    
+
     simulator = BatterySimulator(battery_specs)
-    
+
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_steps = len(window_range)
-    
+
     for i, window in enumerate(window_range):
         status_text.text(f"Simulating window size: {window} hours...")
         strategy = RollingWindowStrategy(window_hours=window)
@@ -182,11 +191,12 @@ def run_window_sensitivity_analysis(
         )
         revenue_window.append(result.total_revenue)
         progress_bar.progress((i + 1) / total_steps)
-        
+
     status_text.empty()
     progress_bar.empty()
-        
+
     return list(window_range), revenue_window
+
 
 def run_horizon_sensitivity_analysis(
     node_data: pd.DataFrame,
@@ -198,13 +208,13 @@ def run_horizon_sensitivity_analysis(
     """
     horizon_range = range(2, 14, 2)  # 2, 4, 6... 24 hours
     revenue_horizon = []
-    
+
     simulator = BatterySimulator(battery_specs)
-    
+
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_steps = len(horizon_range)
-    
+
     for i, horizon in enumerate(horizon_range):
         status_text.text(f"Simulating MPC horizon: {horizon} hours...")
         strategy = MPCStrategy(horizon_hours=horizon)
@@ -215,20 +225,16 @@ def run_horizon_sensitivity_analysis(
         )
         revenue_horizon.append(result.total_revenue)
         progress_bar.progress((i + 1) / total_steps)
-        
+
     status_text.empty()
     progress_bar.empty()
-        
+
     return list(horizon_range), revenue_horizon
+
 
 # Run forecast sensitivity analysis
 improvement_range, revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear = run_sensitivity_analysis(
-    node_data,
-    state.battery_specs,
-    state.charge_percentile,
-    state.discharge_percentile,
-    state.window_hours
-)
+    node_data, state.battery_specs, state.charge_percentile, state.discharge_percentile, state.window_hours)
 
 # Create comparison chart
 fig_sensitivity = go.Figure()
@@ -237,7 +243,7 @@ fig_sensitivity.add_trace(go.Scatter(
     x=list(improvement_range),
     y=revenue_threshold,
     name='Threshold-Based',
-    line=dict(color='#6B7280', width=2),
+    line={"color": '#6B7280', "width": 2},
     mode='lines+markers',
     hovertemplate='Threshold<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
@@ -246,7 +252,7 @@ fig_sensitivity.add_trace(go.Scatter(
     x=list(improvement_range),
     y=revenue_rolling_window,
     name='Rolling Window',
-    line=dict(color='#0A5F7A', width=3),
+    line={"color": '#0A5F7A', "width": 3},
     mode='lines+markers',
     hovertemplate='Rolling Window<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
@@ -255,7 +261,7 @@ fig_sensitivity.add_trace(go.Scatter(
     x=list(improvement_range),
     y=revenue_mpc,
     name='MPC (24h Horizon)',
-    line=dict(color='#8B5CF6', width=3),
+    line={"color": '#8B5CF6', "width": 3},
     mode='lines+markers',
     hovertemplate='MPC<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
@@ -265,7 +271,7 @@ fig_sensitivity.add_trace(go.Scatter(
     x=list(improvement_range),
     y=revenue_linear,
     name='LP Benchmark (Theoretical Max)',
-    line=dict(color='#28a745', width=3),
+    line={"color": '#28a745', "width": 3},
     mode='lines+markers',
     hovertemplate='LP Benchmark<br>Improvement: %{x}%<br>Revenue: $%{y:,.0f}<extra></extra>'
 ))
@@ -276,9 +282,9 @@ fig_sensitivity.update_layout(
     yaxis_title="Revenue ($)",
     height=500,
     hovermode='x unified',
-    legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-    yaxis=dict(fixedrange=False), # Allow Y-axis zooming
-    xaxis=dict(fixedrange=False)
+    legend={"yanchor": "top", "y": 0.99, "xanchor": "left", "x": 0.01},
+    yaxis={"fixedrange": False},  # Allow Y-axis zooming
+    xaxis={"fixedrange": False}
 )
 
 st.plotly_chart(fig_sensitivity, width="stretch")
@@ -287,48 +293,49 @@ st.plotly_chart(fig_sensitivity, width="stretch")
 if state.strategy_type == "Rolling Window Optimization":
     st.markdown("---")
     st.subheader(f"Window Size Sensitivity (at {state.forecast_improvement}% Improvement)")
-    
+
     window_range, revenue_window_sens = run_window_sensitivity_analysis(
         node_data,
         state.battery_specs,
         state.forecast_improvement / 100.0
     )
-        
+
     fig_window = go.Figure()
-    
+
     fig_window.add_trace(go.Scatter(
         x=window_range,
         y=revenue_window_sens,
         name='Revenue',
-        line=dict(color='#0A5F7A', width=3),
+        line={"color": '#0A5F7A', "width": 3},
         mode='lines+markers',
         hovertemplate='Window: %{x}h<br>Revenue: $%{y:,.0f}<extra></extra>'
     ))
-    
+
     # Add marker for current selection
-    current_rev = revenue_window_sens[window_range.index(state.window_hours)] if state.window_hours in window_range else 0
+    current_rev = revenue_window_sens[window_range.index(
+        state.window_hours)] if state.window_hours in window_range else 0
     if state.window_hours in window_range:
         fig_window.add_trace(go.Scatter(
             x=[state.window_hours],
             y=[current_rev],
             mode='markers',
-            marker=dict(color='red', size=12, symbol='star'),
+            marker={"color": 'red', "size": 12, "symbol": 'star'},
             name='Current Selection',
             hoverinfo='skip'
         ))
-    
+
     fig_window.update_layout(
         title="Revenue vs. Lookahead Window Size",
         xaxis_title="Lookahead Window (Hours)",
         yaxis_title="Revenue ($)",
         height=400,
         hovermode='x unified',
-        yaxis=dict(fixedrange=False),
-        xaxis=dict(fixedrange=False)
+        yaxis={"fixedrange": False},
+        xaxis={"fixedrange": False}
     )
-    
+
     st.plotly_chart(fig_window, width="stretch")
-    
+
     # Find optimal window
     best_window = window_range[revenue_window_sens.index(max(revenue_window_sens))]
     st.info(f"💡 Optimal lookahead window for this scenario appears to be **{best_window} hours**.")
@@ -337,48 +344,49 @@ if state.strategy_type == "Rolling Window Optimization":
 elif state.strategy_type == "MPC (Rolling Horizon)":
     st.markdown("---")
     st.subheader(f"Optimization Horizon Sensitivity (at {state.forecast_improvement}% Improvement)")
-    
+
     horizon_range, revenue_horizon_sens = run_horizon_sensitivity_analysis(
         node_data,
         state.battery_specs,
         state.forecast_improvement / 100.0
     )
-        
+
     fig_horizon = go.Figure()
-    
+
     fig_horizon.add_trace(go.Scatter(
         x=horizon_range,
         y=revenue_horizon_sens,
         name='Revenue',
-        line=dict(color='#8B5CF6', width=3),
+        line={"color": '#8B5CF6', "width": 3},
         mode='lines+markers',
         hovertemplate='Horizon: %{x}h<br>Revenue: $%{y:,.0f}<extra></extra>'
     ))
-    
+
     # Add marker for current selection
-    current_rev = revenue_horizon_sens[horizon_range.index(state.horizon_hours)] if state.horizon_hours in horizon_range else 0
+    current_rev = revenue_horizon_sens[horizon_range.index(
+        state.horizon_hours)] if state.horizon_hours in horizon_range else 0
     if state.horizon_hours in horizon_range:
         fig_horizon.add_trace(go.Scatter(
             x=[state.horizon_hours],
             y=[current_rev],
             mode='markers',
-            marker=dict(color='red', size=12, symbol='star'),
+            marker={"color": 'red', "size": 12, "symbol": 'star'},
             name='Current Selection',
             hoverinfo='skip'
         ))
-    
+
     fig_horizon.update_layout(
         title="Revenue vs. Optimization Horizon",
         xaxis_title="Optimization Horizon (Hours)",
         yaxis_title="Revenue ($)",
         height=400,
         hovermode='x unified',
-        yaxis=dict(fixedrange=False),
-        xaxis=dict(fixedrange=False)
+        yaxis={"fixedrange": False},
+        xaxis={"fixedrange": False}
     )
-    
+
     st.plotly_chart(fig_horizon, width="stretch")
-    
+
     # Find optimal horizon
     best_horizon = horizon_range[revenue_horizon_sens.index(max(revenue_horizon_sens))]
     st.info(f"💡 Optimal horizon for this scenario appears to be **{best_horizon} hours**.")
@@ -388,64 +396,71 @@ elif state.strategy_type == "MPC (Rolling Horizon)":
 # ============================================================================
 
 st.markdown("### Strategy Comparison Insights")
-    
+
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.markdown("**Threshold-Based Strategy:**")
     # Check if monotonic
-    threshold_diffs = [revenue_threshold[i+1] - revenue_threshold[i] for i in range(len(revenue_threshold)-1)]
+    threshold_diffs = [revenue_threshold[i + 1] - revenue_threshold[i]
+                       for i in range(len(revenue_threshold) - 1)]
     negative_changes = sum(1 for d in threshold_diffs if d < 0)
 
     if negative_changes > 0:
-        st.warning(f"⚠️ Non-monotonic: {negative_changes} instances where improvement REDUCED revenue")
+        st.warning(
+            f"⚠️ Non-monotonic: {negative_changes} instances where improvement REDUCED revenue")
     else:
         st.success("✓ Monotonic improvement")
 
     st.metric("Revenue Range",
-             f"${min(revenue_threshold):,.0f} to ${max(revenue_threshold):,.0f}")
+              f"${min(revenue_threshold):,.0f} to ${max(revenue_threshold):,.0f}")
 
 with col2:
     st.markdown("**Rolling Window Strategy:**")
     # Check if monotonic
-    window_diffs = [revenue_rolling_window[i+1] - revenue_rolling_window[i] for i in range(len(revenue_rolling_window)-1)]
+    window_diffs = [revenue_rolling_window[i + 1] - revenue_rolling_window[i]
+                    for i in range(len(revenue_rolling_window) - 1)]
     negative_changes_window = sum(1 for d in window_diffs if d < 0)
 
     if negative_changes_window > 0:
-        st.warning(f"⚠️ Non-monotonic: {negative_changes_window} instances where improvement REDUCED revenue")
+        st.warning(
+            f"⚠️ Non-monotonic: {negative_changes_window} instances where improvement REDUCED revenue")
     else:
         st.success("✓ Monotonic improvement")
 
     st.metric("Revenue Range",
-             f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
+              f"${min(revenue_rolling_window):,.0f} to ${max(revenue_rolling_window):,.0f}")
 
 with col3:
     st.markdown("**MPC Strategy (24h):**")
     # Check if monotonic
-    mpc_diffs = [revenue_mpc[i+1] - revenue_mpc[i] for i in range(len(revenue_mpc)-1)]
+    mpc_diffs = [revenue_mpc[i + 1] - revenue_mpc[i] for i in range(len(revenue_mpc) - 1)]
     negative_changes_mpc = sum(1 for d in mpc_diffs if d < 0)
 
     if negative_changes_mpc > 0:
-        st.warning(f"⚠️ Non-monotonic: {negative_changes_mpc} instances where improvement REDUCED revenue")
+        st.warning(
+            f"⚠️ Non-monotonic: {negative_changes_mpc} instances where improvement REDUCED revenue")
     else:
         st.success("✓ Monotonic improvement")
 
     st.metric("Revenue Range",
-             f"${min(revenue_mpc):,.0f} to ${max(revenue_mpc):,.0f}")
+              f"${min(revenue_mpc):,.0f} to ${max(revenue_mpc):,.0f}")
 
 with col4:
     st.markdown("**LP Benchmark (Theoretical):**")
     # Check if monotonic
-    linear_diffs = [revenue_linear[i+1] - revenue_linear[i] for i in range(len(revenue_linear)-1)]
+    linear_diffs = [revenue_linear[i + 1] - revenue_linear[i]
+                    for i in range(len(revenue_linear) - 1)]
     negative_changes_linear = sum(1 for d in linear_diffs if d < 0)
 
     if negative_changes_linear > 0:
-        st.warning(f"⚠️ Non-monotonic: {negative_changes_linear} instances where improvement REDUCED revenue")
+        st.warning(
+            f"⚠️ Non-monotonic: {negative_changes_linear} instances where improvement REDUCED revenue")
     else:
         st.success("✓ Monotonic improvement")
 
     st.metric("Revenue Range",
-             f"${min(revenue_linear):,.0f} to ${max(revenue_linear):,.0f}")
+              f"${min(revenue_linear):,.0f} to ${max(revenue_linear):,.0f}")
     st.caption("Upper bound for any strategy")
 
 # ============================================================================
@@ -459,7 +474,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("#### Price Events")
-    st.markdown(f"""
+    st.markdown("""
     **Negative Price Events:**
     - {(node_data['price_mwh_rt'] < 0).sum()} hours with negative RT prices
     - Lowest: ${node_data['price_mwh_rt'].min():.2f}/MWh
@@ -472,7 +487,7 @@ with col1:
 
     # Forecast Performance:
     - Mean Absolute Error: ${node_data['forecast_error'].abs().mean():.2f}/MWh
-    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[int(state.forecast_improvement//10)] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
+    - {state.forecast_improvement}% improvement = ${(revenue_rolling_window[int(state.forecast_improvement // 10)] - revenue_rolling_window[0]):,.0f} gain (Rolling Window)
     """)
 
 with col2:
@@ -499,7 +514,7 @@ with col2:
         y=[min_price, max_price],
         mode='lines',
         name='Perfect Forecast',
-        line=dict(color='gray', dash='dash'),
+        line={"color": 'gray', "dash": 'dash'},
         showlegend=True
     ))
 

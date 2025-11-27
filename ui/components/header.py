@@ -3,10 +3,12 @@ Header Component
 Zentus - ERCOT Battery Revenue Dashboard
 """
 
-import streamlit as st
 from pathlib import Path
-from config.settings import DATA_NOTE
+
+import streamlit as st
+
 from ui.components.navigation import render_top_nav
+from utils.state import get_state
 
 
 def render_header():
@@ -46,30 +48,29 @@ def render_header():
             """, unsafe_allow_html=True)
 
     # Data availability notice
-    from utils.state import get_state
     state = get_state()
-
-    eia_note = ""
-    if state.eia_battery_data is not None:
-        eia_note = " Battery presets based on EIA-860 data."
 
     # Dynamic data note based on source
     if state.data_source == 'database':
-        date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
+        date_range = f"{
+            state.start_date.strftime('%b %d, %Y')} - {
+            state.end_date.strftime('%b %d, %Y')}"
         note_content = f"<strong>Historical Analysis:</strong> Analyzing Engie assets in ERCOT market for {date_range}."
     elif state.data_source == 'local_parquet':
-        date_range = f"{state.start_date.strftime('%b %d, %Y')} - {state.end_date.strftime('%b %d, %Y')}"
+        date_range = f"{
+            state.start_date.strftime('%b %d, %Y')} - {
+            state.end_date.strftime('%b %d, %Y')}"
         note_content = f"<strong>Local Data:</strong> Analyzing ERCOT data from uploaded parquet files for {date_range}."
     else:
         note_content = "<strong>Select Data Source:</strong> Please choose a data source from the sidebar."
 
     st.markdown(f"""
     <div class='data-note'>
-        {note_content}{eia_note}
+        {note_content}
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    
+
     # Render top navigation
     render_top_nav()

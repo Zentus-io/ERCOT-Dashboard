@@ -11,11 +11,13 @@ Verifies that:
 
 import os
 import sys
-from pathlib import Path
-from dotenv import load_dotenv
-from supabase import create_client, Client
 from datetime import datetime
-from typing import List, Any
+from pathlib import Path
+from typing import Any, List
+
+from dotenv import load_dotenv
+from postgrest.exceptions import APIError
+from supabase import Client, create_client
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -29,8 +31,8 @@ def test_connection(supabase: Client) -> bool:
         supabase.table("ercot_prices").select("settlement_point").limit(1).execute()
         print("   ✅ Connection successful")
         return True
-    except Exception as e:
-        print(f"   ❌ Connection failed. Check your SUPABASE_URL and SUPABASE_KEY.")
+    except APIError as e:
+        print("   ❌ Connection failed. Check your SUPABASE_URL and SUPABASE_KEY.")
         print(f"      Error: {str(e)[:100]}...")
         return False
 
@@ -44,7 +46,7 @@ def test_tables_exist(supabase: Client) -> bool:
         try:
             supabase.table(table).select("*", count="exact").limit(0).execute()
             print(f"   ✅ Table '{table}' exists.")
-        except Exception as e:
+        except APIError as e:
             print(f"   ❌ Table '{table}' not found. Did you run the schema setup SQL?")
             print(f"      Error: {str(e)[:100]}...")
             all_exist = False
@@ -55,16 +57,16 @@ def test_data_exists(supabase: Client) -> bool:
     """Check if data has been loaded into the main table."""
     print("3. Checking for data in 'ercot_prices' table...")
     try:
-        response = supabase.table("ercot_prices").select("settlement_point", count="exact").execute()
+        response = supabase.table("ercot_prices").select(
+            "settlement_point", count="exact").execute()
         count = response.count or 0
         if count > 0:
             print(f"   ✅ Found {count:,} records in ercot_prices.")
             return True
-        else:
-            print("   ⚠️  No data found in 'ercot_prices' table.")
-            print("      Run 'scripts/migrate_existing_data.py' or 'scripts/fetch_ercot_data.py'.")
-            return False
-    except Exception as e:
+        print("   ⚠️  No data found in 'ercot_prices' table.")
+        print("      Run 'scripts/migrate_existing_data.py' or 'scripts/fetch_ercot_data.py'.")
+        return False
+    except APIError as e:
         print(f"   ❌ Query failed: {str(e)[:100]}...")
         return False
 
@@ -73,11 +75,12 @@ def test_query_performance(supabase: Client) -> bool:
     """Test a sample query similar to dashboard usage."""
     print("4. Testing a sample filtered query...")
     try:
-        location_response = supabase.table("ercot_prices").select("settlement_point").limit(1).execute()
+        location_response = supabase.table("ercot_prices").select(
+            "settlement_point").limit(1).execute()
         if not location_response.data:
             print("   ⚠️  No data available to perform a query test.")
             return True
-        
+
         sample_location = str(location_response.data[0].get('settlement_point', ''))
         if not sample_location:
             print("   ⚠️  Could not retrieve a sample settlement_point.")
@@ -96,9 +99,10 @@ def test_query_performance(supabase: Client) -> bool:
         query_time = (end_time - start_time).total_seconds()
 
         print(f"   ✅ Query executed in {query_time:.3f} seconds.")
-        print(f"   ✅ Retrieved {len(response.data)} records for settlement_point '{sample_location}'.")
+        print(
+            f"   ✅ Retrieved {len(response.data)} records for settlement_point '{sample_location}'.")
         return True
-    except Exception as e:
+    except APIError as e:
         print(f"   ❌ Query test failed: {str(e)[:100]}...")
         return False
 
@@ -106,9 +110,9 @@ def test_query_performance(supabase: Client) -> bool:
 def main():
     """Main test execution."""
     load_dotenv()
-    print("="*80)
+    print("=" * 80)
     print("Zentus - Supabase Database Connection Test (Optimized Schema V2)")
-    print("="*80)
+    print("=" * 80)
 
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
@@ -118,18 +122,18 @@ def main():
         return 1
 
     print(f"\nSupabase URL: {supabase_url}")
-    
+
     try:
         print("\n🔌 Initializing Supabase client...")
         supabase: Client = create_client(supabase_url, supabase_key)
         print("✅ Client initialized.")
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         print(f"❌ Client initialization failed: {e}")
         return 1
 
     print("\n🚀 Running tests...")
     print("-" * 80)
-    
+
     tests: List[Any] = [
         test_connection,
         test_tables_exist,
@@ -143,13 +147,13 @@ def main():
             result = test_func(supabase)
             results.append(result)
             print()
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"   ❌ Test error: {e}")
             print()
             results.append(False)
 
     # Summary
-    print("="*80)
+    print("=" * 80)
     passed = sum(results)
     total = len(results)
 
@@ -160,7 +164,7 @@ def main():
         print(f"⚠️  Some tests failed ({passed}/{total} passed)")
         print("\nPlease review the errors above and check your setup.")
 
-    print("="*80)
+    print("=" * 80)
 
     return 0 if passed == total else 1
 
