@@ -152,11 +152,15 @@ class HybridDispatchStrategy(DispatchStrategy):
             Strategy parameters including clipped energy capture metrics
         """
         base_metadata = self.base_strategy.get_metadata()
-        return {
+
+        # Merge base metadata first, then override with hybrid-specific fields
+        result = {**base_metadata}  # Start with base strategy metadata
+        result.update({
             'strategy': f"Hybrid ({base_metadata.get('strategy', 'Unknown')})",
             'base_strategy': base_metadata.get('strategy'),
             'clipped_priority': self.clipped_priority,
             'clipped_energy_captured': self._clipped_energy_captured,
             'grid_arbitrage_revenue': self._grid_arbitrage_revenue,
-            **base_metadata  # Include all base strategy metadata
-        }
+        })
+
+        return result
