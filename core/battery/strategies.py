@@ -553,3 +553,129 @@ class MPCStrategy(DispatchStrategy):
             'strategy': 'MPC (Rolling Horizon)',
             'horizon_hours': self.horizon_hours
         }
+
+
+class ClippingOnlyStrategy(DispatchStrategy):
+    """
+    Strategy for clipping-only optimization.
+
+    Charging: FORCED when clipping occurs (mandatory, free energy)
+    Discharging: Uses base strategy (MPC/Rolling/Threshold) to optimize timing
+    No grid arbitrage: Never charge from grid
+
+    This strategy is designed for hybrid solar+storage systems where the battery
+    is sized specifically to capture clipped solar energy. The battery:
+    - Must charge when clipping is available (cannot skip it)
+    - Uses sophisticated dispatch strategies (MPC, Rolling, etc.) for discharge
+    - Never charges from the grid (no arbitrage)
+    - Tracks curtailed clipping (when battery is full)
+
+    Parameters
+    ----------
+    base_strategy : DispatchStrategy
+        The underlying strategy (MPC, Rolling Window, Threshold) used for
+        discharge optimization
+    """
+
+    def __init__(self, base_strategy: DispatchStrategy):
+        self.base_strategy = base_strategy
+        self._clipped_energy_captured = 0.0  # MWh captured from clipping
+        self._curtailed_clipping = 0.0  # MWh of clipping wasted (battery full)
+
+    def decide(
+        self,
+        battery: 'Battery',
+        current_idx: int,
+        price_df: pd.DataFrame,
+        improvement_factor: float
+    ) -> DispatchDecision:
+        """
+        Make dispatch decision prioritizing clipping capture.
+
+        Decision logic:
+        1. If clipping available AND battery can charge: FORCED CHARGE (mandatory)
+        2. If clipping available BUT battery full: Track curtailment, check discharge
+        3. If no clipping: Use base strategy for discharge ONLY (block charge)
+
+        Parameters
+        ----------
+        battery : Battery
+            Current battery state
+        current_idx : int
+            Current timestep index
+        price_df : pd.DataFrame
+            Price data with clipped_mw column
+        improvement_factor : float
+            Forecast improvement factor (0 to 1)
+
+        Returns
+        -------
+        DispatchDecision
+            Action to take this timestep
+        """
+        # Get time step and current data
+        dt = calculate_dt(price_df)
+        row = price_df.iloc[current_idx]
+        clipped_mw = row.get('clipped_mw', 0.0)
+        actual_price = row['price_mwh_rt']
+
+        # PRIORITY 1: FORCED CHARGING from clipping (mandatory when available)
+        if clipped_mw > 0.01:  # Meaningful clipping (> 10 kW)
+            if battery.can_charge():
+                # Charge up to min(clipping available, battery power limit)
+                charge_mw = min(clipped_mw, battery.specs.power_mw)
+                energy = battery.charge(charge_mw, dt)
+                self._clipped_energy_captured += energy
+
+                # FREE energy: decision_price = 0.0 (no cost)
+                return DispatchDecision(
+                    action='charge',
+                    power_mw=-energy / dt if dt > 0 else 0,  # Negative = charging
+                    energy_mwh=energy,
+                    decision_price=0.0,  # FREE!
+                    actual_price=0.0
+                )
+            else:
+                # Battery is full - cannot capture this clipping
+                # Track as curtailed (lost opportunity)
+                self._curtailed_clipping += clipped_mw * dt
+                # Fall through to check if we should discharge
+
+        # PRIORITY 2: Use base strategy for DISCHARGE optimization only
+        # (Block any charge decisions from base strategy - no grid charging!)
+        base_decision = self.base_strategy.decide(
+            battery, current_idx, price_df, improvement_factor
+        )
+
+        # BLOCK GRID CHARGING: Only clipping charging allowed
+        if base_decision.action == 'charge':
+            # Reject grid-based charging decision
+            # Return hold instead
+            return DispatchDecision(
+                action='hold',
+                power_mw=0,
+                energy_mwh=0,
+                decision_price=base_decision.decision_price,
+                actual_price=base_decision.actual_price
+            )
+
+        # Allow discharge and hold decisions from base strategy
+        return base_decision
+
+    def get_metadata(self) -> dict:
+        """
+        Return strategy metadata including clipping statistics.
+
+        Returns
+        -------
+        dict
+            Metadata with strategy name, base strategy info, and clipping stats
+        """
+        base_meta = self.base_strategy.get_metadata()
+        return {
+            **base_meta,  # Include base strategy metadata
+            'strategy': f'Clipping-Only ({base_meta.get("strategy", "Unknown")})',
+            'clipped_energy_captured': self._clipped_energy_captured,
+            'curtailed_clipping': self._curtailed_clipping,
+            'grid_arbitrage_revenue': 0.0,  # Always 0 for clipping-only
+        }

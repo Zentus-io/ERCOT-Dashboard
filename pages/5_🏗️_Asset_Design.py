@@ -20,6 +20,7 @@ from config.page_config import configure_page
 from core.battery.battery import BatterySpecs
 from core.battery.simulator import BatterySimulator
 from core.battery.strategies import (
+    ClippingOnlyStrategy,
     LinearOptimizationStrategy,
     MPCStrategy,
     RollingWindowStrategy,
@@ -32,6 +33,12 @@ from ui.components.sidebar import render_sidebar
 from ui.styles.custom_css import apply_custom_styles
 from utils.simulation_runner import run_or_get_cached_simulation
 from utils.state import get_date_range_str, get_state, has_valid_config
+from utils.data_validation import (
+    validate_solar_price_alignment,
+    validate_clipped_energy,
+    validate_hybrid_configuration,
+    display_validation_warnings
+)
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -105,6 +112,17 @@ with tab1:
         st.markdown("""
         **Goal:** Design a hybrid Solar + Storage asset and optimize the battery size to capture "clipped" energy (energy lost when solar generation exceeds the grid interconnection limit).
 
+        ### What This Tool Does
+        - **Optimization Focus:** Battery sizing for clipping capture ONLY
+        - **No Grid Arbitrage:** Battery only charges from clipped solar energy (free)
+        - **Discharge Optimization:** Uses your selected strategy (MPC, Rolling Window, Threshold) to optimize when to sell stored clipped energy
+        - **Revenue Source:** Value of clipped energy sold at optimal times
+
+        ### How It Works
+        1. **Forced Charging:** Battery automatically charges when clipping occurs (up to battery power limit)
+        2. **Smart Discharging:** Selected strategy optimizes discharge timing to maximize revenue
+        3. **Curtailment Tracking:** Shows clipping that couldn't be captured (when battery is full)
+
         ### 1. Configure Your Asset (Left Panel)
         *   **Solar Capacity (MW):** The total DC capacity of your solar array.
         *   **Interconnection Limit (MW):** The maximum power you are allowed to export to the grid (POI limit).
@@ -117,7 +135,7 @@ with tab1:
 
         ### 3. Analyze Performance
         *   **Current Asset:** Shows revenue for your currently selected battery (from the Sidebar).
-        *   **Optimal Asset:** The system simulates battery sizes from 0 to 1.5x Solar Capacity to find the size that maximizes total revenue (Base Solar + Battery Arbitrage of Clipped Energy).
+        *   **Optimal Asset:** The system tests different battery sizes to find the configuration that captures the most clipped energy value.
         """)
     
     # --- CONFIGURATION SECTION ---
@@ -268,13 +286,18 @@ with tab1:
             return result_df, "Synthetic (Bell Curve)"
 
         solar_profile, source_type = get_smart_solar_profile(df_prices, uploaded_file, state.selected_node)
-        
+
         if "Database" in source_type:
              st.success(f"✅ Using {source_type}")
         elif "Synthetic" in source_type:
              st.caption(f"Using {source_type}. Upload CSV or use Database mode for real data.")
         else:
              st.info(f"Using {source_type}")
+
+        # Validate solar/price data alignment
+        is_valid_alignment, alignment_warnings = validate_solar_price_alignment(solar_profile, df_prices)
+        if alignment_warnings:
+            display_validation_warnings(alignment_warnings, title="Solar/Price Data Alignment")
 
     with col_right:
         # --- SIMULATION ENGINE ---
@@ -287,89 +310,29 @@ with tab1:
         df_sim['Export_MW'] = np.minimum(df_sim['Solar_MW'], interconnection_limit_mw)
         df_sim['Clipped_MW'] = np.maximum(0, df_sim['Solar_MW'] - interconnection_limit_mw)
 
+        # Validate clipping calculations
+        is_valid_clipping, clipping_warnings = validate_clipped_energy(
+            df_sim['Clipped_MW'],
+            df_sim['Solar_MW'],
+            interconnection_limit_mw
+        )
+        if clipping_warnings:
+            display_validation_warnings(clipping_warnings, title="Clipping Calculation")
+
+        # Validate hybrid configuration
+        current_capacity = state.battery_specs.capacity_mwh
+        is_valid_config, config_warnings = validate_hybrid_configuration(
+            solar_capacity_mw,
+            interconnection_limit_mw,
+            current_power,
+            current_capacity
+        )
+        if config_warnings:
+            display_validation_warnings(config_warnings, title="Hybrid Configuration")
+
         # ============================================================================
-        # STAGE 1: HEATMAP OPTIMIZATION (Vectorized Heuristic)
+        # FULL SIMULATION GRID OPTIMIZATION
         # ============================================================================
-
-        @st.cache_data(ttl=3600)
-        def run_stage1_heatmap(
-            daily_clipped_mwh_arr,
-            daily_max_price_arr,
-            daily_min_price_arr,
-            base_solar_revenue_val,
-            battery_efficiency_val,
-            max_power_mw,
-            cache_key: str  # For cache invalidation
-        ):
-            """
-            Stage 1: Fast 2D heatmap optimization (Power × Duration).
-
-            Uses vectorized numpy calculations on daily aggregated statistics
-            to quickly explore the search space. Returns a revenue matrix for
-            heatmap visualization and the optimal configuration.
-
-            Parameters
-            ----------
-            daily_clipped_mwh_arr : np.ndarray
-                Daily clipped energy (MWh per day)
-            daily_max_price_arr : np.ndarray
-                Daily maximum RT price ($/MWh)
-            daily_min_price_arr : np.ndarray
-                Daily minimum RT price ($/MWh)
-            base_solar_revenue_val : float
-                Base solar revenue (export only, no battery)
-            battery_efficiency_val : float
-                Round-trip battery efficiency (0-1)
-            max_power_mw : int
-                Maximum power to sweep (MW)
-            cache_key : str
-                Hash for cache invalidation (based on inputs)
-
-            Returns
-            -------
-            tuple
-                (power_range, duration_range, revenue_matrix, optimal_power, optimal_duration)
-            """
-            # Define search space
-            # Power: 20 MW steps from 20 to max_power
-            power_range = np.arange(20, max_power_mw + 1, 20)
-            if len(power_range) == 0:  # Handle small max_power
-                power_range = np.array([max_power_mw])
-
-            # Duration: 1h, 2h, 4h (standard battery configurations)
-            duration_range = np.array([1.0, 2.0, 4.0])
-
-            # Initialize revenue matrix (rows=power, cols=duration)
-            revenue_matrix = np.zeros((len(power_range), len(duration_range)))
-
-            # Vectorized calculation over power × duration grid
-            for i, power_mw in enumerate(power_range):
-                for j, duration_h in enumerate(duration_range):
-                    # Battery capacity (MWh)
-                    capacity_mwh = power_mw * duration_h
-
-                    # HEURISTIC REVENUE CALCULATION (per day)
-                    # 1. Clipped Energy Capture (free source)
-                    vol_clipped = np.minimum(daily_clipped_mwh_arr, capacity_mwh)
-                    rev_clipped = vol_clipped * daily_max_price_arr * battery_efficiency_val
-
-                    # 2. Grid Arbitrage (remaining capacity)
-                    vol_grid = np.maximum(0, capacity_mwh - vol_clipped)
-                    spread = np.maximum(0, daily_max_price_arr - daily_min_price_arr)
-                    rev_grid = vol_grid * spread * battery_efficiency_val
-
-                    # Total battery revenue (sum across all days)
-                    total_battery_revenue = (rev_clipped + rev_grid).sum()
-
-                    # Total hybrid revenue (solar + battery)
-                    revenue_matrix[i, j] = base_solar_revenue_val + total_battery_revenue
-
-            # Find optimal configuration
-            max_idx = np.unravel_index(np.argmax(revenue_matrix), revenue_matrix.shape)
-            optimal_power = power_range[max_idx[0]]
-            optimal_duration = duration_range[max_idx[1]]
-
-            return power_range, duration_range, revenue_matrix, optimal_power, optimal_duration
 
         # --- REVENUE CALCULATION ---
         
@@ -389,211 +352,224 @@ with tab1:
 
         # Ensure battery efficiency is defined
         batt_eff = state.battery_specs.efficiency
-        
-        # 2. Battery Revenue (Current Asset)
-        # Toggle for Full Simulation vs Heuristic
-        use_full_sim = st.toggle("Run Full Simulation (Slower)", value=False, help="Run detailed dispatch simulation respecting strategy & forecast settings.")
-        
-        current_batt_revenue = 0.0
-        sim_details = ""
-        
-        if use_full_sim:
-            with st.spinner("Running detailed simulation..."):
-                # Run simulation using the centralized runner
-                # This respects the sidebar settings (Strategy, Forecast, etc.)
-                baseline_res, improved_res, optimal_res, theoretical_res = run_or_get_cached_simulation()
-                
-                if improved_res:
-                    current_batt_revenue = improved_res.total_revenue
-                    sim_details = f"Strategy: {state.strategy_type} | Forecast: {state.forecast_improvement}%"
-                else:
-                    st.error("Simulation failed. Check data.")
-        else:
-            # Heuristic: Simple Arbitrage (Clipped Energy * Daily Peak Price)
-            # Uses the pre-calculated daily stats
-            
-            daily_clipped_mwh = daily_stats['Daily_Clipped_MWh']
-            daily_peak_price = daily_stats['Daily_Max_Price']
-            
-            batt_eff = state.battery_specs.efficiency
-            
-            # Revenue = Min(Clipped_MWh, Power * 1h) * Peak_Price * Efficiency
-            daily_batt_revenue = np.minimum(daily_clipped_mwh, current_power) * daily_peak_price * batt_eff
-            current_batt_revenue = daily_batt_revenue.sum()
-            sim_details = "Heuristic: Perfect Peak Discharge (1h Duration)"
-
-        current_hybrid_rev = df_sim['Solar_Revenue'].sum() + current_batt_revenue
-        
-        # --- OPTIMIZATION SWEEPER ---
-        # We run this automatically now to compare
-        max_batt_mw = int(solar_capacity_mw * 1.5) # Sweep up to 1.5x Solar Capacity
-        step_size = 1
-        sizes = range(0, max_batt_mw + 1, step_size)
-        revenues = []
-        
-        # Base Solar Revenue (Export only)
         base_solar_revenue = df_sim['Solar_Revenue'].sum()
-        
-        # Extract arrays for vectorized operations in loop
-        clipped_mwh = daily_stats['Daily_Clipped_MWh'].values
-        max_prices = daily_stats['Daily_Max_Price'].values
-        min_prices = daily_stats['Daily_Min_Price'].values
-        
-        # Ensure batt_eff is defined for the sweep
-        batt_eff = state.battery_specs.efficiency
-        
-        for size_mw in sizes:
-            if size_mw == 0:
-                revenues.append(base_solar_revenue)
-                continue
-                
-            # Heuristic: 
-            # 1. Discharge Clipped Energy at Peak Price (Free energy source)
-            # 2. Arbitrage Grid Energy for remaining capacity (Buy Min, Sell Max)
-            
-            # Capacity in MWh (assuming 1h duration for power constraint in this simple heuristic)
-            # Real battery might have 2h or 4h, but for "Power" sweep we assume 1h or proportional
-            # To make it fair with "Current Asset" which might be 2h, we should ideally use duration.
-            # But this is a "Power" sweep. Let's stick to 1h for the sweep x-axis meaning.
-            
-            capacity_mwh = size_mw * 1.0 
-            
-            # 1. Clipped Capture
-            vol_clipped = np.minimum(clipped_mwh, capacity_mwh)
-            rev_clipped = vol_clipped * max_prices * batt_eff
-            
-            # 2. Grid Arbitrage (Remaining capacity)
-            # We can fill the rest of the battery from the grid at Min Price
-            vol_grid = np.maximum(0, capacity_mwh - vol_clipped)
-            spread = max_prices - min_prices
-            # Only arbitrage if spread is positive
-            spread = np.maximum(0, spread)
-            rev_grid = vol_grid * spread * batt_eff
-            
-            total_daily_rev = rev_clipped + rev_grid
-            total_arb = total_daily_rev.sum()
-            
-            revenues.append(base_solar_revenue + total_arb)
-                
-        # Find Optimal
-        optimal_idx = np.argmax(revenues)
-        optimal_size = sizes[optimal_idx]
-        optimal_revenue = revenues[optimal_idx]
-        
-        lost_revenue = optimal_revenue - current_hybrid_rev
-            
-        # --- METRICS & COMPARISON ---
-        st.markdown("### 📊 Performance Comparison")
-        
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Current Asset Size", f"{current_power} MW")
-        m2.metric("Current Revenue", f"${current_hybrid_rev:,.0f}")
-        m3.metric("Optimal Size", f"{optimal_size} MW")
-        m4.metric("Potential Revenue", f"${optimal_revenue:,.0f}", delta=f"+${lost_revenue:,.0f}")
-        
-        if lost_revenue > 0:
-            st.info(f"💡 Increasing battery size to **{optimal_size} MW** could capture **${lost_revenue:,.0f}** in additional revenue from clipped energy.")
-        else:
-            st.success("✅ Current asset is optimally sized for clipping capture!")
 
-        # --- HEATMAP VIEW (STAGE 1) ---
+        # Calculate current asset revenue (for comparison with optimal)
+        current_power = state.battery_specs.power_mw
+        current_capacity = state.battery_specs.capacity_mwh
+
+        # Run quick simulation for current asset to get baseline revenue
+        with st.spinner("Calculating current asset revenue..."):
+            baseline_res, improved_res, _, _ = run_or_get_cached_simulation()
+            if improved_res:
+                current_batt_revenue = improved_res.total_revenue
+            else:
+                current_batt_revenue = 0.0
+
+        current_hybrid_rev = base_solar_revenue + current_batt_revenue
+
+        # Display current asset performance
+        st.markdown("### 📊 Current Asset Performance")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Battery Power", f"{current_power:.0f} MW")
+        col2.metric("Battery Capacity", f"{current_capacity:.1f} MWh")
+        col3.metric("Battery Revenue", f"${current_batt_revenue:,.0f}")
+        col4.metric("Total Hybrid Revenue", f"${current_hybrid_rev:,.0f}")
+
+        # --- FULL SIMULATION GRID OPTIMIZATION ---
         st.markdown("---")
-        show_heatmap = st.toggle("Show 2D Heatmap (Power × Duration)", value=False,
-                                  help="Visualize revenue across power and duration configurations using fast heuristic.")
+        st.markdown("### 🔋 Battery Sizing Optimization")
 
-        if show_heatmap:
+        st.markdown("""
+**Clipping-Only Grid Search**: Find the optimal battery configuration by running full simulations
+across different power and duration combinations. Battery only charges from clipped solar energy
+and uses your selected dispatch strategy to optimize discharge timing for maximum revenue.
+        """)
+
+        # Grid resolution slider and buttons
+        col_slider, col_run, col_clear = st.columns([3, 1, 1])
+
+        with col_slider:
+            grid_resolution = st.select_slider(
+                "Grid Resolution (Power × Duration)",
+                options=[
+                    "5×5 (25 configs, ~12s)",
+                    "7×7 (49 configs, ~25s)",
+                    "10×10 (100 configs, ~50s)",
+                    "12×12 (144 configs, ~1min)",
+                    "15×15 (225 configs, ~2min)",
+                    "20×20 (400 configs, ~3min)"
+                ],
+                value="7×7 (49 configs, ~25s)",
+                help="Higher resolution = more accurate but slower. 20×20 provides maximum detail."
+            )
+
+        with col_run:
+            st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+            run_optimization = st.button(
+                "▶️ Run Optimization",
+                type="primary",
+                use_container_width=True,
+                help="Start the full simulation grid search"
+            )
+
+        with col_clear:
+            st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+            if st.button(
+                "🗑️ Clear Cache",
+                use_container_width=True,
+                help="Clear cached simulation results to force fresh calculations"
+            ):
+                st.cache_data.clear()
+                st.success("✅ Cache cleared! Next run will be fresh.")
+                st.rerun()
+
+        if run_optimization or st.session_state.get('optimization_running', False):
+            # ============================================================================
+            # CLIPPING-BASED SEARCH SPACE CALCULATION
+            # ============================================================================
+
+            # Analyze clipping patterns
+            peak_clipping_mw = df_sim['Clipped_MW'].quantile(0.95)  # 95th percentile
+            total_clipped_mwh = df_sim['Clipped_MW'].sum() / 4  # Convert to MWh
+            clipping_hours = (df_sim['Clipped_MW'] > 0.1).sum()  # Hours with meaningful clipping
+
+            # Calculate daily clipping statistics
+            daily_clipped = df_sim.groupby(df_sim.index.date)['Clipped_MW'].sum() / 4  # Daily MWh
+            avg_daily_clipped = daily_clipped.mean()
+            peak_daily_clipped = daily_clipped.quantile(0.95)
+
+            # Calculate clipping duration patterns (for capacity sizing)
+            daily_clipping_hours = df_sim.groupby(df_sim.index.date).apply(
+                lambda x: (x['Clipped_MW'] > 0.1).sum()
+            )
+            avg_clipping_duration = daily_clipping_hours.mean() / 4  # Convert intervals to hours
+
+            # POWER RANGE: Based on peak clipping capture capability
+            if peak_clipping_mw < 0.5:  # Minimal clipping
+                st.warning(f"""
+⚠️ **Very Low Clipping Detected**: Peak clipping is only {peak_clipping_mw:.2f} MW.
+Battery sizing optimization may not be meaningful with such low clipping.
+Consider increasing Solar Capacity or reducing Interconnection Limit.
+                """)
+                min_power_mw = 5
+                max_power_mw = 20
+                search_rationale = "Minimal clipping (exploratory range)"
+            else:
+                # Size battery to capture 25% to 125% of peak clipping
+                # 25%: Captures only highest-value clipping periods
+                # 100%: Captures all peak clipping
+                # 125%: Headroom for variations
+                min_power_mw = max(5, peak_clipping_mw * 0.25)
+                max_power_mw = peak_clipping_mw * 1.25
+                search_rationale = f"Clipping capture optimized (peak: {peak_clipping_mw:.1f} MW)"
+
+            # Display search rationale
+            st.info(f"""
+📊 **Clipping-Based Search Space:**
+- **Clipping Analysis:**
+  - Peak clipping: {peak_clipping_mw:.1f} MW (95th percentile)
+  - Total clipped energy: {total_clipped_mwh:,.0f} MWh
+  - Clipping hours: {clipping_hours} intervals/year ({clipping_hours/4:.0f} hours)
+  - Avg daily clipped: {avg_daily_clipped:.1f} MWh
+  - Avg clipping duration: {avg_clipping_duration:.1f} hours/day
+
+- **Battery Power Range:**
+  - Power: **{min_power_mw:.0f} to {max_power_mw:.0f} MW**
+  - Rationale: {search_rationale}
+  - Duration range determined by grid resolution (see slider)
+
+- **Optimization Focus:** Clipping capture only (no grid arbitrage)
+            """)
+
             # Generate cache key for invalidation
-            cache_inputs = f"{solar_capacity_mw}_{interconnection_limit_mw}_{batt_eff}_{df_prices.index.min()}_{df_prices.index.max()}"
+            cache_inputs = f"{solar_capacity_mw}_{interconnection_limit_mw}_{batt_eff}_{df_prices.index.min()}_{df_prices.index.max()}_{min_power_mw}_{max_power_mw}"
             cache_key = hashlib.md5(cache_inputs.encode()).hexdigest()
 
-            # Run Stage 1 heatmap optimization
-            max_power_sweep = int(solar_capacity_mw * 1.5)
-            power_range_s1, duration_range_s1, revenue_matrix_s1, optimal_power_s1, optimal_duration_s1 = run_stage1_heatmap(
-                daily_clipped_mwh_arr=daily_stats['Daily_Clipped_MWh'].values,
-                daily_max_price_arr=daily_stats['Daily_Max_Price'].values,
-                daily_min_price_arr=daily_stats['Daily_Min_Price'].values,
-                base_solar_revenue_val=base_solar_revenue,
-                battery_efficiency_val=batt_eff,
-                max_power_mw=max_power_sweep,
-                cache_key=cache_key
-            )
-
-            # Display Stage 1 optimal configuration
-            st.markdown("### 🗺️ Stage 1: Power × Duration Heatmap")
-            col_h1, col_h2, col_h3 = st.columns(3)
-            col_h1.metric("Optimal Power (Stage 1)", f"{optimal_power_s1} MW")
-            col_h2.metric("Optimal Duration (Stage 1)", f"{optimal_duration_s1:.1f}h")
-            optimal_capacity_s1 = optimal_power_s1 * optimal_duration_s1
-            col_h3.metric("Optimal Capacity (Stage 1)", f"{optimal_capacity_s1:.1f} MWh")
-
-            # Create heatmap visualization
-            fig_heatmap = go.Figure(data=go.Heatmap(
-                z=revenue_matrix_s1,
-                x=duration_range_s1,
-                y=power_range_s1,
-                colorscale='Viridis',
-                colorbar=dict(title="Revenue ($)"),
-                hovertemplate='Power: %{y} MW<br>Duration: %{x}h<br>Revenue: $%{z:,.0f}<extra></extra>'
-            ))
-
-            # Mark optimal point with a star
-            optimal_idx_i = np.where(power_range_s1 == optimal_power_s1)[0][0]
-            optimal_idx_j = np.where(duration_range_s1 == optimal_duration_s1)[0][0]
-
-            fig_heatmap.add_trace(go.Scatter(
-                x=[optimal_duration_s1],
-                y=[optimal_power_s1],
-                mode='markers+text',
-                marker=dict(size=20, color='red', symbol='star', line=dict(width=2, color='white')),
-                text=["Optimal"],
-                textposition="top center",
-                textfont=dict(color='white', size=12),
-                name='Stage 1 Optimal',
-                hoverinfo='skip'
-            ))
-
-            fig_heatmap.update_layout(
-                title="Revenue Heatmap: Battery Power × Duration",
-                xaxis_title="Duration (hours)",
-                yaxis_title="Power (MW)",
-                height=500,
-                xaxis=dict(type='category'),  # Categorical for discrete durations
-            )
-
-            st.plotly_chart(fig_heatmap, use_container_width=True)
-
-            st.caption(f"💡 Heatmap shows revenue across {len(power_range_s1)}×{len(duration_range_s1)} = {len(power_range_s1) * len(duration_range_s1)} configurations using vectorized heuristic (fast).")
-
             # ============================================================================
-            # STAGE 2: FINE REFINEMENT (Full Simulation with Hybrid Strategy)
+            # GRID CONFIGURATION (Based on Slider Selection)
             # ============================================================================
 
-            st.markdown("---")
-            run_stage2 = st.toggle("Run Stage 2: Fine Refinement (Full Simulation)", value=False,
-                                    help="Refine around Stage 1 optimal using full BatterySimulator with HybridDispatchStrategy. Uses parallel execution (~2-3s).")
+            # Parse grid resolution from slider
+            resolution_map = {
+                "5×5 (25 configs, ~12s)": (5, 5),
+                "7×7 (49 configs, ~25s)": (7, 7),
+                "10×10 (100 configs, ~50s)": (10, 10),
+                "12×12 (144 configs, ~1min)": (12, 12),
+                "15×15 (225 configs, ~2min)": (15, 15),
+                "20×20 (400 configs, ~3min)": (20, 20)
+            }
+            n_power, n_duration = resolution_map[grid_resolution]
 
-            if run_stage2:
-                st.markdown("### 🎯 Stage 2: Fine Refinement with Full Simulation")
+            # Duration range: adaptive based on resolution
+            # Focus on small durations (0.25h - 2h) with high granularity for typical Engie assets (1-2h or <1h)
+            if n_duration == 5:
+                # Small range: 0.25h to 2h
+                duration_range = np.array([0.25, 0.5, 1.0, 1.5, 2.0])
+            elif n_duration == 7:
+                # Small-medium range: 0.25h to 3h
+                duration_range = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
+            elif n_duration == 10:
+                # Extended range with granularity: 0.25h to 4h
+                duration_range = np.array([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0])
+            elif n_duration == 12:
+                # Full range with high granularity: 0.25h to 6h
+                duration_range = np.linspace(0.25, 6.0, 12)
+            elif n_duration == 15:
+                # Extended range: 0.25h to 8h
+                duration_range = np.linspace(0.25, 8.0, 15)
+            elif n_duration == 20:
+                # Maximum range: 0.25h to 10h (for edge cases with long clipping periods)
+                duration_range = np.linspace(0.25, 10.0, 20)
+            else:
+                # Fallback: default to 0.5h - 6h range
+                duration_range = np.linspace(0.5, 6.0, n_duration)
 
-                # Define refined search space around Stage 1 optimal
-                power_min_s2 = max(10, optimal_power_s1 - 20)  # ±20 MW around optimal
-                power_max_s2 = optimal_power_s1 + 20
-                power_range_s2 = np.arange(power_min_s2, power_max_s2 + 1, 2)  # 2 MW steps
+            # Round to 2 decimal places for cleaner display
+            duration_range = np.round(duration_range, 2)
 
-                # Use optimal duration from Stage 1 (fixed for Stage 2)
-                fixed_duration_s2 = optimal_duration_s1
+            # Power range: n_power levels dynamically spaced
+            power_range = np.linspace(min_power_mw, max_power_mw, n_power)
 
-                # Prepare price data with clipped_mw column for hybrid simulation
-                df_hybrid = df_sim.copy()
-                df_hybrid['clipped_mw'] = df_hybrid['Clipped_MW']
+            # Smart rounding: Only round to integers for large ranges (>50 MW span)
+            # For small ranges, keep decimal precision to ensure requested resolution
+            power_span = max_power_mw - min_power_mw
+            if power_span > 50:
+                # Large range: round to integers
+                power_range = np.round(power_range).astype(int)
+                power_range = np.unique(power_range)  # Remove duplicates
+            else:
+                # Small range: keep 1 decimal place to preserve resolution
+                power_range = np.round(power_range, 1)
 
-                # Get improvement factor from state
-                improvement_factor = state.forecast_improvement / 100.0
+            # Total configurations
+            total_configs = len(power_range) * len(duration_range)
 
-                # Simulation function for parallel execution
-                def simulate_battery_config(power_mw: float, duration_h: float) -> dict:
+            st.markdown(f"### 🗺️ Full Simulation Grid: {len(power_range)}×{len(duration_range)} = {total_configs} configurations")
+
+            # ============================================================================
+            # PREPARE DATA FOR SIMULATION
+            # ============================================================================
+
+            # Prepare price data with clipped_mw column for hybrid simulation
+            df_hybrid = df_sim.copy()
+            df_hybrid['clipped_mw'] = df_hybrid['Clipped_MW']
+
+            # Get improvement factor from state
+            improvement_factor = state.forecast_improvement / 100.0
+
+            # ============================================================================
+            # SIMULATION FUNCTION
+            # ============================================================================
+
+            def simulate_battery_config(power_mw: float, duration_h: float) -> dict:
                     """
-                    Run full battery simulation for a specific configuration using HybridDispatchStrategy.
+                    Run full battery simulation for a specific configuration using ClippingOnlyStrategy.
+
+                    This simulates clipping-only optimization where the battery:
+                    - Charges ONLY from clipped solar energy (free, mandatory)
+                    - Uses selected dispatch strategy to optimize discharge timing
+                    - Never charges from grid (no arbitrage)
 
                     Parameters
                     ----------
@@ -613,7 +589,7 @@ with tab1:
                         capacity_mwh=capacity_mwh,
                         power_mw=power_mw,
                         efficiency=batt_eff,
-                        initial_soc=0.5
+                        initial_soc=0.05  # Start at min SOC (effectively empty) for clipping-only optimization
                     )
 
                     # Create base strategy (use strategy from sidebar settings)
@@ -630,25 +606,24 @@ with tab1:
                         # Default to Rolling Window
                         base_strategy = RollingWindowStrategy(window_hours=6)
 
-                    # Wrap with HybridDispatchStrategy
-                    hybrid_strategy = HybridDispatchStrategy(
-                        base_strategy=base_strategy,
-                        clipped_priority=True
+                    # Wrap with ClippingOnlyStrategy (clipping capture only, no grid arbitrage)
+                    clipping_strategy = ClippingOnlyStrategy(
+                        base_strategy=base_strategy
                     )
 
                     # Run simulation
                     simulator = BatterySimulator(specs)
                     result = simulator.run(
                         df_hybrid,
-                        hybrid_strategy,
+                        clipping_strategy,
                         improvement_factor=improvement_factor
                     )
 
                     # Calculate total hybrid revenue (solar + battery)
                     total_hybrid_revenue = base_solar_revenue + result.total_revenue
 
-                    # Extract metadata
-                    metadata = hybrid_strategy.get_metadata()
+                    # Extract metadata from ClippingOnlyStrategy
+                    metadata = clipping_strategy.get_metadata()
 
                     return {
                         'power_mw': power_mw,
@@ -657,192 +632,291 @@ with tab1:
                         'battery_revenue': result.total_revenue,
                         'total_revenue': total_hybrid_revenue,
                         'clipped_captured': metadata.get('clipped_energy_captured', 0),
-                        'grid_arbitrage': metadata.get('grid_arbitrage_revenue', 0)
+                        'curtailed_clipping': metadata.get('curtailed_clipping', 0),
+                        'grid_arbitrage': metadata.get('grid_arbitrage_revenue', 0)  # Always 0 for clipping-only
                     }
 
-                # Run simulations in parallel
-                st.info(f"🔄 Running {len(power_range_s2)} simulations in parallel (Power: {power_min_s2}-{power_max_s2} MW, Duration: {fixed_duration_s2:.1f}h)...")
+            # ============================================================================
+            # PARALLEL EXECUTION (7×5 Grid = 35 Configurations)
+            # ============================================================================
 
-                results_s2 = []
+            import time
+            from concurrent.futures import as_completed
+
+            start_time = time.time()
+
+            # Enhanced progress visualization
+            progress_container = st.container()
+            with progress_container:
+                st.markdown(f"""
+                <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px; margin-bottom: 10px;'>
+                    <h4 style='margin: 0; color: #0A5F7A;'>🔄 Running Full Simulation Grid</h4>
+                    <p style='margin: 5px 0 0 0; color: #666;'>Testing {total_configs} configurations (Power: {min_power_mw:.0f}-{max_power_mw:.0f} MW × Duration: {duration_range[0]:.1f}-{duration_range[-1]:.1f}h)</p>
+                </div>
+                """, unsafe_allow_html=True)
+
                 progress_bar = st.progress(0)
-                status_text = st.empty()
+                status_col1, status_col2, status_col3 = st.columns(3)
+                with status_col1:
+                    status_completed = st.empty()
+                with status_col2:
+                    status_current = st.empty()
+                with status_col3:
+                    status_time = st.empty()
 
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    # Submit all simulations
-                    futures = {
-                        executor.submit(simulate_battery_config, p, fixed_duration_s2): p
-                        for p in power_range_s2
-                    }
+            # Initialize results storage
+            results_grid = []
+            revenue_matrix = np.zeros((len(power_range), len(duration_range)))
 
-                    # Collect results as they complete
-                    completed = 0
-                    for future in futures:
-                        result = future.result()
-                        results_s2.append(result)
-                        completed += 1
-                        progress_bar.progress(completed / len(power_range_s2))
-                        status_text.text(f"Completed: {completed}/{len(power_range_s2)} simulations")
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # Submit all power × duration combinations
+                futures = {}
+                for i, power_mw in enumerate(power_range):
+                    for j, duration_h in enumerate(duration_range):
+                        future = executor.submit(simulate_battery_config, power_mw, duration_h)
+                        futures[future] = (i, j, power_mw, duration_h)
 
-                progress_bar.empty()
-                status_text.empty()
+                # Collect results as they complete
+                completed = 0
+                for future in as_completed(futures):
+                    result = future.result()
+                    i, j, power_mw, duration_h = futures[future]
+                    revenue_matrix[i, j] = result['total_revenue']
+                    results_grid.append(result)
+                    completed += 1
 
-                # Sort results by power for plotting
-                results_s2 = sorted(results_s2, key=lambda x: x['power_mw'])
+                    # Update progress
+                    progress_pct = completed / total_configs
+                    progress_bar.progress(progress_pct)
+                    status_completed.metric("Completed", f"{completed}/{total_configs}")
+                    status_current.metric("Current", f"{power_mw:.0f}MW × {duration_h:.1f}h")
+                    elapsed = time.time() - start_time
+                    eta = (elapsed / completed) * (total_configs - completed) if completed > 0 else 0
+                    status_time.metric("ETA", f"{eta:.0f}s")
 
-                # Extract data for visualization
-                powers_s2 = [r['power_mw'] for r in results_s2]
-                revenues_s2 = [r['total_revenue'] for r in results_s2]
+            elapsed_time = time.time() - start_time
+            progress_container.empty()
 
-                # Find Stage 2 optimal
-                optimal_idx_s2 = np.argmax(revenues_s2)
-                optimal_power_s2 = powers_s2[optimal_idx_s2]
-                optimal_revenue_s2 = revenues_s2[optimal_idx_s2]
-                optimal_capacity_s2 = optimal_power_s2 * fixed_duration_s2
+            # Check if suspiciously fast (likely cached)
+            expected_min_time = total_configs * 0.3  # Minimum ~0.3s per config
+            if elapsed_time < expected_min_time:
+                st.warning(f"""
+⚡ **Very fast completion ({elapsed_time:.1f}s)!** This suggests:
+- Results may be **cached** from previous run
+- OR data size is very small
+- Expected minimum: ~{expected_min_time:.0f}s for {total_configs} fresh simulations
+                """)
+            else:
+                st.success(f"✅ Grid search complete! Simulated {total_configs} configurations in {elapsed_time:.1f} seconds ({elapsed_time/total_configs:.2f}s per config)")
 
-                # Display Stage 2 optimal configuration
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                col_s1.metric("Optimal Power (Stage 2)", f"{optimal_power_s2:.0f} MW")
-                col_s2.metric("Optimal Capacity (Stage 2)", f"{optimal_capacity_s2:.1f} MWh")
-                col_s3.metric("Optimal Revenue (Stage 2)", f"${optimal_revenue_s2:,.0f}")
+            # ============================================================================
+            # FIND OPTIMAL CONFIGURATION
+            # ============================================================================
 
-                # Compare with current asset
-                revenue_improvement_s2 = optimal_revenue_s2 - current_hybrid_rev
-                col_s4.metric("vs Current Asset", f"+${revenue_improvement_s2:,.0f}",
-                            delta_color="normal" if revenue_improvement_s2 >= 0 else "inverse")
+            # Find optimal in revenue matrix
+            optimal_idx_flat = np.argmax(revenue_matrix)
+            optimal_idx_i, optimal_idx_j = np.unravel_index(optimal_idx_flat, revenue_matrix.shape)
+            optimal_power = power_range[optimal_idx_i]
+            optimal_duration = duration_range[optimal_idx_j]
+            optimal_capacity = optimal_power * optimal_duration
+            optimal_revenue = revenue_matrix[optimal_idx_i, optimal_idx_j]
 
-                # Create refinement curve visualization
-                fig_refinement = go.Figure()
+            # Find the corresponding result details
+            optimal_result = next(
+                r for r in results_grid
+                if r['power_mw'] == optimal_power and r['duration_h'] == optimal_duration
+            )
 
-                # Stage 2 refinement curve
-                fig_refinement.add_trace(go.Scatter(
-                    x=powers_s2,
-                    y=revenues_s2,
-                    mode='lines+markers',
-                    name='Stage 2 (Full Simulation)',
-                    line=dict(color='#0A5F7A', width=3),
-                    marker=dict(size=6),
-                    hovertemplate='Power: %{x:.0f} MW<br>Revenue: $%{y:,.0f}<extra></extra>'
-                ))
+            # ============================================================================
+            # DISPLAY OPTIMAL CONFIGURATION
+            # ============================================================================
 
-                # Current asset marker
-                fig_refinement.add_trace(go.Scatter(
-                    x=[current_power],
-                    y=[current_hybrid_rev],
-                    mode='markers+text',
-                    marker=dict(color='red', size=15, symbol='x', line=dict(width=2, color='darkred')),
-                    text=["Current"],
-                    textposition="top center",
-                    name='Current Asset',
-                    hovertemplate='Current Asset<br>Power: %{x:.0f} MW<br>Revenue: $%{y:,.0f}<extra></extra>'
-                ))
+            st.markdown("### 🌟 Optimal Battery Configuration")
 
-                # Stage 1 optimal marker
-                fig_refinement.add_trace(go.Scatter(
-                    x=[optimal_power_s1],
-                    y=[revenue_matrix_s1[optimal_idx_i, optimal_idx_j]],
-                    mode='markers+text',
-                    marker=dict(color='orange', size=15, symbol='star', line=dict(width=2, color='darkorange')),
-                    text=["Stage 1"],
-                    textposition="bottom center",
-                    name='Stage 1 Optimal',
-                    hovertemplate='Stage 1 Optimal<br>Power: %{x:.0f} MW<br>Revenue: $%{y:,.0f}<extra></extra>'
-                ))
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Optimal Power", f"{optimal_power:.0f} MW")
+            col2.metric("Optimal Duration", f"{optimal_duration:.1f}h")
+            col3.metric("Optimal Capacity", f"{optimal_capacity:.1f} MWh")
 
-                # Stage 2 optimal marker
-                fig_refinement.add_trace(go.Scatter(
-                    x=[optimal_power_s2],
-                    y=[optimal_revenue_s2],
-                    mode='markers+text',
-                    marker=dict(color='green', size=18, symbol='star', line=dict(width=2, color='darkgreen')),
-                    text=["Stage 2 Optimal"],
-                    textposition="top center",
-                    name='Stage 2 Optimal',
-                    hovertemplate='Stage 2 Optimal<br>Power: %{x:.0f} MW<br>Revenue: $%{y:,.0f}<extra></extra>'
-                ))
+            # Compare with current asset
+            revenue_improvement = optimal_revenue - current_hybrid_rev
+            col4.metric("Total Revenue", f"${optimal_revenue:,.0f}",
+                        delta=f"+${revenue_improvement:,.0f}")
 
-                fig_refinement.update_layout(
-                    title=f"Stage 2 Refinement: Power Optimization at {fixed_duration_s2:.1f}h Duration",
-                    xaxis_title="Battery Power (MW)",
-                    yaxis_title="Total Hybrid Revenue ($)",
-                    height=500,
-                    hovermode='closest',
-                    legend=dict(
-                        yanchor="bottom",
-                        y=0.01,
-                        xanchor="right",
-                        x=0.99,
-                        bgcolor="rgba(255, 255, 255, 0.8)"
-                    )
-                )
+            # Check if optimal is near edge (suggests broader search needed)
+            is_power_edge = optimal_idx_i >= len(power_range) - 1  # Last power level
+            is_duration_edge = optimal_idx_j >= len(duration_range) - 1  # Last duration level
 
-                st.plotly_chart(fig_refinement, use_container_width=True)
+            if is_power_edge or is_duration_edge:
+                edge_dims = []
+                if is_power_edge:
+                    edge_dims.append(f"power ({optimal_power:.0f} MW)")
+                if is_duration_edge:
+                    edge_dims.append(f"duration ({optimal_duration:.1f}h)")
+                st.warning(f"""
+⚠️ **Search Space May Be Too Small**: Optimal is at edge of {' and '.join(edge_dims)} range.
+The true optimal might be even larger! Consider:
+- Increasing search range manually, or
+- Re-running with broader multipliers
+- True optimal could be outside current search space
+                """)
 
-                # Display insights
-                st.success(f"✅ Stage 2 complete! Evaluated {len(results_s2)} configurations using full hybrid simulation.")
+            # ============================================================================
+            # HEATMAP VISUALIZATION
+            # ============================================================================
 
-                if revenue_improvement_s2 > 0:
-                    st.info(f"💡 **Recommended**: Upgrade to **{optimal_power_s2:.0f} MW / {optimal_capacity_s2:.1f} MWh** battery to capture **${revenue_improvement_s2:,.0f}** additional revenue.")
+            st.markdown("### 📊 Revenue Heatmap (Power × Duration)")
+
+            # Create heatmap with Plotly
+            fig_heatmap = go.Figure(data=go.Heatmap(
+                z=revenue_matrix,
+                x=duration_range,
+                y=power_range,
+                colorscale='Viridis',
+                hovertemplate='<b>Configuration</b><br>Power: %{y:.0f} MW<br>Duration: %{x:.1f}h<br>Revenue: $%{z:,.0f}<extra></extra>',
+                colorbar=dict(
+                    title="Revenue ($)",
+                    tickformat="$,.0f"
+                ),
+                xgap=2,  # Gap between cells
+                ygap=2
+            ))
+
+            # Add star marker at optimal configuration
+            fig_heatmap.add_trace(go.Scatter(
+                x=[optimal_duration],
+                y=[optimal_power],
+                mode='markers+text',
+                marker=dict(
+                    color='white',
+                    size=25,
+                    symbol='star',
+                    line=dict(width=3, color='red')
+                ),
+                text=["★"],
+                textfont=dict(size=24, color='white'),
+                name='Optimal',
+                showlegend=True,
+                hovertemplate=f'<b>OPTIMAL</b><br>Power: {optimal_power:.0f} MW<br>Duration: {optimal_duration:.1f}h<br>Revenue: ${optimal_revenue:,.0f}<extra></extra>'
+            ))
+
+            # Calculate appropriate chart height based on number of power levels
+            # More power levels = taller chart to maintain readable cell sizes
+            base_height = 400
+            cell_height = 50  # Target ~50px per power level
+            chart_height = max(base_height, len(power_range) * cell_height + 200)
+
+            fig_heatmap.update_layout(
+                title=dict(
+                    text=f"Full Simulation Grid Search: {len(power_range)}×{len(duration_range)} = {total_configs} Configurations",
+                    font=dict(size=16)
+                ),
+                xaxis=dict(
+                    title="Battery Duration (hours)",
+                    side="bottom",
+                    tickmode='array',
+                    tickvals=duration_range,
+                    ticktext=[f"{d:.1f}h" for d in duration_range]
+                ),
+                yaxis=dict(
+                    title="Battery Power (MW)",
+                    tickmode='array',
+                    tickvals=power_range,
+                    ticktext=[f"{p:.0f}" for p in power_range]
+                ),
+                height=chart_height,
+                hovermode='closest',
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                margin=dict(l=80, r=120, t=80, b=80)
+            )
+
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+
+            st.caption(f"""
+💡 Heatmap shows true simulated revenue across {total_configs} configurations
+({len(power_range)} power levels × {len(duration_range)} durations) using full BatterySimulator with
+ClippingOnlyStrategy. Runtime: {elapsed_time:.1f} seconds.
+            """)
+
+            # ============================================================================
+            # DETAILED BREAKDOWN
+            # ============================================================================
+
+            if revenue_improvement > 0:
+                st.info(f"💡 **Recommended**: Upgrade to **{optimal_power:.0f} MW / {optimal_capacity:.1f} MWh** battery to capture **${revenue_improvement:,.0f}** additional revenue.")
+            else:
+                st.success("🎉 Current asset configuration is already optimal!")
+
+            with st.expander("📊 Detailed Breakdown (Optimal Configuration)"):
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Clipped Energy Captured", f"{optimal_result['clipped_captured']:.1f} MWh")
+                col2.metric("Curtailed Clipping", f"{optimal_result.get('curtailed_clipping', 0):.1f} MWh")
+                col3.metric("Capture Efficiency",
+                            f"{100 * optimal_result['clipped_captured'] / max(total_clipped_mwh, 1):.1f}%")
+                col4.metric("Battery Revenue", f"${optimal_result['battery_revenue']:,.0f}")
+
+                # ALWAYS show curtailment analysis with optimization suggestions
+                curtailed = optimal_result.get('curtailed_clipping', 0)
+                curtailment_revenue_lost = curtailed * (optimal_result['battery_revenue'] / max(optimal_result['clipped_captured'], 1))
+
+                if curtailed > 0.01:  # Any curtailment
+                    # Calculate what duration would capture more
+                    additional_duration_needed = curtailed / max(optimal_power, 1)
+                    suggested_duration = optimal_duration + additional_duration_needed
+                    suggested_capacity = optimal_power * suggested_duration
+
+                    severity = "🔴 High" if curtailed > optimal_result['clipped_captured'] * 0.2 else \
+                               "🟡 Moderate" if curtailed > optimal_result['clipped_captured'] * 0.1 else \
+                               "🟢 Low"
+
+                    st.info(f"""
+📉 **Curtailment Analysis** ({severity} Impact)
+
+**Lost Opportunity:**
+- Curtailed clipping: {curtailed:.1f} MWh ({100 * curtailed / total_clipped_mwh:.1f}% of total clipping)
+- Estimated lost revenue: ${curtailment_revenue_lost:,.0f}
+
+**Optimization Suggestions:**
+1. **Increase battery duration** from {optimal_duration:.1f}h to {suggested_duration:.1f}h
+   - New capacity: {suggested_capacity:.1f} MWh (current: {optimal_capacity:.1f} MWh)
+   - Would capture additional {curtailed:.1f} MWh
+   - Potential revenue gain: ${curtailment_revenue_lost:,.0f}
+
+2. **Optimize discharge strategy** to free up capacity faster:
+   - Current strategy: {state.strategy_type}
+   - Try increasing forecast improvement from {state.forecast_improvement}% to {min(100, state.forecast_improvement + 20)}%
+   - Or reduce MPC/Rolling Window horizon for more aggressive discharge
+
+3. **Consider power/duration trade-offs:**
+   - Current: {optimal_power:.0f} MW × {optimal_duration:.1f}h
+   - Alternative: {optimal_power * 0.8:.0f} MW × {suggested_duration * 0.8:.1f}h (faster cycling)
+                    """)
                 else:
-                    st.success("🎉 Current asset configuration is already optimal!")
-
-                # Show detailed breakdown for optimal config
-                with st.expander("📊 Detailed Breakdown (Stage 2 Optimal)"):
-                    optimal_result = results_s2[optimal_idx_s2]
-
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Clipped Energy Captured", f"{optimal_result['clipped_captured']:.1f} MWh")
-                    col2.metric("Grid Arbitrage Revenue", f"${optimal_result['grid_arbitrage']:,.0f}")
-                    col3.metric("Battery Revenue", f"${optimal_result['battery_revenue']:,.0f}")
-
-                    st.markdown(f"""
-                    **Revenue Components:**
-                    - Base Solar Export: ${base_solar_revenue:,.0f}
-                    - Battery Operations: ${optimal_result['battery_revenue']:,.0f}
-                        - Clipped Energy Capture: {optimal_result['clipped_captured']:.1f} MWh
-                        - Grid Arbitrage: ${optimal_result['grid_arbitrage']:,.0f}
-                    - **Total Hybrid Revenue**: ${optimal_result['total_revenue']:,.0f}
-
-                    **Configuration:**
-                    - Strategy: Hybrid ({state.strategy_type})
-                    - Forecast Improvement: {state.forecast_improvement}%
-                    - Battery Efficiency: {batt_eff*100:.1f}%
+                    st.success("""
+✅ **No Curtailment**: Battery captures all available clipping!
+Current configuration is optimal for clipping capture.
                     """)
 
-        # --- VISUALIZATION ---
-        
-        # 1. Revenue Curve
-        fig_sweep = px.line(
-            x=sizes, 
-            y=revenues,
-            title="Asset Sizing Revenue Optimization",
-            labels={'x': 'Battery Power (MW)', 'y': 'Total Revenue ($)'}
-        )
-        # Add Current Asset Marker
-        fig_sweep.add_trace(go.Scatter(
-            x=[current_power], y=[current_hybrid_rev],
-            mode='markers', marker=dict(color='red', size=12, symbol='x'),
-            name='Current Asset'
-        ))
-        # Add Optimal Marker
-        fig_sweep.add_trace(go.Scatter(
-            x=[optimal_size], y=[optimal_revenue],
-            mode='markers', marker=dict(color='green', size=12, symbol='star'),
-            name='Optimal Asset'
-        ))
-        
-        fig_sweep.update_layout(
-            legend=dict(
-                yanchor="bottom",
-                y=0.01,
-                xanchor="right",
-                x=0.99,
-                bgcolor="rgba(255, 255, 255, 0.5)"
-            )
-        )
-        
-        st.plotly_chart(fig_sweep, width="stretch")
-        
-        # 2. Operational Chart (Representative Week)
+                st.markdown(f"""
+**Revenue Components:**
+- Base Solar Export: ${base_solar_revenue:,.0f}
+- Battery Operations (Clipping Only): ${optimal_result['battery_revenue']:,.0f}
+  - Clipped Energy Captured: {optimal_result['clipped_captured']:.1f} MWh
+  - Clipped Energy Curtailed: {curtailed:.1f} MWh
+  - Capture Rate: {100 * optimal_result['clipped_captured'] / max(total_clipped_mwh, 1):.1f}%
+- **Total Hybrid Revenue**: ${optimal_result['total_revenue']:,.0f}
+
+**Configuration:**
+- Power: {optimal_power:.0f} MW ({100 * optimal_power / peak_clipping_mw:.0f}% of peak clipping)
+- Duration: {optimal_duration:.1f}h
+- Capacity: {optimal_capacity:.1f} MWh
+- Strategy: Clipping-Only ({state.strategy_type} for discharge)
+- Forecast Improvement: {state.forecast_improvement}%
+- Battery Efficiency: {batt_eff*100:.1f}%
+                """)
+
+        # 2. Operational Chart (Solar + Clipping Visualization)
         st.markdown("### ⚡ Operational Profile (Solar + Clipping)")
         plot_df = df_sim.copy()
         
