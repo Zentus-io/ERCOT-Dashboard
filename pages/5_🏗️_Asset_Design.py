@@ -580,6 +580,9 @@ with opt_col_left:
         manual_max_p = st.number_input("Max Power (MW)", 5.0, 500.0, 20.0)
         manual_min_d = st.number_input("Min Duration (h)", 0.5, 10.0, 0.5, step=0.5)
         manual_max_d = st.number_input("Max Duration (h)", 1.0, 24.0, 10.0, step=0.5)
+        
+        st.markdown("---")
+        enable_smart_expansion = st.checkbox("✨ Enable Smart Expansion", value=True, help="Automatically expand search space if optimal is found at the edge")
 
 # Logic to run optimization
 if run_optimization or st.session_state.get('optimization_running', False):
@@ -595,6 +598,7 @@ if run_optimization or st.session_state.get('optimization_running', False):
 
     # Calculate daily clipping statistics
     daily_clipped = df_sim.groupby(df_sim.index.date)['Clipped_MW'].sum() / 4  # Daily MWh
+    max_daily_clipped_mwh = daily_clipped.max()
     avg_daily_clipped = daily_clipped.mean()
 
     # Calculate clipping duration patterns (for capacity sizing)
@@ -618,12 +622,27 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         max_power_mw = 20
         search_rationale = "Minimal clipping (exploratory range)"
     else:
-        # Size battery to capture up to 250% of peak clipping (aggressive search)
-        # This ensures we don't miss the optimal if it requires high power
-        min_power_mw = max(1, peak_clipping_mw * 0.1) # Start low
-        # Use 2.5x peak or 1.5x max, whichever is larger, to avoid edge effects
-        max_power_mw = max(peak_clipping_mw * 2.5, max_clipping_mw * 1.5)
-        search_rationale = f"Broad search (10% to 250% of peak clipping: {peak_clipping_mw:.1f} MW)"
+        # --- DATA-DRIVEN HEURISTIC (CAPACITY-AWARE) ---
+        # 1. Target Capacity: Max Daily Clipped Energy (MWh)
+        target_capacity_mwh = max(max_daily_clipped_mwh * 1.1, 5.0)
+        
+        # 2. Target Power: Peak Clipping (MW)
+        target_power_mw = max(peak_clipping_mw * 1.1, 5.0)
+        
+        # 3. Max Power Search: Ensure we can capture the daily energy even with reasonable duration (e.g. 2h)
+        # If we only search up to Peak MW, we might miss optimal if Duration is constrained.
+        # So we ensure Max Power is at least Target Capacity / 2.0
+        max_power_mw = max(target_power_mw, target_capacity_mwh / 2.0)
+        min_power_mw = max(1.0, peak_clipping_mw * 0.1)
+        
+        search_rationale = f"Capacity-Aware: Power up to {max_power_mw:.0f} MW (to cover {target_capacity_mwh:.0f} MWh)"
+        
+        # 4. Max Duration Search: Ensure we can capture energy with lower power
+        # Heuristic: Allow duration to reach Target Capacity / Target Power * 1.5
+        heuristic_max_d = (target_capacity_mwh / target_power_mw) * 1.5
+        
+        # Clamp duration to reasonable bounds (4h - 12h) unless data screams for more
+        heuristic_max_d = max(4.0, min(heuristic_max_d, 12.0))
 
     # Display search rationale in left column
     with opt_col_left:
@@ -643,8 +662,11 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
     cache_key = hashlib.md5(cache_inputs.encode()).hexdigest()
 
     # ============================================================================
-    # GRID CONFIGURATION (Based on Slider Selection)
+    # SMART ITERATIVE SEARCH LOOP
     # ============================================================================
+
+    import time
+    from concurrent.futures import as_completed
 
     # Parse grid resolution from slider
     resolution_map = {
@@ -655,171 +677,379 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         "15×15 (225 configs, ~2min)": (15, 15),
         "20×20 (400 configs, ~3min)": (20, 20)
     }
-    n_power, n_duration = resolution_map[grid_resolution]
+    base_n_power, base_n_duration = resolution_map[grid_resolution]
 
-    # Duration range: adaptive based on resolution
-    # Focus on small durations (0.25h - 2h) with high granularity for typical Engie assets (1-2h or <1h)
+    # Initialize iterative variables
+    current_min_p, current_max_p = min_power_mw, max_power_mw
+    current_n_p = base_n_power
+    
+    # Duration range initialization
     if use_manual_search:
-        duration_range = np.linspace(manual_min_d, manual_max_d, n_duration)
-    elif n_duration == 5:
-        # Small range: 0.25h to 2h
-        duration_range = np.array([0.25, 0.5, 1.0, 1.5, 2.0])
-    elif n_duration == 7:
-        # Small-medium range: 0.25h to 3h
-        duration_range = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
-    elif n_duration == 10:
-        # Extended range with granularity: 0.25h to 4h
-        duration_range = np.array([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0])
-    elif n_duration == 12:
-        # Full range with high granularity: 0.25h to 6h
-        duration_range = np.linspace(0.25, 6.0, 12)
-    elif n_duration == 15:
-        # Extended range: 0.25h to 8h
-        duration_range = np.linspace(0.25, 8.0, 15)
-    elif n_duration == 20:
-        # Maximum range: 0.25h to 10h (for edge cases with long clipping periods)
-        duration_range = np.linspace(0.25, 10.0, 20)
+        current_min_d, current_max_d = manual_min_d, manual_max_d
     else:
-        # Fallback: default to 0.5h - 6h range
-        duration_range = np.linspace(0.5, 6.0, n_duration)
+        current_min_d = 0.25
+        current_max_d = heuristic_max_d # Use data-driven heuristic
+        search_rationale += f", Duration up to {current_max_d:.1f}h"
+    
+    current_n_d = base_n_duration
 
-    # Round to 2 decimal places for cleaner display
-    duration_range = np.round(duration_range, 2)
-
-    # Power range: n_power levels dynamically spaced
-    power_range = np.linspace(min_power_mw, max_power_mw, n_power)
-
-    # Smart rounding: Only round to integers for large ranges (>50 MW span)
-    # For small ranges, keep decimal precision to ensure requested resolution
-    power_span = max_power_mw - min_power_mw
-    if power_span > 50:
-        # Large range: round to integers
-        power_range = np.round(power_range).astype(int)
-        power_range = np.unique(power_range)  # Remove duplicates
-    else:
-        # Small range: keep 1 decimal place to preserve resolution
-        power_range = np.round(power_range, 1)
-
-    # Total configurations
-    total_configs = len(power_range) * len(duration_range)
-
-    # ============================================================================
-    # PARALLEL EXECUTION (7×5 Grid = 35 Configurations)
-    # ============================================================================
-
-    import time
-    from concurrent.futures import as_completed
-
+    # Local cache for results: {(power, duration): result_dict}
+    results_cache = {}
+    
+    max_iterations = 3 if enable_smart_expansion else 1
+    iteration = 0
+    optimal_found = False
+    
     start_time = time.time()
-
-    # Enhanced progress visualization (IN RIGHT COLUMN)
+    
+    # Placeholder for progress UI and heatmap
     with opt_col_right:
-        st.markdown(f"### 🗺️ Full Simulation Grid: {len(power_range)}×{len(duration_range)} = {total_configs} configurations")
-        
+        grid_title_placeholder = st.empty()
+        heatmap_placeholder = st.empty()  # Single placeholder for ALL iterations
         progress_container = st.container()
+
+    while iteration < max_iterations:
+        iteration += 1
+        
+        # --- 1. Generate Focused Grid ---
+        # Power range (Linear)
+        power_range = np.linspace(current_min_p, current_max_p, current_n_p)
+        power_span = current_max_p - current_min_p
+        if power_span > 50:
+            power_range = np.round(power_range).astype(int)
+            power_range = np.unique(power_range)
+        else:
+            power_range = np.round(power_range, 1)
+            
+        # Duration range (Focused / Non-Linear)
+        # We want high granularity in the 0.25h - 2.0h range (the "sweet spot")
+        # and coarser granularity for the tail.
+        if current_max_d > 2.0 and current_n_d >= 5:  # Lower threshold to work with smaller grids
+            # Define breakpoints for non-linear grid
+            # 0.25 - 2.0h: Very high density (50% of points)
+            # 2.0 - 4.0h: Medium density (30% of points)
+            # 4.0 - Max: Low density (20% of points)
+            
+            # Ensure we have enough points for each segment
+            n_p1 = max(3, int(current_n_d * 0.5))  # At least 3 points in sweet spot
+            n_p2 = max(2, int(current_n_d * 0.3))
+            n_p3 = max(current_n_d - n_p1 - n_p2, 1)
+            
+            if current_max_d > 4.0:
+                # Full 3-segment approach
+                d1 = np.linspace(current_min_d, 2.0, n_p1)
+                d2 = np.linspace(2.0, 4.0, n_p2 + 1)[1:]
+                d3 = np.linspace(4.0, current_max_d, n_p3 + 1)[1:]
+                duration_range = np.concatenate([d1, d2, d3])
+            else:
+                # 2-segment: sweet spot + tail
+                d1 = np.linspace(current_min_d, 2.0, n_p1)
+                d2 = np.linspace(2.0, current_max_d, n_p2 + n_p3 + 1)[1:]
+                duration_range = np.concatenate([d1, d2])
+            
+            duration_range = np.unique(duration_range)
+        else:
+            duration_range = np.linspace(current_min_d, current_max_d, current_n_d)
+            
+        duration_range = np.round(duration_range, 2)
+        
+        total_configs = len(power_range) * len(duration_range)
+        
+        # --- 2. Update UI ---
+        grid_title_placeholder.markdown(f"### 🗺️ Full Simulation Grid: {len(power_range)}×{len(duration_range)} = {total_configs} configurations (Iter {iteration}/{max_iterations})")
+        
         with progress_container:
             st.markdown(f"""
             <div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px; margin-bottom: 10px;'>
-                <h4 style='margin: 0; color: #0A5F7A;'>🔄 Running Full Simulation Grid</h4>
-                <p style='margin: 5px 0 0 0; color: #666;'>Testing {total_configs} configurations (Power: {min_power_mw:.0f}-{max_power_mw:.0f} MW × Duration: {duration_range[0]:.1f}-{duration_range[-1]:.1f}h)</p>
+                <h4 style='margin: 0; color: #0A5F7A;'>🔄 Running Iteration {iteration}</h4>
+                <p style='margin: 5px 0 0 0; color: #666;'>Testing range: {current_min_p:.0f}-{current_max_p:.0f} MW × {current_min_d:.1f}-{current_max_d:.1f}h</p>
             </div>
             """, unsafe_allow_html=True)
-
             progress_bar = st.progress(0)
             status_col1, status_col2, status_col3 = st.columns(3)
-            with status_col1:
-                status_completed = st.empty()
-            with status_col2:
-                status_current = st.empty()
-            with status_col3:
-                status_time = st.empty()
+            with status_col1: status_completed = st.empty()
+            with status_col2: status_current = st.empty()
+            with status_col3: status_time = st.empty()
 
-    # Initialize results storage
-    results_grid = []
-    revenue_matrix = np.zeros((len(power_range), len(duration_range)))
+        # --- 3. Identify New Configs & Apply Saturation Skipping ---
+        # Sort by Capacity (Power * Duration) to hit saturation early
+        # We want to process smaller batteries first.
+        all_configs = []
+        for p in power_range:
+            for d in duration_range:
+                all_configs.append((p, d))
+        
+        # Sort by capacity
+        all_configs.sort(key=lambda x: x[0] * x[1])
+        
+        configs_to_run = []
+        saturated_configs = [] # List of (p, d, revenue) that achieved 0 curtailment
+        
+        # First pass: Check cache and saturation
+        # We can't fully skip yet because we need to run simulations in order.
+        # But we can identify what needs to be run.
+        
+        # Actually, for saturation skipping to work efficiently with parallelism, 
+        # we should run in batches or just check saturation against *cached* results first.
+        # Simplified approach: We will run all non-cached, but we check if any CACHED result
+        # already dominates this config with 0 curtailment.
+        
+        # Better approach: We just run them. But if we find a result has 0 curtailment,
+        # we can potentially skip future larger ones in the same batch if we are careful.
+        # For now, let's stick to the user's request: "Skip them to save computation time".
+        # This implies we shouldn't even submit them.
+        
+        # To do this robustly in parallel, we need to know if a smaller config is saturated.
+        # But we haven't run the smaller config yet! 
+        # So we can only skip based on *already cached* saturated results.
+        # OR we run in generations. 
+        # Let's stick to: Skip if dominated by a CACHED saturated config.
+        # AND: If we run a config and it returns saturated, we add it to cache for next iteration/batch.
+        
+        # Identify saturated configs in cache
+        for (cp, cd), res in results_cache.items():
+             # Check if 'curtailed_mwh' is 0 (or very close)
+             # We need to ensure 'curtailed_mwh' is in the result. 
+             # If not available, we can't skip.
+             if res.get('curtailed_mwh', 1.0) < 0.1:
+                 saturated_configs.append((cp, cd, res['total_revenue']))
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        # Submit all power × duration combinations
-        futures = {}
-        for i, power_mw in enumerate(power_range):
-            for j, duration_h in enumerate(duration_range):
-                future = executor.submit(simulate_battery_config, power_mw, duration_h)
-                futures[future] = (i, j, power_mw, duration_h)
+        final_configs_to_run = []
+        skipped_count = 0
+        
+        for p, d in all_configs:
+            if (p, d) in results_cache:
+                continue
+                
+            # Check if dominated by any saturated config
+            is_dominated = False
+            dominated_revenue = 0
+            for sp, sd, srev in saturated_configs:
+                if p >= sp and d >= sd:
+                    is_dominated = True
+                    dominated_revenue = srev
+                    break
+            
+            if is_dominated:
+                # Skip simulation, artificially populate cache with EXACT revenue
+                results_cache[(p, d)] = {
+                    'power_mw': p,
+                    'duration_h': d,
+                    'total_revenue': dominated_revenue,  # EXACT copy
+                    'curtailed_mwh': 0.0, # It's saturated
+                    'is_skipped': True,  # Explicit flag for visualization
+                    'revenue_components': {} # Placeholder
+                }
+                skipped_count += 1
+            else:
+                final_configs_to_run.append((p, d))
+                
+        n_new = len(final_configs_to_run)
+        n_cached_or_skipped = total_configs - n_new
+        
+        # --- 4. Run Simulations & Live Updates ---
+        if n_new > 0:
+            # Helper to update heatmap live
+            def update_live_heatmap(curr_results_cache, curr_power_range, curr_duration_range, iter_num):
+                # Build matrices for ALL cached results (cumulative across iterations)
+                rev_mat = np.zeros((len(curr_power_range), len(curr_duration_range)))
+                skipped_x = []
+                skipped_y = []
+                
+                for i, p_val in enumerate(curr_power_range):
+                    for j, d_val in enumerate(curr_duration_range):
+                        res = curr_results_cache.get((p_val, d_val))
+                        if res:
+                            rev_mat[i, j] = res['total_revenue']
+                            # Check if explicitly marked as skipped
+                            if res.get('is_skipped', False):
+                                skipped_x.append(p_val)
+                                skipped_y.append(d_val)
+                
+                # Create figure
+                fig = go.Figure()
+                
+                # Heatmap
+                fig.add_trace(go.Heatmap(
+                    z=rev_mat.T,
+                    x=curr_power_range,
+                    y=curr_duration_range,
+                    colorscale='Viridis',
+                    colorbar=dict(title='Revenue ($)'),
+                    hovertemplate='Power: %{x:.0f} MW<br>Duration: %{y:.1f} h<br>Revenue: $%{z:,.0f}<extra></extra>'
+                ))
+                
+                # Skipped Markers (with better visibility)
+                if skipped_x:
+                    fig.add_trace(go.Scatter(
+                        x=skipped_x,
+                        y=skipped_y,
+                        mode='markers',
+                        marker=dict(
+                            symbol='x',
+                            color='white',
+                            size=10,
+                            line=dict(color='black', width=1)
+                        ),
+                        name='Skipped (Saturated)',
+                        showlegend=True
+                    ))
 
-        # Collect results as they complete
-        completed = 0
-        for future in as_completed(futures):
-            result = future.result()
-            i, j, power_mw, duration_h = futures[future]
-            revenue_matrix[i, j] = result['total_revenue']
-            results_grid.append(result)
-            completed += 1
+                fig.update_layout(
+                    title=f'Revenue Optimization Landscape (Iter {iter_num})',
+                    xaxis_title='Battery Power (MW)',
+                    yaxis_title='Battery Duration (hours)',
+                    height=500,
+                    margin=dict(l=0, r=0, t=40, b=0)
+                )
+                
+                # Use the SINGLE placeholder created outside the loop
+                heatmap_placeholder.plotly_chart(fig, use_container_width=True)
 
-            # Update progress
-            progress_pct = completed / total_configs
-            progress_bar.progress(progress_pct)
-            status_completed.metric("Completed", f"{completed}/{total_configs}")
-            status_current.metric("Current", f"{power_mw:.0f}MW × {duration_h:.1f}h")
-            elapsed = time.time() - start_time
-            eta = (elapsed / completed) * (total_configs - completed) if completed > 0 else 0
-            status_time.metric("ETA", f"{eta:.0f}s")
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(simulate_battery_config, p, d): (p, d) for p, d in final_configs_to_run}
+                
+                completed_new = 0
+                for future in as_completed(futures):
+                    p, d = futures[future]
+                    result = future.result()
+                    results_cache[(p, d)] = result
+                    
+                    # Check for saturation to help future skips (in next loop/iter)
+                    if result.get('curtailed_mwh', 1.0) < 0.1:
+                         saturated_configs.append((p, d, result['total_revenue']))
+                    
+                    completed_new += 1
+                    # Progress update
+                    total_completed = n_cached_or_skipped + completed_new
+                    progress_pct = total_completed / total_configs
+                    progress_bar.progress(progress_pct)
+                    status_completed.metric("Completed", f"{total_completed}/{total_configs}")
+                    status_current.metric("Current", f"{p:.0f}MW × {d:.1f}h")
+                    
+                    # ETA Calculation
+                    elapsed = time.time() - start_time
+                    if completed_new > 0:
+                        rate = elapsed / completed_new 
+                        remaining_sims = n_new - completed_new
+                        eta_seconds = rate * remaining_sims
+                        status_time.metric("ETA", f"{eta_seconds:.0f}s")
+                    
+                    # LIVE UPDATE every 5 simulations
+                    if completed_new % 5 == 0:
+                        update_live_heatmap(results_cache, power_range, duration_range, iteration)
+        else:
+             progress_bar.progress(1.0)
+             status_completed.metric("Completed", f"{total_configs}/{total_configs}")
+             status_time.metric("ETA", "0s")
+             
+        if skipped_count > 0:
+            st.toast(f"⏩ Skipped {skipped_count} saturated configs (Plateau Optimization)", icon="🚀")
 
+        # --- 5. Analyze Results & Check Edges ---
+        # Build revenue matrix for current grid
+        revenue_matrix = np.zeros((len(power_range), len(duration_range)))
+        results_grid = [] # For finding optimal result object later
+        
+        for i, p in enumerate(power_range):
+            for j, d in enumerate(duration_range):
+                res = results_cache.get((p, d))
+                if res:
+                    revenue_matrix[i, j] = res['total_revenue']
+                    results_grid.append(res)
+        
+        # --- FINAL ITERATION UPDATE ---
+        # Ensure the final state of this iteration is shown
+        # We reuse the helper logic but we need to call it or just let the loop finish.
+        # The helper above uses st.session_state placeholders. 
+        # Let's just do a final update call.
+        # Note: We need to define update_live_heatmap outside the if block if we want to call it here,
+        # but it was defined inside. That's a scope issue if n_new=0.
+        # However, if n_new=0, we didn't run sims, so we just show the static plot.
+        pass # We will rely on the final plot at the end of function or the last live update.
+
+        # --- FIND OPTIMAL (SMART PLATEAU HANDLING) ---
+        # Instead of just argmax (which picks the first max), we find ALL configs close to max revenue
+        # and pick the one with the SMALLEST CAPACITY.
+        max_rev = np.max(revenue_matrix)
+        tolerance = max_rev * 0.001 # 0.1% tolerance for "equal" revenue
+        
+        # Get indices of all configs within tolerance of max
+        candidates_idx = np.argwhere(revenue_matrix >= max_rev - tolerance)
+        
+        best_candidate = None
+        min_capacity = float('inf')
+        
+        for idx in candidates_idx:
+            i, j = idx
+            p = power_range[i]
+            d = duration_range[j]
+            cap = p * d
+            
+            # We want smallest capacity. If tie, smallest power.
+            if cap < min_capacity:
+                min_capacity = cap
+                best_candidate = (i, j)
+            elif cap == min_capacity:
+                if p < power_range[best_candidate[0]]:
+                    best_candidate = (i, j)
+        
+        optimal_idx_i, optimal_idx_j = best_candidate
+        optimal_power = power_range[optimal_idx_i]
+        optimal_duration = duration_range[optimal_idx_j]
+        optimal_revenue = revenue_matrix[optimal_idx_i, optimal_idx_j]
+        
+        # Check Edges (of the CHOSEN optimal, not the plateau edge)
+        # We only expand if the "Knee" itself is at the edge.
+        is_max_power_edge = (optimal_idx_i == len(power_range) - 1)
+        is_max_duration_edge = (optimal_idx_j == len(duration_range) - 1)
+        
+        # Smart Expansion Logic
+        expanded = False
+        if enable_smart_expansion and iteration < max_iterations:
+            if is_max_power_edge:
+                current_max_p = current_max_p * 1.5
+                current_n_p = int(current_n_p * 1.5)
+                expanded = True
+                st.toast(f"⚡ Expanding Power Range to {current_max_p:.0f} MW (Iter {iteration})", icon="🔄")
+            
+            if is_max_duration_edge:
+                current_max_d = current_max_d * 1.5
+                current_n_d = int(current_n_d * 1.5)
+                expanded = True
+                st.toast(f"⚡ Expanding Duration Range to {current_max_d:.1f} h (Iter {iteration})", icon="🔄")
+        
+        if not expanded:
+            break # Optimal found within bounds or max iterations reached
+            
+    # --- Final Cleanup ---
     elapsed_time = time.time() - start_time
     progress_container.empty()
-
-    # Check if suspiciously fast (likely cached)
-    expected_min_time = total_configs * 0.3  # Minimum ~0.3s per config
-    if elapsed_time < expected_min_time:
-        st.warning(f"""
-⚡ **Very fast completion ({elapsed_time:.1f}s)!** This suggests:
-- Results may be **cached** from previous run
-- OR data size is very small
-- Expected minimum: ~{expected_min_time:.0f}s for {total_configs} fresh simulations
-        """)
-    else:
-        st.success(f"✅ Grid search complete! Simulated {total_configs} configurations in {elapsed_time:.1f} seconds ({elapsed_time/total_configs:.2f}s per config)")
-
-    # ============================================================================
-    # FIND OPTIMAL CONFIGURATION
-    # ============================================================================
-
-    # Find optimal in revenue matrix
-    optimal_idx_flat = np.argmax(revenue_matrix)
-    optimal_idx_i, optimal_idx_j = np.unravel_index(optimal_idx_flat, revenue_matrix.shape)
-    optimal_power = power_range[optimal_idx_i]
-    optimal_duration = duration_range[optimal_idx_j]
+    st.success(f"✅ Optimization complete! Found optimal in {iteration} iteration(s).")
+    
+    # Re-calculate final optimal details for display
     optimal_capacity = optimal_power * optimal_duration
-    optimal_revenue = revenue_matrix[optimal_idx_i, optimal_idx_j]
-
-    # Find the corresponding result details
-    optimal_result = next(
-        r for r in results_grid
-        if r['power_mw'] == optimal_power and r['duration_h'] == optimal_duration
-    )
-
-    # Check if optimal is near edge (suggests broader search needed)
-    is_power_edge = (optimal_idx_i == 0 and optimal_power == min_power_mw) or (optimal_idx_i == len(power_range) - 1 and optimal_power == max_power_mw)
-    is_duration_edge = (optimal_idx_j == 0 and optimal_duration == duration_range[0]) or (optimal_idx_j == len(duration_range) - 1 and optimal_duration == duration_range[-1])
-
+    optimal_result = next(r for r in results_grid if r['power_mw'] == optimal_power and r['duration_h'] == optimal_duration)
+    
+    # Check final edge status for warning
+    is_power_edge = (optimal_power == current_min_p) or (optimal_power == current_max_p)
+    is_duration_edge = (optimal_duration == current_min_d) or (optimal_duration == current_max_d)
+    
     if is_power_edge or is_duration_edge:
         edge_dims = []
-        if is_power_edge:
-            edge_dims.append(f"power ({optimal_power:.0f} MW)")
-        if is_duration_edge:
-            edge_dims.append(f"duration ({optimal_duration:.1f}h)")
-        st.warning(f"""
-⚠️ **Search Space May Be Too Small**: Optimal is at edge of {' and '.join(edge_dims)} range.
-The true optimal might be even larger! Consider:
-- Increasing search range manually, or
-- Re-running with broader multipliers
-- True optimal could be outside current search space
-        """)
+        if is_power_edge: edge_dims.append(f"power ({optimal_power:.0f} MW)")
+        if is_duration_edge: edge_dims.append(f"duration ({optimal_duration:.1f}h)")
+        st.warning(f"⚠️ **Search Space Limit Reached**: Optimal is at edge of {' and '.join(edge_dims)} range even after expansion.")
 
     # ============================================================================
-    # OPTIMAL RESULTS & HEATMAP (RIGHT COLUMN)
+    # OPTIMAL RESULTS (RIGHT COLUMN)
     # ============================================================================
 
     with opt_col_right:
+        # Clear the live heatmap placeholder so we can render the final polished one (with stars etc)
+        if 'heatmap_placeholder' in locals():
+            heatmap_placeholder.empty()
+            
         # --- 1. Optimal Configuration Metrics ---
         st.markdown("### 🌟 Optimal Battery Configuration")
 
