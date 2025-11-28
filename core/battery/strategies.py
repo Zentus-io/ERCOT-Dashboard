@@ -751,7 +751,7 @@ class ClippingOnlyStrategy(DispatchStrategy):
 
         # PRIORITY 1: FORCED CHARGING from clipping (mandatory when available)
         if clipped_mw > 0.01:  # Meaningful clipping (> 10 kW)
-            if battery.can_charge():
+            if battery.can_charge(clipped_mw):  # Pass power_mw argument
                 # Charge up to min(clipping available, battery power limit)
                 charge_mw = min(clipped_mw, battery.specs.power_mw)
                 energy = battery.charge(charge_mw, dt)
