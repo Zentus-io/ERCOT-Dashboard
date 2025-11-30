@@ -1,13 +1,14 @@
 """
-Opportunity Analysis Page
+Strategy Analysis Page
 Zentus - ERCOT Battery Revenue Dashboard
 
-This page provides sensitivity analysis showing revenue impact
-across different forecast improvement levels and strategy comparison.
+This page allows users to:
+1. Analyze the sensitivity of revenue to forecast accuracy.
+2. Compare different dispatch strategies (Threshold, Rolling Window, MPC, Linear Optimization).
+3. Visualize price spreads and market opportunities.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -31,7 +32,7 @@ from utils.state import get_date_range_str, get_state, has_valid_config
 # PAGE CONFIGURATION
 # ============================================================================
 
-configure_page("Opportunity Analysis")
+configure_page("Strategy Analysis")
 apply_custom_styles()
 
 # ============================================================================
@@ -45,7 +46,7 @@ render_sidebar()
 # MAIN CONTENT
 # ============================================================================
 
-st.header("🎯 Revenue Opportunity Analysis")
+st.header("📈 Strategy Analysis")
 
 # Check if configuration is valid
 if not has_valid_config():
@@ -56,36 +57,34 @@ if not has_valid_config():
 # Get state
 state = get_state()
 
-if state.price_data is None:
-    st.error("⚠️ Price data not loaded. Please refresh the page or check data availability.")
+# --- STEP 1: CORE DATA INTEGRATION (GUARDRAILS) ---
+if state.price_data is None or state.price_data.empty:
+    st.error("⚠️ Price data not loaded. Please refresh the page or check data availability in the sidebar.")
     st.stop()
 
 if state.selected_node is None:
     st.error("⚠️ No settlement point selected. Please select a node in the sidebar.")
     st.stop()
 
-# Load node data
-# Load node data
-if state.price_data.empty:
-    st.warning("⚠️ No price data available. Please check your data source or date range.")
+# Filter data for selected node
+# Handle different column names for node
+node_col = 'node' if 'node' in state.price_data.columns else 'settlement_point'
+if node_col not in state.price_data.columns:
+    node_col = state.price_data.columns[0] # Fallback
+
+df_prices = state.price_data[state.price_data[node_col] == state.selected_node].copy()
+
+if df_prices.empty:
+    st.warning(f"⚠️ No data available for node {state.selected_node}. Please select a different node or date range.")
     st.stop()
 
-if 'node' in state.price_data.columns:
-    node_col = 'node'
-elif 'settlement_point' in state.price_data.columns:
-    node_col = 'settlement_point'
-elif 'SettlementPoint' in state.price_data.columns:
-    node_col = 'SettlementPoint'
-else:
-    st.error(f"❌ Price data has unexpected column names: {list(state.price_data.columns)}")
-    st.stop()
+# Ensure timestamp index
+if 'timestamp' in df_prices.columns:
+    df_prices['timestamp'] = pd.to_datetime(df_prices['timestamp'])
+    df_prices = df_prices.set_index('timestamp', drop=False).sort_index()
 
-node_data = state.price_data[state.price_data[node_col] == state.selected_node].copy()
-
-# Check if battery specs are configured
-if state.battery_specs is None:
-    st.error("⚠️ Battery specifications not configured. Please configure in the sidebar.")
-    st.stop()
+# Alias for compatibility with existing code
+node_data = df_prices
 
 # ============================================================================
 # SENSITIVITY ANALYSIS
@@ -97,9 +96,6 @@ st.info("""
 **Chart Guide:** The green LP Benchmark line represents the **theoretical maximum** achievable with perfect hindsight.
 The gap between your selected strategy and LP shows potential gains from strategy improvements.
 """)
-
-# Reduce points for performance (0, 10, 20... 100)
-
 
 def run_sensitivity_analysis(
     node_data: pd.DataFrame,
@@ -564,20 +560,13 @@ with col3:
         "LP @ 100% (Perfect)",
         f"${max_revenue_lp:,.0f}",
         delta=f"+${remaining:,.0f} remaining",
-        help="LP Benchmark at 100% (absolute theoretical maximum)"
+        help="Theoretical maximum revenue with perfect foresight"
     )
 
 with col4:
-    capture_pct = (captured / total_opportunity * 100) if total_opportunity != 0 else 0
+    capture_pct = (captured / total_opportunity * 100) if total_opportunity > 0 else 0
     st.metric(
-        "LP Capture Rate",
+        "Opportunity Captured",
         f"{capture_pct:.1f}%",
-        help="Percentage of LP improvement potential captured at current forecast level"
+        help="Percentage of total possible improvement captured"
     )
-
-# ============================================================================
-# FOOTER
-# ============================================================================
-
-st.markdown("---")
-st.caption("💡 Navigate to other pages in the sidebar to explore decision timelines and optimization strategies.")

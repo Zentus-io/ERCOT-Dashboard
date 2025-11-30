@@ -1,25 +1,33 @@
-"""ERCOT Direct API Data Fetcher (V1.0)
+"""
+ERCOT Bulk Report Downloader (Official API)
 Zentus - ERCOT Battery Revenue Dashboard
 
-This script fetches data directly from the ERCOT Public API, bypassing gridstatus
-limitations. It supports bulk archive downloads for historical data.
-
-Key Features:
-- Direct ERCOT API authentication
-- Bulk archive downloads (up to 1000 files per request)
-- Supports both RTM and DAM settlement point prices
-- Saves to CSV files locally (no database required)
-- Handles the 15-min RTM data efficiently
-
-Supported Reports:
-- NP6-905-CD: RTM Settlement Point Prices (15-min intervals)
-- NP6-785-ER: Historical RTM Hub/Zone Prices (weekly aggregated)
-- NP4-190-CD: DAM Settlement Point Prices (hourly)
+Purpose:
+    Downloads raw bulk data reports (ZIP/CSV) directly from the ERCOT Public API.
+    Useful for fetching historical archives or specific report types not supported
+    by the `gridstatus` library. Data is saved locally as Parquet/CSV.
 
 Usage:
-    python fetch_ercot_api.py --report RTM --start 2025-01-01 --end 2025-11-24
-    python fetch_ercot_api.py --report RTM_HISTORICAL --start 2025-01-01
-    python fetch_ercot_api.py --report DAM --start 2025-01-01 --end 2025-11-24
+    python scripts/fetch_ercot_bulk_reports.py --report RTM --start 2025-01-01
+    python scripts/fetch_ercot_bulk_reports.py --report WIND_GEN_GEO SOLAR_GEN_GEO --start 2025-01-01
+    python scripts/fetch_ercot_bulk_reports.py --help
+
+Arguments:
+    --report (str): Report type(s) to fetch. Options:
+                    RTM, RTM_HISTORICAL, DAM, DAM_AS,
+                    WIND_GEN_LZ, WIND_GEN_GEO, WIND_GEN_5MIN,
+                    SOLAR_GEN_LZ, SOLAR_GEN_GEO, SOLAR_GEN_5MIN
+    --start (str): Start date (YYYY-MM-DD).
+    --end (str): End date (YYYY-MM-DD). Default: yesterday.
+    --output (str): Output directory.
+    --format (str): Output format (csv/parquet).
+
+Examples:
+    # Download RTM Settlement Point Prices for 2025
+    python scripts/fetch_ercot_bulk_reports.py --report RTM --start 2025-01-01
+
+    # Download Hourly Wind and Solar Generation (Geographical)
+    python scripts/fetch_ercot_bulk_reports.py --report WIND_GEN_GEO SOLAR_GEN_GEO --start 2025-01-01
 """
 
 import argparse
@@ -81,6 +89,54 @@ REPORTS = {
         "output_dir": "DAM_AS_Prices",
         "bulk_limit": 500,
         "file_pattern": "DAMASNP4188",
+    },
+    "WIND_GEN_LZ": {
+        "emil_id": "NP4-732-CD",
+        "name": "Wind Power Production - Hourly (Load Zone)",
+        "description": "Hourly actual and forecast wind production by Load Zone (LZ_WEST, etc.)",
+        "output_dir": "Generation_Wind_LZ",
+        "bulk_limit": 500,
+        "file_pattern": "WPPHAF",
+    },
+    "WIND_GEN_GEO": {
+        "emil_id": "NP4-742-CD",
+        "name": "Wind Power Production - Hourly (Geographical)",
+        "description": "Hourly actual and forecast wind production by Geo Region (Panhandle, Coastal, etc.)",
+        "output_dir": "Generation_Wind_Geo",
+        "bulk_limit": 500,
+        "file_pattern": "WPP_HAF_GEO",
+    },
+    "WIND_GEN_5MIN": {
+        "emil_id": "NP4-733-CD",
+        "name": "Wind Power Production - 5-Minute Actuals",
+        "description": "5-minute actual wind production by Load Zone",
+        "output_dir": "Generation_Wind_5Min",
+        "bulk_limit": 500,
+        "file_pattern": "WPP5M",
+    },
+    "SOLAR_GEN_LZ": {
+        "emil_id": "NP4-737-CD",
+        "name": "Solar Power Production - Hourly (Load Zone)",
+        "description": "Hourly actual and forecast solar production by Load Zone",
+        "output_dir": "Generation_Solar_LZ",
+        "bulk_limit": 500,
+        "file_pattern": "SPPHAF",
+    },
+    "SOLAR_GEN_GEO": {
+        "emil_id": "NP4-745-CD",
+        "name": "Solar Power Production - Hourly (Geographical)",
+        "description": "Hourly actual and forecast solar production by Geo Region (West, NorthWest, etc.)",
+        "output_dir": "Generation_Solar_Geo",
+        "bulk_limit": 500,
+        "file_pattern": "SPP_HAF_GEO",
+    },
+    "SOLAR_GEN_5MIN": {
+        "emil_id": "NP4-738-CD",
+        "name": "Solar Power Production - 5-Minute Actuals",
+        "description": "5-minute actual solar production by Load Zone",
+        "output_dir": "Generation_Solar_5Min",
+        "bulk_limit": 500,
+        "file_pattern": "SPP5M",
     },
 }
 

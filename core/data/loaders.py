@@ -57,10 +57,19 @@ class SupabaseDataLoader:
                 "timestamp", (end_date + timedelta(days=1)).isoformat()
             )
 
-            # Increase limit to ensure we get all data for the date range
-            # 30 days * 24 hours * 4 intervals = ~2880 rows per market type
-            # Total ~6000 rows max for one node. Supabase default is 1000.
-            data = query.limit(10000).execute().data
+            # Fetch all data using pagination to bypass 1000-row limit
+            data = []
+            start = 0
+            batch_size = 1000
+            
+            while True:
+                response = query.range(start, start + batch_size - 1).execute()
+                if not response.data:
+                    break
+                data.extend(response.data)
+                if len(response.data) < batch_size:
+                    break
+                start += batch_size
 
             if not data:
                 return pd.DataFrame()
@@ -178,26 +187,66 @@ class SupabaseDataLoader:
             st.warning(f"An unexpected error occurred fetching date range: {e}")
             return None, None
 
-    def get_node_availability(self, node: str) -> pd.DataFrame:
+    def get_node_availability(
+        self,
+        node: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> pd.DataFrame:
         """
         Fetches daily data availability for a specific node.
         Returns a DataFrame with 'date' and 'completeness' (0-100).
+        
+        Parameters
+        ----------
+        node : str
+            Settlement point name
+        start_date : Optional[date]
+            Start date for availability query (inclusive)
+        end_date : Optional[date]
+            End date for availability query (inclusive)
         """
         try:
             # Query to get counts per day
             # Note: This is a simplified approach. For large datasets,
             # a database view or RPC would be more performant.
             # We fetch only timestamps for the node to minimize data transfer.
-            response = self.client.table("ercot_prices") \
+            query = self.client.table("ercot_prices") \
                 .select("timestamp") \
                 .eq("settlement_point", node) \
-                .eq("market", "RTM") \
-                .execute()
+                .eq("market", "RTM")
+            
+            # Apply date range filters if provided
+            if start_date:
+                query = query.gte("timestamp", start_date.isoformat())
+            if end_date:
+                # Add one day to end_date to include the entire end day
+                end_dt = date(end_date.year, end_date.month, end_date.day) + timedelta(days=1)
+                query = query.lt("timestamp", end_dt.isoformat())
+            
+            # Fetch all data using pagination to bypass 1000-row limit
+            all_data = []
+            start = 0
+            batch_size = 1000
+            
+            while True:
+                # Range is inclusive
+                response = query.range(start, start + batch_size - 1).execute()
+                
+                if not response.data:
+                    break
+                    
+                all_data.extend(response.data)
+                
+                if len(response.data) < batch_size:
+                    break
+                    
+                start += batch_size
 
-            if not response.data:
+            if not all_data:
                 return pd.DataFrame(columns=['date', 'completeness'])
 
-            df = pd.DataFrame(response.data)
+            df = pd.DataFrame(all_data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['date'] = df['timestamp'].dt.date  # type: ignore[attr-defined]
 
@@ -299,6 +348,77 @@ class SupabaseDataLoader:
             return pd.DataFrame()
         except Exception as e:
             st.warning(f"Unexpected error loading Engie asset data: {e}")
+            return pd.DataFrame()
+
+    def load_generation_data(
+        self,
+        node: str,
+        fuel_type: str = 'Solar',
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> pd.DataFrame:
+        """
+        Load generation data (Solar/Wind) for a specific node.
+        """
+        try:
+            query = self.client.table("ercot_generation").select("timestamp, gen_mw, forecast_mw, potential_mw")
+            query = query.eq("settlement_point", node).eq("fuel_type", fuel_type)
+            
+            if start_date:
+                query = query.gte("timestamp", start_date.isoformat())
+            if end_date:
+                # Add 1 day to include the end date fully
+                query = query.lte("timestamp", (end_date + timedelta(days=1)).isoformat())
+            
+            # Enforce ordering for deterministic pagination
+            query = query.order("timestamp", desc=False)
+                
+            # Fetch all data using pagination to bypass 1000-row limit
+            data = []
+            start = 0
+            batch_size = 1000
+            
+            print(f"DEBUG: Fetching generation for {node} {fuel_type} from {start_date} to {end_date}")
+            
+            while True:
+                print(f"DEBUG: Fetching range {start} to {start + batch_size - 1}")
+                response = query.range(start, start + batch_size - 1).execute()
+                if not response.data:
+                    print("DEBUG: No data returned in batch")
+                    break
+                
+                batch_len = len(response.data)
+                print(f"DEBUG: Fetched {batch_len} rows")
+                data.extend(response.data)
+                
+                if batch_len < batch_size:
+                    break
+                start += batch_size
+            
+            print(f"DEBUG: Total rows fetched: {len(data)}")
+            
+            if not data:
+                return pd.DataFrame()
+                
+            df = pd.DataFrame(data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Convert to US/Central if TZ-aware, else assume it matches price data (which is usually local-naive in this app)
+            # The fetch script inserts as UTC (isoformat). 
+            # Price data in this app is usually naive (local time).
+            # We need to convert UTC -> Central -> Naive to match.
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_convert('US/Central').dt.tz_localize(None)
+                
+            df = df.set_index('timestamp').sort_index()
+            print(f"DEBUG: Final DataFrame range: {df.index.min()} to {df.index.max()}")
+            return df
+            
+        except APIError as e:
+            st.error(f"Database error loading generation data: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            st.warning(f"Unexpected error loading generation data: {e}")
             return pd.DataFrame()
 
 
