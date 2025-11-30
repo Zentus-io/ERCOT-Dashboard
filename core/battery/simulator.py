@@ -200,7 +200,7 @@ class BatterySimulator:
         return result_df
 
     @staticmethod
-    @st.cache_data(show_spinner=False)
+    @st.cache_resource(show_spinner=False)
     def run_simulation_cached(
         price_df: pd.DataFrame,
         battery_specs: dict,
