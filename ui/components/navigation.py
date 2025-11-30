@@ -23,8 +23,9 @@ def render_top_nav():
         {"name": "Operations", "path": "pages/3_🔋_Operations.py", "icon": "🔋"},
         {"name": "Revenue", "path": "pages/4_💰_Revenue.py", "icon": "💰"},
         {"name": "Asset Design", "path": "pages/5_🏗️_Asset_Design.py", "icon": "🏗️"},
-        {"name": "Timeline", "path": "pages/6_📅_Timeline.py", "icon": "📅"},
-        {"name": "Optimization", "path": "pages/7_⚙️_Optimization.py", "icon": "⚙️"},
+        {"name": "Strategy", "path": "pages/6_📈_Strategy_Analysis.py", "icon": "📈"},
+        {"name": "Timeline", "path": "pages/7_📅_Timeline.py", "icon": "📅"},
+        {"name": "Optimization", "path": "pages/8_⚙️_Optimization.py", "icon": "⚙️"},
     ]
 
     # --- STRUCTURE: BALANCED GHOST COLUMNS ---
