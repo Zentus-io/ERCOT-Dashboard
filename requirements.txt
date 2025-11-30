@@ -2,8 +2,9 @@
 # Zentus - Engie Urja AI Challenge 2025
 
 # Core dashboard framework
-streamlit>=1.28.0
+streamlit>=1.32.0  # Required for Altair v5 support
 streamlit-calendar
+protobuf==3.20.3  # Pin for Streamlit compatibility
 
 # Data manipulation
 pandas>=2.0.0  # Core data manipulation
@@ -14,6 +15,7 @@ numpy>=1.24.0
 scipy>=1.10.0  # Linear optimization (linprog) and signal processing
 
 # Visualization
+altair>=5.0.0  # Declarative statistical visualizations (AMR optimization charts)
 plotly>=5.17.0  # Interactive charts (used in ui/components/charts.py)
 matplotlib>=3.5.0  # Required by pandas.style.background_gradient() for colormaps
 tqdm>=4.65.0  # Progress bars (fetch_ercot_data.py, fetch_ercot_api.py)

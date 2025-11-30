@@ -297,20 +297,34 @@ def solve_linear_optimization(
     prices: np.ndarray,
     dt: float,
     battery_specs: 'BatterySpecs',
-    initial_soc: float
+    initial_soc: float,
+    max_charge_profile: Optional[np.ndarray] = None,
+    charge_cost_profile: Optional[np.ndarray] = None,
+    max_discharge_profile: Optional[np.ndarray] = None
 ) -> pd.DataFrame:
     """
     Solves the linear optimization problem for a given price series and battery state.
+    
     Parameters
     ----------
     prices : np.ndarray
-        Array of decision prices ($/MWh)
+        Array of decision prices ($/MWh) - used for discharge revenue
     dt : float
         Time step duration in hours
     battery_specs : BatterySpecs
         Battery specifications
     initial_soc : float
         Initial state of charge (MWh)
+    max_charge_profile : np.ndarray, optional
+        Array of maximum charge power (MW) for each timestep.
+        If None, defaults to battery_specs.power_mw.
+    charge_cost_profile : np.ndarray, optional
+        Array of charge costs ($/MWh) for each timestep.
+        If None, defaults to 'prices' (symmetric arbitrage).
+    max_discharge_profile : np.ndarray, optional
+        Array of maximum discharge power (MW) for each timestep.
+        If None, defaults to battery_specs.power_mw.
+        
     Returns
     -------
     pd.DataFrame
@@ -331,9 +345,16 @@ def solve_linear_optimization(
     # Total variables = 3 * n_steps
 
     # 1. Objective Function: Minimize Cost - Revenue
-    # Minimize: Sum(Price * C * dt) - Sum(Price * D * dt)
+    # Minimize: Sum(Cost_Charge * C * dt) - Sum(Price_Discharge * D * dt)
+    
+    # Determine charge costs
+    if charge_cost_profile is not None:
+        if len(charge_cost_profile) != n_steps:
+            raise ValueError("charge_cost_profile length must match prices length")
+        c_charge = charge_cost_profile * dt
+    else:
+        c_charge = prices * dt
 
-    c_charge = prices * dt
     c_discharge = -prices * dt
     c_soc = np.zeros(n_steps)
     c = np.concatenate([c_charge, c_discharge, c_soc])
@@ -342,8 +363,25 @@ def solve_linear_optimization(
     min_soc_mwh = battery_specs.min_soc * battery_specs.capacity_mwh
     max_soc_mwh = battery_specs.max_soc * battery_specs.capacity_mwh
 
-    bounds_c = [(0, battery_specs.power_mw)] * n_steps
-    bounds_d = [(0, battery_specs.power_mw)] * n_steps
+    # Dynamic Charge Bounds
+    if max_charge_profile is not None:
+        if len(max_charge_profile) != n_steps:
+            raise ValueError("max_charge_profile length must match prices length")
+        # Cap at battery power limit
+        safe_charge_profile = np.minimum(max_charge_profile, battery_specs.power_mw)
+        bounds_c = [(0, val) for val in safe_charge_profile]
+    else:
+        bounds_c = [(0, battery_specs.power_mw)] * n_steps
+
+    # Dynamic Discharge Bounds
+    if max_discharge_profile is not None:
+        if len(max_discharge_profile) != n_steps:
+            raise ValueError("max_discharge_profile length must match prices length")
+        safe_discharge_profile = np.minimum(max_discharge_profile, battery_specs.power_mw)
+        bounds_d = [(0, val) for val in safe_discharge_profile]
+    else:
+        bounds_d = [(0, battery_specs.power_mw)] * n_steps
+
     bounds_soc = [(min_soc_mwh, max_soc_mwh)] * n_steps
     bounds = bounds_c + bounds_d + bounds_soc
 
@@ -552,4 +590,222 @@ class MPCStrategy(DispatchStrategy):
         return {
             'strategy': 'MPC (Rolling Horizon)',
             'horizon_hours': self.horizon_hours
+        }
+
+
+class ClippingAwareMPCStrategy(DispatchStrategy):
+    """
+    MPC Strategy that is aware of clipping constraints and free energy.
+    
+    This strategy solves the LP with:
+    1. Dynamic Charge Limits: Charge <= Clipped_MW (at each step)
+    2. Zero Charge Cost: Charge_Cost = 0 (always)
+    
+    This allows the planner to see that charging is restricted to specific times
+    but is free, encouraging it to empty the battery before clipping events
+    to maximize capture.
+    """
+
+    def __init__(self, horizon_hours: int = 24):
+        self.horizon_hours = horizon_hours
+
+    def decide(self,
+               battery: Battery,
+               current_idx: int,
+               price_df: pd.DataFrame,
+               improvement_factor: float) -> DispatchDecision:
+
+        dt = calculate_dt(price_df)
+        horizon_steps = max(1, int(self.horizon_hours / dt))
+        horizon_end = min(current_idx + horizon_steps, len(price_df))
+        horizon_df = price_df.iloc[current_idx:horizon_end]
+
+        if horizon_df.empty:
+            return DispatchDecision('hold', 0, 0, 0, 0)
+
+        # 1. Prices (Revenue from Discharge)
+        prices = (horizon_df['price_mwh_da'] +
+                  horizon_df['forecast_error'] * improvement_factor).to_numpy()
+
+        # 2. Charge Constraints (Clipping Profile)
+        # If 'clipped_mw' is missing, assume 0 (no charging allowed)
+        if 'clipped_mw' in horizon_df.columns:
+            max_charge_profile = horizon_df['clipped_mw'].to_numpy()
+        else:
+            max_charge_profile = np.zeros(len(prices))
+
+        # 3. Charge Costs (Free!)
+        charge_cost_profile = np.zeros(len(prices))
+
+        # 4. Discharge Constraints (Cannot discharge during clipping)
+        # If clipping > 0, it means we are at interconnection limit.
+        # Discharging would violate the limit.
+        max_discharge_profile = np.full(len(prices), battery.specs.power_mw)
+        if 'clipped_mw' in horizon_df.columns:
+            # Where clipping > 0, max_discharge = 0
+            clipping_mask = horizon_df['clipped_mw'].to_numpy() > 0.001
+            max_discharge_profile[clipping_mask] = 0.0
+
+        # Solve LP with these constraints
+        plan = solve_linear_optimization(
+            prices=prices,
+            dt=dt,
+            battery_specs=battery.specs,
+            initial_soc=battery.soc,
+            max_charge_profile=max_charge_profile,
+            charge_cost_profile=charge_cost_profile,
+            max_discharge_profile=max_discharge_profile
+        )
+
+        # Take first action
+        if not plan.empty:
+            charge_mw = plan.iloc[0]['charge_mw']
+            discharge_mw = plan.iloc[0]['discharge_mw']
+        else:
+            charge_mw = 0
+            discharge_mw = 0
+
+        # Get prices for return object
+        row = price_df.iloc[current_idx]
+        decision_price = row['price_mwh_da'] + row['forecast_error'] * improvement_factor
+        actual_price = row['price_mwh_rt']
+
+        if discharge_mw > 0.001:
+            energy = battery.discharge(discharge_mw, dt)
+            return DispatchDecision('discharge', energy, energy, decision_price, actual_price)
+        if charge_mw > 0.001:
+            energy = battery.charge(charge_mw, dt)
+            return DispatchDecision('charge', -energy, energy, decision_price, actual_price)
+        return DispatchDecision('hold', 0, 0, decision_price, actual_price)
+
+    def get_metadata(self) -> dict:
+        return {
+            'strategy': 'Clipping-Aware MPC',
+            'horizon_hours': self.horizon_hours
+        }
+
+
+class ClippingOnlyStrategy(DispatchStrategy):
+    """
+    Strategy for clipping-only optimization.
+
+    Charging: FORCED when clipping occurs (mandatory, free energy)
+    Discharging: Uses base strategy (MPC/Rolling/Threshold) to optimize timing
+    No grid arbitrage: Never charge from grid
+
+    This strategy is designed for hybrid solar+storage systems where the battery
+    is sized specifically to capture clipped solar energy. The battery:
+    - Must charge when clipping is available (cannot skip it)
+    - Uses sophisticated dispatch strategies (MPC, Rolling, etc.) for discharge
+    - Never charges from the grid (no arbitrage)
+    - Tracks curtailed clipping (when battery is full)
+
+    Parameters
+    ----------
+    base_strategy : DispatchStrategy
+        The underlying strategy (MPC, Rolling Window, Threshold) used for
+        discharge optimization
+    """
+
+    def __init__(self, base_strategy: DispatchStrategy):
+        self.base_strategy = base_strategy
+        self._clipped_energy_captured = 0.0  # MWh captured from clipping
+        self._curtailed_clipping = 0.0  # MWh of clipping wasted (battery full)
+
+    def decide(
+        self,
+        battery: 'Battery',
+        current_idx: int,
+        price_df: pd.DataFrame,
+        improvement_factor: float
+    ) -> DispatchDecision:
+        """
+        Make dispatch decision prioritizing clipping capture.
+
+        Decision logic:
+        1. If clipping available AND battery can charge: FORCED CHARGE (mandatory)
+        2. If clipping available BUT battery full: Track curtailment, check discharge
+        3. If no clipping: Use base strategy for discharge ONLY (block charge)
+
+        Parameters
+        ----------
+        battery : Battery
+            Current battery state
+        current_idx : int
+            Current timestep index
+        price_df : pd.DataFrame
+            Price data with clipped_mw column
+        improvement_factor : float
+            Forecast improvement factor (0 to 1)
+
+        Returns
+        -------
+        DispatchDecision
+            Action to take this timestep
+        """
+        # Get time step and current data
+        dt = calculate_dt(price_df)
+        row = price_df.iloc[current_idx]
+        clipped_mw = row.get('clipped_mw', 0.0)
+        actual_price = row['price_mwh_rt']
+
+        # PRIORITY 1: FORCED CHARGING from clipping (mandatory when available)
+        if clipped_mw > 0.01:  # Meaningful clipping (> 10 kW)
+            if battery.can_charge(clipped_mw):  # Pass power_mw argument
+                # Charge up to min(clipping available, battery power limit)
+                charge_mw = min(clipped_mw, battery.specs.power_mw)
+                energy = battery.charge(charge_mw, dt)
+                self._clipped_energy_captured += energy
+
+                # FREE energy: decision_price = 0.0 (no cost)
+                return DispatchDecision(
+                    action='charge',
+                    power_mw=-energy / dt if dt > 0 else 0,  # Negative = charging
+                    energy_mwh=energy,
+                    decision_price=0.0,  # FREE!
+                    actual_price=0.0
+                )
+            else:
+                # Battery is full - cannot capture this clipping
+                # Track as curtailed (lost opportunity)
+                self._curtailed_clipping += clipped_mw * dt
+                # Fall through to check if we should discharge
+
+        # PRIORITY 2: Use base strategy for DISCHARGE optimization only
+        # (Block any charge decisions from base strategy - no grid charging!)
+        base_decision = self.base_strategy.decide(
+            battery, current_idx, price_df, improvement_factor
+        )
+
+        # BLOCK GRID CHARGING: Only clipping charging allowed
+        if base_decision.action == 'charge':
+            # Reject grid-based charging decision
+            # Return hold instead
+            return DispatchDecision(
+                action='hold',
+                power_mw=0,
+                energy_mwh=0,
+                decision_price=base_decision.decision_price,
+                actual_price=base_decision.actual_price
+            )
+
+        # Allow discharge and hold decisions from base strategy
+        return base_decision
+
+    def get_metadata(self) -> dict:
+        """
+        Return strategy metadata including clipping statistics.
+
+        Returns
+        -------
+        dict
+            Metadata with strategy name, base strategy info, and clipping stats
+        """
+        base_meta = self.base_strategy.get_metadata()
+        return {
+            **base_meta,  # Include base strategy metadata
+            'strategy': f'Clipping-Only ({base_meta.get("strategy", "Unknown")})',
+            'clipped_energy_captured': self._clipped_energy_captured,
+            'curtailed_clipping': self._curtailed_clipping,
+            'grid_arbitrage_revenue': 0.0,  # Always 0 for clipping-only
         }

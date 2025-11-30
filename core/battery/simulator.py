@@ -12,6 +12,8 @@ import streamlit as st
 
 from .battery import Battery, BatterySpecs
 from .strategies import (
+    ClippingAwareMPCStrategy,
+    ClippingOnlyStrategy,
     DispatchStrategy,
     LinearOptimizationStrategy,
     MPCStrategy,
@@ -94,24 +96,41 @@ class BatterySimulator:
     def _reconstruct_strategy(strategy_params: dict) -> DispatchStrategy:
         """Reconstructs the strategy object from the strategy parameters."""
         strategy_type = strategy_params.get('type', 'Threshold-Based')
+        is_clipping_only = strategy_params.get('is_clipping_only', False)
+        is_clipping_aware_mpc = strategy_params.get('is_clipping_aware_mpc', False)
 
-        if strategy_type == 'Threshold-Based':
-            return ThresholdStrategy(
+        # Reconstruct base strategy first
+        base_strategy = None
+        
+        if 'Threshold-Based' in strategy_type:
+            base_strategy = ThresholdStrategy(
                 charge_percentile=strategy_params.get('charge_percentile', 0.25),
                 discharge_percentile=strategy_params.get('discharge_percentile', 0.75)
             )
-        if strategy_type == 'Rolling Window Optimization':
-            return RollingWindowStrategy(
+        elif 'Rolling Window' in strategy_type:
+            base_strategy = RollingWindowStrategy(
                 window_hours=strategy_params.get('window_hours', 6)
             )
-        if strategy_type == 'Linear Optimization (Perfect Foresight)':
-            return LinearOptimizationStrategy()
-        if strategy_type == 'MPC (Rolling Horizon)':
-            return MPCStrategy(
-                horizon_hours=strategy_params.get('horizon_hours', 24)
-            )
-        # Default fallback
-        return ThresholdStrategy(0.25, 0.75)
+        elif 'Linear Optimization' in strategy_type:
+            base_strategy = LinearOptimizationStrategy()
+        elif 'MPC' in strategy_type:
+            if is_clipping_aware_mpc:
+                base_strategy = ClippingAwareMPCStrategy(
+                    horizon_hours=strategy_params.get('horizon_hours', 24)
+                )
+            else:
+                base_strategy = MPCStrategy(
+                    horizon_hours=strategy_params.get('horizon_hours', 24)
+                )
+        else:
+            # Default fallback
+            base_strategy = ThresholdStrategy(0.25, 0.75)
+        
+        # Wrap with ClippingOnlyStrategy if needed
+        if is_clipping_only:
+            return ClippingOnlyStrategy(base_strategy=base_strategy)
+        else:
+            return base_strategy
 
     @staticmethod
     def _initialize_simulation_state(price_df: pd.DataFrame, battery: Battery) -> SimulationState:
@@ -181,7 +200,7 @@ class BatterySimulator:
         return result_df
 
     @staticmethod
-    @st.cache_data(show_spinner=False)
+    @st.cache_resource(show_spinner=False)
     def run_simulation_cached(
         price_df: pd.DataFrame,
         battery_specs: dict,
@@ -260,16 +279,25 @@ class BatterySimulator:
         # Extract strategy params
         metadata = strategy.get_metadata()
         strategy_params = {'type': metadata.get('strategy', 'Unknown')}
+        
+        # Check if this is a ClippingOnlyStrategy wrapper
+        is_clipping_only = isinstance(strategy, ClippingOnlyStrategy)
+        strategy_params['is_clipping_only'] = is_clipping_only
+        
+        # If it's a wrapper, extract the base strategy
+        base_strategy = strategy.base_strategy if is_clipping_only else strategy
+        
+        # Check for ClippingAwareMPCStrategy
+        is_clipping_aware_mpc = isinstance(base_strategy, ClippingAwareMPCStrategy)
+        strategy_params['is_clipping_aware_mpc'] = is_clipping_aware_mpc
 
-        if isinstance(strategy, ThresholdStrategy):
-            strategy_params['charge_percentile'] = strategy.charge_percentile
-            strategy_params['discharge_percentile'] = strategy.discharge_percentile
+        if isinstance(base_strategy, ThresholdStrategy):
+            strategy_params['charge_percentile'] = base_strategy.charge_percentile
+            strategy_params['discharge_percentile'] = base_strategy.discharge_percentile
 
-        if isinstance(strategy, RollingWindowStrategy):
-            strategy_params['window_hours'] = strategy.window_hours
-
-        if isinstance(strategy, MPCStrategy):
-            strategy_params['horizon_hours'] = strategy.horizon_hours
+        if isinstance(base_strategy, (RollingWindowStrategy, MPCStrategy, ClippingAwareMPCStrategy)):
+            strategy_params['window_hours'] = getattr(base_strategy, 'window_hours', None)
+            strategy_params['horizon_hours'] = getattr(base_strategy, 'horizon_hours', None)
 
         return self.run_simulation_cached(
             price_df,

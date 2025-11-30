@@ -1,15 +1,30 @@
-"""Optimized ERCOT Data Fetcher for Supabase (V4.0 - Smart Gap Detection)
+"""
+ERCOT Price Data Fetcher (Supabase)
 Zentus - ERCOT Battery Revenue Dashboard
 
-This script intelligently fetches only missing Day-Ahead (DAM) and Real-Time (RTM)
-settlement prices from the ERCOT API. It queries the database to find incomplete days,
-fetches only what's needed, and reports any remaining gaps.
+Purpose:
+    Intelligently fetches Day-Ahead (DAM) and Real-Time (RTM) settlement prices
+    from ERCOT (via `gridstatus`) and stores them in the Supabase `ercot_prices` table.
+    It automatically detects missing data gaps and fills them.
 
-Key Features:
-- Auto-detects date range from database (earliest to yesterday)
-- Only fetches incomplete days (missing DAM or RTM data)
-- Never attempts to fetch today's data (avoids infinite loops)
-- Reports remaining gaps after fetch completion
+Usage:
+    python scripts/fetch_ercot_data.py --start 2025-01-01
+    python scripts/fetch_ercot_data.py --help
+
+Arguments:
+    --start (str): Start date (YYYY-MM-DD). Default: Earliest date in DB or 2024-01-01.
+    --end (str): End date (YYYY-MM-DD). Default: Yesterday.
+    --filter-engie (flag): Only fetch data for Engie/Broad Reach Power assets (faster).
+
+Examples:
+    # Fill all missing data from the earliest record in DB to yesterday
+    python scripts/fetch_ercot_data.py
+
+    # Fetch data for a specific range
+    python scripts/fetch_ercot_data.py --start 2025-11-20 --end 2025-11-26
+
+    # Fetch only for Engie assets (useful for quick updates)
+    python scripts/fetch_ercot_data.py --filter-engie
 """
 
 import argparse
@@ -210,9 +225,33 @@ def get_database_date_range(supabase: Client) -> tuple[date, date] | None:
     return None
 
 
-def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> List[date]:
+def find_incomplete_days(
+    supabase: Client, 
+    start_date: date, 
+    end_date: date,
+    filter_nodes: Optional[Set[str]] = None
+) -> List[date]:
     """
     Analyzes the database to find which days in the range are missing data.
+    
+    If filter_nodes is provided, checks that each filtered node has complete data
+    (96 RTM records per day). Otherwise, checks if any data exists for each day.
+    
+    Parameters
+    ----------
+    supabase : Client
+        Supabase client instance
+    start_date : date
+        Start of date range to check
+    end_date : date
+        End of date range to check
+    filter_nodes : Optional[Set[str]]
+        If provided, only check these specific settlement points for completeness
+        
+    Returns
+    -------
+    List[date]
+        List of dates that need to be fetched
     """
     print("\n🧐 Analyzing existing data in Supabase to find gaps...")
 
@@ -233,6 +272,80 @@ def find_incomplete_days(supabase: Client, start_date: date, end_date: date) -> 
         print(f"   -> Could not get settlement points. Will fetch all days. Error: {e}")
         return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
 
+    # Node-aware completeness checking (when filtering specific nodes)
+    if filter_nodes:
+        print(f"   -> Checking per-node completeness for {len(filter_nodes)} filtered nodes...")
+        
+        try:
+            # Fetch RTM data for filtered nodes within the date range
+            # Query: settlement_point IN filter_nodes AND market = 'RTM' AND date in range
+            # Use pagination to bypass Supabase 1000-row limit
+            all_data = []
+            start = 0
+            batch_size = 1000
+            
+            base_query = supabase.table("ercot_prices") \
+                .select("timestamp, settlement_point") \
+                .eq("market", "RTM") \
+                .in_("settlement_point", list(filter_nodes)) \
+                .gte("timestamp", start_date.isoformat()) \
+                .lt("timestamp", (end_date + timedelta(days=1)).isoformat())
+
+            while True:
+                response = base_query.range(start, start + batch_size - 1).execute()
+                if not response.data:
+                    break
+                all_data.extend(response.data)
+                if len(response.data) < batch_size:
+                    break
+                start += batch_size
+            
+            if not all_data:
+                print("   -> No data found for filtered nodes. Will fetch all days.")
+                return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+            
+            # Convert to DataFrame for easier grouping
+            df = pd.DataFrame(all_data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['date'] = df['timestamp'].dt.date
+            
+            # Count records per (date, settlement_point)
+            daily_node_counts = df.groupby(['date', 'settlement_point']).size().reset_index(name='count')
+            
+            # Find incomplete days: days where ANY filtered node has < 96 RTM records
+            all_days = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+            incomplete_days = set()
+            
+            for day in all_days:
+                for node in filter_nodes:
+                    # Check if this node has data for this day
+                    mask = (daily_node_counts['date'] == day) & (daily_node_counts['settlement_point'] == node)
+                    node_count = daily_node_counts[mask]['count'].values
+                    
+                    if len(node_count) == 0 or node_count[0] < EXPECTED_RTM_RECORDS_PER_DAY:
+                        # This node is missing data or has incomplete data for this day
+                        incomplete_days.add(day)
+                        break  # No need to check other nodes for this day
+            
+            days_to_fetch = sorted(list(incomplete_days))
+            
+            if not days_to_fetch:
+                print("   -> ✨ All filtered nodes have complete data for the specified range.")
+            else:
+                print(f"   -> Found {len(days_to_fetch)} day(s) with incomplete data for filtered nodes.")
+            
+            return days_to_fetch
+            
+        except APIError as e:
+            print(f"   -> Database error during node-aware gap detection: {e}")
+            print("   -> Falling back to fetching all days in range.")
+            return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+        except Exception as e:  # pylint: disable=broad-except
+            print(f"   -> Unexpected error during node-aware gap detection: {e}")
+            print("   -> Falling back to fetching all days in range.")
+            return [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+    
+    # Global day-level check (when no filtering - original behavior)
     # Use lightweight get_distinct_days function (much faster than get_daily_summary)
     try:
         distinct_days_res = supabase.rpc('get_distinct_days', {
@@ -408,7 +521,7 @@ def main():
     print(f"\n📅 Target date range: {start_date} to {end_date}")
     print(f"   ({(end_date - start_date).days + 1} days total)")
 
-    days_to_fetch = find_incomplete_days(supabase, start_date, end_date)
+    days_to_fetch = find_incomplete_days(supabase, start_date, end_date, engie_nodes)
 
     if not days_to_fetch:
         return 0

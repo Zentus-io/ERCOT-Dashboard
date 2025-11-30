@@ -52,9 +52,10 @@ The dashboard provides 7 specialized analysis pages:
 2. **📈 Price Analysis** - Price dynamics, forecast errors, and extreme events
 3. **🔋 Operations** - State of charge tracking and dispatch action distribution
 4. **💰 Revenue** - Cumulative revenue tracking and pricing analysis
-5. **🎯 Opportunity** - Sensitivity analysis across forecast improvement levels
-6. **📊 Timeline** - Gantt-style dispatch visualization showing charge/discharge patterns
-7. **⚙️ Optimization** - Deep-dive into strategy decision-making logic
+5. **🏗️ Asset Design** - Hybrid asset configuration
+6. **📈 Strategy Analysis** - Sensitivity analysis & strategy comparison
+7. **📅 Timeline** - Gantt-style dispatch visualization showing charge/discharge patterns
+8. **⚙️ Optimization** - Deep-dive into strategy decision-making logic
 
 ### Interactive Configuration
 
@@ -112,9 +113,10 @@ ERCOT-Dashboard/
 │   ├── 2_📈_Price_Analysis.py     # Price dynamics and forecast errors
 │   ├── 3_🔋_Operations.py         # SOC and dispatch analysis
 │   ├── 4_💰_Revenue.py            # Revenue tracking over time
-│   ├── 5_🎯_Opportunity.py        # Sensitivity analysis
-│   ├── 6_📅_Timeline.py           # Gantt-style dispatch visualization
-│   └── 7_⚙️_Optimization.py      # Strategy deep-dive
+│   ├── 5_🏗️_Asset_Design.py       # Hybrid asset design
+│   ├── 6_📈_Strategy_Analysis.py  # Sensitivity analysis & strategy comparison
+│   ├── 7_📅_Timeline.py           # Gantt-style dispatch visualization
+│   └── 8_⚙️_Optimization.py      # Strategy deep-dive
 │
 ├── core/                           # Business logic (OOP design)
 │   ├── battery/
@@ -292,6 +294,28 @@ The dashboard shows how revenue scales with forecast accuracy improvements.
 - Looks ahead N hours
 - Solves for optimal charge/discharge pattern
 - More sophisticated, benefits more from accuracy
+
+### Hybrid Asset Design & Optimization
+
+This module allows users to design a hybrid Solar + Storage asset and optimize the battery size to capture "clipped" energy.
+
+**1. Data Fetching (Solar Potential)**:
+
+- The system fetches **Regional Solar Potential** (Resource Availability) from ERCOT via the `ercot_generation` table.
+- This data represents the theoretical maximum power the sun provides in that specific region before any grid limits are applied.
+- The profile is normalized (0-1) and scales dynamically with the user's **Solar Capacity (MW)** input.
+
+**2. Simulation Logic (The "Value of Clipping")**:
+
+- **Clipped Energy (Green Area)**: Power that would normally be wasted because it exceeds the user-defined **Interconnection Limit (MW)** (POI limit).
+- The simulation treats this clipped energy as "free" fuel for the battery.
+- It runs a **full optimization sweep** (simulating every battery size from 0 MW up to 1.5x the solar capacity in 1 MW increments).
+- For each size, it calculates the revenue gained by capturing that free energy and discharging it during the daily price peaks (using 15-minute Real-Time Market prices).
+
+**3. Optimization Result**:
+
+- The system identifies the **Optimal Battery Size** that maximizes total revenue (Base Solar Revenue + Battery Arbitrage Revenue).
+- It quantifies the **Lost Revenue** of the current asset compared to the optimal configuration.
 
 ---
 
