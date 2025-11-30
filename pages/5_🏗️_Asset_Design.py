@@ -23,12 +23,13 @@ from core.battery.simulator import BatterySimulator
 from core.battery.strategies import (
     ClippingOnlyStrategy,
     ClippingAwareMPCStrategy,
-
+    calculate_dt,
     MPCStrategy,
     RollingWindowStrategy,
     ThresholdStrategy,
 )
 from core.battery.hybrid_strategy import HybridDispatchStrategy
+from core.analytics.curtailment_optimizer import calculate_curtailment_frontier
 from core.data.loaders import SupabaseDataLoader
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
@@ -360,8 +361,11 @@ if config_warnings:
 
 # --- REVENUE CALCULATION ---
 
+# Calculate time step duration (0.25h for 15-min RTM, 1.0h for hourly DAM)
+dt_hours = calculate_dt(df_sim)
+
 # 1. Base Solar Revenue (Same for everyone)
-df_sim['Solar_Revenue'] = (df_sim['Export_MW'] * df_sim['price_mwh_rt']) / 4
+df_sim['Solar_Revenue'] = df_sim['Export_MW'] * df_sim['price_mwh_rt'] * dt_hours
 base_solar_revenue = df_sim['Solar_Revenue'].sum()
 
 # Pre-calculate Daily Stats (Used for Heuristic & Sweep)
@@ -372,7 +376,7 @@ daily_stats = df_sim.groupby('Date').agg({
 })
 # Flatten columns
 daily_stats.columns = ['Daily_Clipped_Sum_MW', 'Daily_Max_Price', 'Daily_Min_Price']
-daily_stats['Daily_Clipped_MWh'] = daily_stats['Daily_Clipped_Sum_MW'] / 4
+daily_stats['Daily_Clipped_MWh'] = daily_stats['Daily_Clipped_Sum_MW'] * dt_hours
 
 # Ensure battery efficiency is defined
 batt_eff = state.battery_specs.efficiency
@@ -548,17 +552,21 @@ with col_top_right:
 # ALTAIR CHART HELPER FOR AMR VISUALIZATION
 # ============================================================================
 
-def create_optimization_chart(history_df, bounds_dict):
+def create_optimization_chart(history_df, bounds_dict, tick_positions=None):
     """
     Create multi-layer Altair chart for battery optimization with AMR support.
-    
+
     Parameters:
     -----------
     history_df : pd.DataFrame
         Dataframe with columns: x1, x2, y1, y2, revenue, power_mw, duration_h, is_skipped
     bounds_dict : dict
-        {'min_d': float, 'max_d': float, 'min_p': float, 'max_p': float}
-    
+        {'min_d': float, 'max_d': float, 'min_p': float, 'max_p': float,
+         'current_p': float (optional), 'current_d': float (optional)}
+    tick_positions : dict, optional
+        {'duration_values': list, 'power_values': list}
+        Discrete tick positions for grid centers
+
     Returns:
     --------
     alt.Chart: Layered Altair chart
@@ -569,53 +577,120 @@ def create_optimization_chart(history_df, bounds_dict):
         history_df = history_df.copy()
         history_df['revenue'] = pd.to_numeric(history_df['revenue'], errors='coerce')
         history_df = history_df.dropna(subset=['revenue'])
-        
+
         min_rev = history_df['revenue'].min()
         max_rev = history_df['revenue'].max()
-        
-        # st.write(f"Revenue range: ${min_rev:,.0f} - ${max_rev:,.0f}")
-        # st.write(f"Sample data: {history_df[['power_mw', 'duration_h', 'revenue']].head(3).to_dict('records')}")
     else:
         st.warning(f"⚠️ Chart data is empty! No simulation results to display.")
         min_rev, max_rev = 0, 1
-    
-    # Layer 1: Background (Unexplored Space)
-    background = alt.Chart(pd.DataFrame({'dummy': [1]})).mark_rect(
-        color='#f0f2f6'
-    ).encode(
-        x=alt.value(0),
-        x2=alt.value(600), # Approximate width
-        y=alt.value(0),
-        y2=alt.value(500)  # Approximate height
-    )
-    
-    # Create base chart
-    # Use explicit domains from bounds_dict to ensure the chart "zooms" to the current grid
-    base = alt.Chart(history_df).encode(
-        x=alt.X('duration_h:Q', title='Battery Duration (hours)', 
-                scale=alt.Scale(domain=[bounds_dict['min_d'], bounds_dict['max_d']])), 
-        y=alt.Y('power_mw:Q', title='Battery Power (MW)', 
-                scale=alt.Scale(domain=[bounds_dict['min_p'], bounds_dict['max_p']]))
-    )
 
-    # Layer 1: Heatmap Cells
-    heatmap = base.mark_rect().encode(
-        x=alt.X('x1:Q', title='Battery Duration (hours)'),
-        x2='x2:Q',
-        y=alt.Y('y1:Q', title='Battery Power (MW)'),
-        y2='y2:Q',
-        color=alt.Color(
-            'revenue:Q',
-            scale=alt.Scale(scheme='viridis', domain=[min_rev, max_rev]),
-            legend=None
-        ),
-        tooltip=[
-            alt.Tooltip('power_mw', title='Power (MW)', format='.1f'),
-            alt.Tooltip('duration_h', title='Duration (h)', format='.2f'),
-            alt.Tooltip('revenue', title='Revenue ($)', format=',.0f'),
-            alt.Tooltip('is_skipped', title='Skipped')
-        ]
-    )
+    # Prepare axis configuration
+    if tick_positions and 'duration_values' in tick_positions:
+        duration_axis = alt.Axis(
+            values=tick_positions['duration_values'],
+            labelAngle=0,
+            title='Battery Duration (hours)'
+        )
+    else:
+        duration_axis = alt.Axis(title='Battery Duration (hours)')
+
+    if tick_positions and 'power_values' in tick_positions:
+        power_axis = alt.Axis(
+            values=tick_positions['power_values'],
+            title='Battery Power (MW)'
+        )
+    else:
+        power_axis = alt.Axis(title='Battery Power (MW)')
+
+    # Layer 1: Multi-Level AMR Heatmap
+    # Render all grid resolutions simultaneously (coarse cells in back, fine cells on top)
+    heatmap_layers = []
+
+    if not history_df.empty and 'p_step' in history_df.columns and 'd_step' in history_df.columns:
+        # Group by resolution (p_step, d_step)
+        resolution_groups = history_df.groupby(['p_step', 'd_step'])
+
+        # Sort by cell area (coarsest first for z-order)
+        sorted_resolutions = sorted(
+            resolution_groups.groups.keys(),
+            key=lambda res: res[0] * res[1],  # area = p_step * d_step
+            reverse=True  # Largest cells first (back layer)
+        )
+
+        # Create heatmap layer for each resolution
+        for p_step_val, d_step_val in sorted_resolutions:
+            res_df = resolution_groups.get_group((p_step_val, d_step_val))
+
+            heatmap_layer = alt.Chart(res_df).mark_rect(
+                opacity=0.9  # Slight transparency to show multi-level structure
+            ).encode(
+                x=alt.X(
+                    'x1:Q',
+                    scale=alt.Scale(
+                        domain=[bounds_dict['min_d'], bounds_dict['max_d']],
+                        nice=False
+                    ),
+                    axis=duration_axis
+                ),
+                x2=alt.X2('x2:Q'),
+                y=alt.Y(
+                    'y1:Q',
+                    scale=alt.Scale(
+                        domain=[bounds_dict['min_p'], bounds_dict['max_p']],
+                        nice=False
+                    ),
+                    axis=power_axis
+                ),
+                y2=alt.Y2('y2:Q'),
+                color=alt.Color(
+                    'revenue:Q',
+                    scale=alt.Scale(scheme='viridis', domain=[min_rev, max_rev]),  # Global scale
+                    legend=None
+                ),
+                tooltip=[
+                    alt.Tooltip('power_mw', title='Power (MW)', format='.1f'),
+                    alt.Tooltip('duration_h', title='Duration (h)', format='.2f'),
+                    alt.Tooltip('revenue', title='Revenue ($)', format=',.0f'),
+                    alt.Tooltip('p_step', title='Grid P-Step', format='.1f'),
+                    alt.Tooltip('d_step', title='Grid D-Step', format='.2f'),
+                    alt.Tooltip('is_skipped', title='Skipped')
+                ]
+            )
+            heatmap_layers.append(heatmap_layer)
+
+    # Fallback: single-layer rendering if no step info
+    if not heatmap_layers:
+        heatmap_layers = [alt.Chart(history_df).mark_rect().encode(
+            x=alt.X(
+                'x1:Q',
+                scale=alt.Scale(
+                    domain=[bounds_dict['min_d'], bounds_dict['max_d']],
+                    nice=False
+                ),
+                axis=duration_axis
+            ),
+            x2=alt.X2('x2:Q'),
+            y=alt.Y(
+                'y1:Q',
+                scale=alt.Scale(
+                    domain=[bounds_dict['min_p'], bounds_dict['max_p']],
+                    nice=False
+                ),
+                axis=power_axis
+            ),
+            y2=alt.Y2('y2:Q'),
+            color=alt.Color(
+                'revenue:Q',
+                scale=alt.Scale(scheme='viridis', domain=[min_rev, max_rev]),
+                legend=None
+            ),
+            tooltip=[
+                alt.Tooltip('power_mw', title='Power (MW)', format='.1f'),
+                alt.Tooltip('duration_h', title='Duration (h)', format='.2f'),
+                alt.Tooltip('revenue', title='Revenue ($)', format=',.0f'),
+                alt.Tooltip('is_skipped', title='Skipped')
+            ]
+        )]
 
     # Layer 2: Optimal Point (Diamond)
     if not history_df.empty:
@@ -628,8 +703,14 @@ def create_optimization_chart(history_df, bounds_dict):
             stroke='white',
             strokeWidth=2
         ).encode(
-            x='duration_h:Q',
-            y='power_mw:Q',
+            x=alt.X(
+                'duration_h:Q',
+                scale=alt.Scale(domain=[bounds_dict['min_d'], bounds_dict['max_d']], nice=False)
+            ),
+            y=alt.Y(
+                'power_mw:Q',
+                scale=alt.Scale(domain=[bounds_dict['min_p'], bounds_dict['max_p']], nice=False)
+            ),
             tooltip=[
                 alt.Tooltip('power_mw', title='Optimal Power (MW)'),
                 alt.Tooltip('duration_h', title='Optimal Duration (h)'),
@@ -651,8 +732,14 @@ def create_optimization_chart(history_df, bounds_dict):
                 strokeWidth=1.5,
                 opacity=0.7
             ).encode(
-                x='duration_h:Q',
-                y='power_mw:Q'
+                x=alt.X(
+                    'duration_h:Q',
+                    scale=alt.Scale(domain=[bounds_dict['min_d'], bounds_dict['max_d']], nice=False)
+                ),
+                y=alt.Y(
+                    'power_mw:Q',
+                    scale=alt.Scale(domain=[bounds_dict['min_p'], bounds_dict['max_p']], nice=False)
+                )
             )
         else:
             skipped_markers = alt.Chart(pd.DataFrame()).mark_point()
@@ -660,24 +747,29 @@ def create_optimization_chart(history_df, bounds_dict):
         skipped_markers = alt.Chart(pd.DataFrame()).mark_point()
 
     # Layer 4: Current Asset Marker (Red Star)
-    # Check if current asset is within bounds (roughly)
     current_p = bounds_dict.get('current_p')
     current_d = bounds_dict.get('current_d')
-    
+
     current_marker = alt.Chart(pd.DataFrame()).mark_point()
     if current_p is not None and current_d is not None:
         # Create a single point dataframe
         curr_df = pd.DataFrame([{'power_mw': current_p, 'duration_h': current_d}])
         current_marker = alt.Chart(curr_df).mark_point(
             shape='star',
-            size=300, # Increased size
+            size=300,
             fill='red',
             stroke='white',
             strokeWidth=2,
-            opacity=1.0 # Ensure full opacity
+            opacity=1.0
         ).encode(
-            x='duration_h:Q',
-            y='power_mw:Q',
+            x=alt.X(
+                'duration_h:Q',
+                scale=alt.Scale(domain=[bounds_dict['min_d'], bounds_dict['max_d']], nice=False)
+            ),
+            y=alt.Y(
+                'power_mw:Q',
+                scale=alt.Scale(domain=[bounds_dict['min_p'], bounds_dict['max_p']], nice=False)
+            ),
             tooltip=[
                 alt.Tooltip('power_mw:Q', title='Current Power (MW)', format='.1f'),
                 alt.Tooltip('duration_h:Q', title='Current Duration (h)', format='.1f')
@@ -686,8 +778,11 @@ def create_optimization_chart(history_df, bounds_dict):
     else:
         current_marker = alt.Chart(pd.DataFrame()).mark_point()
     
-    # Combine layers
-    chart = heatmap + skipped_markers + optimal_marker + current_marker
+    # Combine layers: coarse heatmap cells → fine cells → markers
+    chart = heatmap_layers[0]
+    for layer in heatmap_layers[1:]:
+        chart += layer
+    chart = chart + skipped_markers + optimal_marker + current_marker
     
     # Configure
     chart = chart.properties(
@@ -756,7 +851,7 @@ with opt_col_left:
     
     if st.button(
         "🗑️ Clear Cache",
-        use_container_width=True,
+        width='stretch',
         help="Clear cached simulation results to force fresh calculations"
     ):
         st.cache_data.clear()
@@ -932,35 +1027,76 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         with status_col2: status_current = st.empty()
         with status_col3: status_time = st.empty()
 
-    # Helper to update heatmap
+    # Helper to update heatmap - AMR multi-level visualization
     def update_live_heatmap(curr_results_cache, curr_p_range, curr_d_range):
+        """Build cumulative history with ALL resolutions for AMR visualization"""
         history_data = []
-        p_list = list(curr_p_range)
-        d_list = list(curr_d_range)
-        
-        for p_val in p_list:
-            for d_val in d_list:
-                res = curr_results_cache.get((p_val, d_val))
-                if res:
-                    history_data.append({
-                        'x1': d_val - d_step/2, 'x2': d_val + d_step/2,
-                        'y1': p_val - p_step/2, 'y2': p_val + p_step/2,
-                        'power_mw': p_val,
-                        'duration_h': d_val,
-                        'revenue': res['total_revenue'],
-                        'is_skipped': res.get('is_skipped', False)
-                    })
-        
+
+        # Iterate over FULL cache (all resolutions), not just current grid
+        for (p_val, d_val), res in curr_results_cache.items():
+            # Get stored step sizes from result (fallback to current)
+            p_step_val = res.get('p_step', p_step)
+            d_step_val = res.get('d_step', d_step)
+
+            history_data.append({
+                'x1': d_val - d_step_val/2,
+                'x2': d_val + d_step_val/2,
+                'y1': p_val - p_step_val/2,
+                'y2': p_val + p_step_val/2,
+                'power_mw': p_val,
+                'duration_h': d_val,
+                'revenue': res['total_revenue'],
+                'is_skipped': res.get('is_skipped', False),
+                'p_step': p_step_val,  # Pass to chart for multi-level rendering
+                'd_step': d_step_val
+            })
+
         if history_data:
             history_df = pd.DataFrame(history_data)
+
+            # Bounds span ENTIRE search space (all iterations), not just current grid
+            all_powers = [row['power_mw'] for row in history_data]
+            all_durations = [row['duration_h'] for row in history_data]
+            all_p_steps = [row['p_step'] for row in history_data]
+            all_d_steps = [row['d_step'] for row in history_data]
+
+            max_p_step = max(all_p_steps) if all_p_steps else p_step
+            max_d_step = max(all_d_steps) if all_d_steps else d_step
+
             bounds_dict = {
-                'min_d': d_list[0] - d_step/2, 'max_d': d_list[-1] + d_step/2,
-                'min_p': p_list[0] - p_step/2, 'max_p': p_list[-1] + p_step/2,
-                'current_p': current_power, # Pass current asset info
+                'min_d': min(all_durations) - max_d_step/2,
+                'max_d': max(all_durations) + max_d_step/2,
+                'min_p': min(all_powers) - max_p_step/2,
+                'max_p': max(all_powers) + max_p_step/2,
+                'current_p': current_power,
                 'current_d': current_energy / current_power if current_power > 0 else 0
             }
-            chart = create_optimization_chart(history_df, bounds_dict)
+
+            # Tick positions for current grid only (finest resolution)
+            p_list = list(curr_p_range)
+            d_list = list(curr_d_range)
+            tick_positions = {
+                'duration_values': d_list,
+                'power_values': p_list
+            }
+
+            chart = create_optimization_chart(history_df, bounds_dict, tick_positions)
             heatmap_placeholder.altair_chart(chart, width='stretch')
+
+    # Helper functions for saturation detection
+    def _is_saturated_horizontally(p, d):
+        """Check if increasing duration at power p doesn't improve revenue (plateau)."""
+        for sp, sd, srev in saturated_configs:
+            if abs(p - sp) < 0.1 and sd >= d * 0.95:
+                return True
+        return False
+
+    def _is_saturated_vertically(p, d):
+        """Check if increasing power at duration d doesn't improve revenue."""
+        for sp, sd, srev in saturated_configs:
+            if abs(d - sd) < 0.1 and sp >= p * 0.95:
+                return True
+        return False
 
     # Continuous Loop
     while True:
@@ -983,8 +1119,10 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         
         # Sort by capacity (Smallest first) -> Critical for skipping logic
         new_configs.sort(key=lambda x: x[0] * x[1])
-        
-        total_processed = len(results_cache)
+
+        # Count only configs in CURRENT grid (not cumulative cache)
+        current_grid_configs = {(p, d) for p in power_range for d in duration_range}
+        total_processed = len(current_grid_configs & set(results_cache.keys()))
         
         # 3. Process individually with real-time updates
         batch_size = 10 
@@ -1016,7 +1154,8 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
                     results_cache[(p, d)] = {
                         'power_mw': p, 'duration_h': d,
                         'total_revenue': dominated_revenue,
-                        'curtailed_mwh': 0.0, 'is_skipped': True
+                        'curtailed_mwh': 0.0, 'is_skipped': True,
+                        'p_step': p_step, 'd_step': d_step  # Store grid resolution
                     }
                     # Update progress for skipped items too
                     total_processed += 1
@@ -1032,6 +1171,8 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
                     for future in as_completed(futures):
                         p, d = futures[future]
                         result = future.result()
+                        result['p_step'] = p_step  # Store grid resolution for AMR visualization
+                        result['d_step'] = d_step
                         results_cache[(p, d)] = result
                         
                         # Dynamic Saturation Update
@@ -1082,82 +1223,100 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         # Force update at end of grid
         update_live_heatmap(results_cache, power_range, duration_range)
 
-        # 4. Check for Expansion OR Refinement (Zoom)
+        # 4. Per-Dimension Expansion/Zoom Decision Logic
         if total_processed == total_configs and expansion_count < max_expansions and enable_smart_expansion:
-            
+
             # Find current optimal
             best_config = max(results_cache.items(), key=lambda x: x[1]['total_revenue'])
             opt_p, opt_d = best_config[0]
-            
-            # Check if optimal is at edge (Expansion Trigger)
-            # Use small tolerance for float comparison
+
+            # Initialize actions for each dimension
+            power_action = None  # 'expand_up', 'expand_down', 'zoom', or None
+            duration_action = None
+
+            # === POWER DIMENSION DECISION ===
             at_max_p = opt_p >= current_max_p - p_step * 1.01
-            at_max_d = opt_d >= current_max_d - d_step * 1.01
-            
-            # Only expand downwards if we are significantly above hard limits
             at_min_p = (opt_p <= current_min_p + p_step * 1.01) and (current_min_p > 1.0)
+
+            if at_max_p:
+                power_action = 'expand_up'
+            elif at_min_p:
+                power_action = 'expand_down'
+            elif p_step > 0.1 and _is_saturated_vertically(opt_p, opt_d):
+                power_action = 'zoom'  # Saturation detected, refine power resolution
+
+            # === DURATION DIMENSION DECISION ===
+            at_max_d = opt_d >= current_max_d - d_step * 1.01
             at_min_d = (opt_d <= current_min_d + d_step * 1.01) and (current_min_d > 0.5)
-            
-            should_expand = at_max_p or at_max_d or at_min_p or at_min_d
-            
-            if should_expand:
-                expansion_count += 1
-                st.toast(f"🚀 Expanding Search Space! (Round {expansion_count}/{max_expansions})", icon="🔭")
-                
-                # Expand in the direction of the optimal
-                if at_max_p: current_max_p += p_step * 5
-                if at_max_d: current_max_d += d_step * 5
-                if at_min_p: current_min_p = max(1.0, current_min_p - p_step * 5)
-                if at_min_d: current_min_d = max(0.5, current_min_d - d_step * 5)
-                
-                # Re-align to step
+
+            if at_max_d:
+                duration_action = 'expand_up'
+            elif at_min_d:
+                duration_action = 'expand_down'
+            elif d_step > 0.1 and _is_saturated_horizontally(opt_p, opt_d):
+                duration_action = 'zoom'  # Saturation detected, refine duration resolution
+
+            # === EXECUTE ACTIONS ===
+            actions_taken = []
+
+            # Power dimension actions
+            if power_action == 'expand_up':
+                current_max_p += p_step * 5
                 current_max_p = round(current_max_p / p_step) * p_step
-                current_max_d = round(current_max_d / d_step) * d_step
+                actions_taken.append("Expand Power ↑")
+            elif power_action == 'expand_down':
+                current_min_p = max(1.0, current_min_p - p_step * 5)
                 current_min_p = round(current_min_p / p_step) * p_step
-                current_min_d = round(current_min_d / d_step) * d_step
-                
-            # Refinement Trigger (Zoom In)
-            # If NOT at edge, and we have expansions left, ZOOM unless step is already tiny
-            elif p_step > 0.05 or d_step > 0.05:
-                expansion_count += 1 # Count zoom as an expansion step
-                st.toast(f"🔍 Zooming in on Optimal! (Round {expansion_count}/{max_expansions})", icon="🔬")
-                
-                # 1. Center on current optimal
-                # 2. Reduce range to +/- 2 steps of OLD grid
-                # 3. Halve the step size
-                
-                new_span_p = p_step * 4 # +/- 2 steps
-                new_span_d = d_step * 4 # +/- 2 steps
-                
-                current_min_p = max(0, opt_p - new_span_p/2)
+                actions_taken.append("Expand Power ↓")
+            elif power_action == 'zoom':
+                new_span_p = p_step * 4
+                current_min_p = max(1.0, opt_p - new_span_p/2)
                 current_max_p = opt_p + new_span_p/2
-                
+                p_step = max(0.1, round(p_step / 2, 1))
+                actions_taken.append("Zoom Power 🔍")
+
+            # Duration dimension actions
+            if duration_action == 'expand_up':
+                current_max_d += d_step * 5
+                current_max_d = round(current_max_d / d_step) * d_step
+                actions_taken.append("Expand Duration ↑")
+            elif duration_action == 'expand_down':
+                current_min_d = max(0.5, current_min_d - d_step * 5)
+                current_min_d = round(current_min_d / d_step) * d_step
+                actions_taken.append("Expand Duration ↓")
+            elif duration_action == 'zoom':
+                new_span_d = d_step * 4
                 current_min_d = max(0.5, opt_d - new_span_d/2)
                 current_max_d = opt_d + new_span_d/2
-                
-                # Refine steps
-                p_step = max(0.1, round(p_step / 2, 1))
                 d_step = max(0.1, round(d_step / 2, 2))
-                
-                # Reset saturation list as we are zooming in and previous coarse saturation might be misleading
-                # CLEAR cache for the zoom to be clean and focus the view
-                results_cache = {} 
-                saturated_configs = [] # Reset saturation for the new fine grid
-                max_revenue_seen = 0 # Reset max revenue
-                
+                actions_taken.append("Zoom Duration 🔍")
+
+            # === TERMINATION CHECK ===
+            if power_action is None and duration_action is None:
+                # No actions needed - we've converged
+                if expansion_count >= max_expansions or (p_step <= 0.1 and d_step <= 0.1):
+                    st.toast("✅ Optimization Complete (Converged)", icon="🏁")
+                    break
             else:
-                # Converged or max expansions reached
-                if expansion_count >= max_expansions:
-                    st.toast("✅ Optimization Complete (Max Expansions Reached)", icon="🏁")
-                break
+                # Actions were taken - increment counter and notify
+                expansion_count += 1
+                action_str = " + ".join(actions_taken)
+                st.toast(f"🚀 {action_str} (Round {expansion_count}/{max_expansions})", icon="🔭")
+
+                # Reset saturation if we zoomed (finer resolution changes saturation criteria)
+                if 'zoom' in power_action.lower() if power_action else False or \
+                   'zoom' in duration_action.lower() if duration_action else False:
+                    saturated_configs = []
+                    max_revenue_seen = 0
         elif total_processed == total_configs:
              st.toast("✅ Optimization Complete", icon="🏁")
              break
 
     # --- Final Cleanup ---
     elapsed_time = time.time() - start_time
-    progress_container.empty()
-    st.success(f"✅ Optimization complete! Found optimal in {elapsed_time:.1f}s.")
+    with progress_container:
+        progress_container.empty()
+        st.success(f"✅ Optimization complete! Found optimal in {elapsed_time:.1f}s.")
     
     # Re-calculate final optimal details for display
     # Find best config from final cache
@@ -1224,42 +1383,56 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         # --- 2. Heatmap Visualization (Altair AMR) ---
         st.markdown("### 📊 Revenue Heatmap")
 
-        # Build flat AMR data structure from final results
+        # Build AMR multi-level data structure from ALL cached results
         final_history_data = []
-        
-        # Convert to lists for indexing
-        p_list = list(power_range)
-        d_list = list(duration_range)
-        
-        for i, p_val in enumerate(p_list):
-            for j, d_val in enumerate(d_list):
-                res = results_cache.get((p_val, d_val))
-                if res:
-                    # Calculate individual cell bounds (Uniform Steps)
-                    p1 = p_val - p_step / 2
-                    p2 = p_val + p_step / 2
-                    d1 = d_val - d_step / 2
-                    d2 = d_val + d_step / 2
-                    
-                    final_history_data.append({
-                        'x1': d1, 'x2': d2,
-                        'y1': p1, 'y2': p2,
-                        'power_mw': p_val,
-                        'duration_h': d_val,
-                        'revenue': res['total_revenue'],
-                        'is_skipped': res.get('is_skipped', False)
-                    })
-        
+
+        # Iterate over FULL cache (all resolutions) for AMR visualization
+        for (p_val, d_val), res in results_cache.items():
+            # Get stored step sizes from result
+            p_step_val = res.get('p_step', p_step)
+            d_step_val = res.get('d_step', d_step)
+
+            final_history_data.append({
+                'x1': d_val - d_step_val/2,
+                'x2': d_val + d_step_val/2,
+                'y1': p_val - p_step_val/2,
+                'y2': p_val + p_step_val/2,
+                'power_mw': p_val,
+                'duration_h': d_val,
+                'revenue': res['total_revenue'],
+                'is_skipped': res.get('is_skipped', False),
+                'p_step': p_step_val,  # Include for multi-level rendering
+                'd_step': d_step_val
+            })
+
         if final_history_data:
             final_history_df = pd.DataFrame(final_history_data)
+
+            # Bounds span ENTIRE search space (all iterations)
+            all_powers = final_history_df['power_mw'].tolist()
+            all_durations = final_history_df['duration_h'].tolist()
+            all_p_steps = final_history_df['p_step'].tolist()
+            all_d_steps = final_history_df['d_step'].tolist()
+
+            max_p_step = max(all_p_steps)
+            max_d_step = max(all_d_steps)
+
             final_bounds_dict = {
-                'min_d': d_list[0] - d_step/2,
-                'max_d': d_list[-1] + d_step/2,
-                'min_p': p_list[0] - p_step/2,
-                'max_p': p_list[-1] + p_step/2
+                'min_d': min(all_durations) - max_d_step/2,
+                'max_d': max(all_durations) + max_d_step/2,
+                'min_p': min(all_powers) - max_p_step/2,
+                'max_p': max(all_powers) + max_p_step/2
             }
-            
-            final_chart = create_optimization_chart(final_history_df, final_bounds_dict)
+
+            # Tick positions for finest resolution (final grid)
+            p_list = list(power_range)
+            d_list = list(duration_range)
+            final_tick_positions = {
+                'duration_values': d_list,
+                'power_values': p_list
+            }
+
+            final_chart = create_optimization_chart(final_history_df, final_bounds_dict, final_tick_positions)
             final_chart = final_chart.properties(
                 title=f"Full Simulation Grid Search: {len(power_range)}×{len(duration_range)} = {total_configs} Configurations"
             )
@@ -1279,6 +1452,243 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
         st.info(f"💡 **Recommended**: Upgrade to **{optimal_power:.0f} MW / {optimal_capacity:.1f} MWh** battery to capture **${revenue_improvement:,.0f}** additional revenue.")
     else:
         st.success("🎉 Current asset configuration is already optimal!")
+    
+    # ============================================================================
+    # CURTAILMENT ELIMINATION ANALYSIS
+    # ============================================================================
+    
+    st.markdown("---")
+    st.markdown("### 🎯 Curtailment Elimination: Minimum Battery Configurations")
+    
+    with st.spinner("Calculating minimum configurations for zero curtailment..."):
+        # Calculate curtailment frontier to find zero-curtailment configurations
+        peak_clipping = df_sim['Clipped_MW'].quantile(0.99)
+        
+        # Define search ranges for frontier calculation
+        # Power: From peak clipping up to 3x peak (to find capacity trade-offs)
+        power_search = np.linspace(peak_clipping * 0.95, peak_clipping * 3.0, 20)
+        # Duration: Wide range to catch the curve (includes short-duration batteries)
+        duration_search = np.linspace(0.1, 16.0, 160)  # 0.1h steps, includes high-power/short-duration configs
+        
+        # Calculate curtailment for various configurations
+        frontier_df = calculate_curtailment_frontier(
+            df_sim['Clipped_MW'],
+            df_sim['price_mwh_rt'],
+            efficiency=batt_eff,
+            power_range=power_search,
+            duration_range=duration_search
+        )
+        
+        # Filter to configurations with effectively zero curtailment (<0.1%)
+        valid_configs = frontier_df[frontier_df['curtailment_pct'] < 0.1].copy()
+        
+        if not valid_configs.empty:
+            # FIND TRUE FRONTIER: For each power level, find the MINIMUM duration that works
+            # Group by power and take the row with min duration
+            frontier_curve = valid_configs.loc[valid_configs.groupby('power_mw')['duration_h'].idxmin()].copy()
+            frontier_curve = frontier_curve.sort_values('power_mw')
+            
+            # 1. Minimum Power Configuration (The absolute lowest MW that works)
+            min_power_row = frontier_curve.iloc[0]
+            min_power_p = min_power_row['power_mw']
+            min_power_d = min_power_row['duration_h']
+            min_power_c = min_power_p * min_power_d
+            
+            # 2. Minimum Capacity Configuration (The absolute lowest MWh that works)
+            # Usually found at higher power levels where discharge is faster
+            min_capacity_row = frontier_curve.loc[frontier_curve['capacity_mwh'].idxmin()]
+            min_capacity_p = min_capacity_row['power_mw']
+            min_capacity_d = min_capacity_row['duration_h']
+            min_capacity_c = min_capacity_row['capacity_mwh']
+            
+            # Simulate both configurations for actual revenue
+            min_power_res = simulate_battery_config(min_power_p, min_power_d)
+            min_capacity_res = simulate_battery_config(min_capacity_p, min_capacity_d)
+            
+            # Extract results
+            min_power_revenue = min_power_res['total_revenue']
+            min_power_batt_rev = min_power_res['battery_revenue']
+            
+            min_capacity_revenue = min_capacity_res['total_revenue']
+            min_capacity_batt_rev = min_capacity_res['battery_revenue']
+            
+        else:
+            # Fallback if no zero-curtailment config found in range
+            min_power_p = peak_clipping
+            min_power_d = 10.0
+            min_power_c = min_power_p * min_power_d
+            
+            min_capacity_p = peak_clipping * 1.5
+            min_capacity_d = 6.0
+            min_capacity_c = min_capacity_p * min_capacity_d
+            
+            min_power_res = simulate_battery_config(min_power_p, min_power_d)
+            min_capacity_res = simulate_battery_config(min_capacity_p, min_capacity_d)
+            
+            min_power_revenue = min_power_res['total_revenue']
+            min_power_batt_rev = min_power_res['battery_revenue']
+            min_capacity_revenue = min_capacity_res['total_revenue']
+            min_capacity_batt_rev = min_capacity_res['battery_revenue']
+            
+            frontier_curve = pd.DataFrame() # Empty
+    
+    # Create comparison DataFrame with 4 configurations
+    comparison_configs = pd.DataFrame([
+        {
+            'Configuration': 'Current Asset',
+            'Power (MW)': curr_p,
+            'Duration (h)': curr_d,
+            'Capacity (MWh)': curr_c,
+            'Total Revenue': current_hybrid_rev,
+            'Battery Revenue': curr_b_rev,
+            'Type': 'current',
+            'Order': 1
+        },
+        {
+            'Configuration': 'Min Power (Lowest MW)',
+            'Power (MW)': min_power_p,
+            'Duration (h)': min_power_d,
+            'Capacity (MWh)': min_power_c,
+            'Total Revenue': min_power_revenue,
+            'Battery Revenue': min_power_batt_rev,
+            'Type': 'min_power',
+            'Order': 2
+        },
+        {
+            'Configuration': 'Min Capacity (Lowest MWh)',
+            'Power (MW)': min_capacity_p,
+            'Duration (h)': min_capacity_d,
+            'Capacity (MWh)': min_capacity_c,
+            'Total Revenue': min_capacity_revenue,
+            'Battery Revenue': min_capacity_batt_rev,
+            'Type': 'min_capacity',
+            'Order': 3
+        },
+        {
+            'Configuration': 'Revenue-Optimal',
+            'Power (MW)': optimal_power,
+            'Duration (h)': optimal_duration,
+            'Capacity (MWh)': optimal_capacity,
+            'Total Revenue': optimal_revenue,
+            'Battery Revenue': opt_batt_rev,
+            'Type': 'optimal',
+            'Order': 4
+        }
+    ])
+    
+    # Create scatter plot
+    fig_comparison = go.Figure()
+    
+    # Define colors and symbols
+    config_styles = {
+        'current': {'color': '#dc3545', 'symbol': 'circle', 'name': 'Current Asset', 'size': 15},
+        'min_power': {'color': '#17a2b8', 'symbol': 'triangle-up', 'name': 'Min Power (Lowest MW)', 'size': 18},
+        'min_capacity': {'color': '#ffc107', 'symbol': 'triangle-down', 'name': 'Min Capacity (Lowest MWh)', 'size': 18},
+        'optimal': {'color': '#28a745', 'symbol': 'star', 'name': 'Revenue-Optimal', 'size': 20}
+    }
+    
+    # Plot the iso-curtailment frontier line
+    if not frontier_curve.empty:
+        fig_comparison.add_trace(go.Scatter(
+            x=frontier_curve['duration_h'],
+            y=frontier_curve['power_mw'],
+            mode='lines',
+            line=dict(color='rgba(23, 162, 184, 0.4)', width=3),
+            name='Zero-Curtailment Frontier',
+            hovertemplate='Frontier<br>Power: %{y:.1f} MW<br>Duration: %{x:.1f}h<extra></extra>',
+            showlegend=True
+        ))
+    
+    # Add individual configuration points
+    for _, row in comparison_configs.iterrows():
+        style = config_styles[row['Type']]
+        fig_comparison.add_trace(go.Scatter(
+            x=[row['Duration (h)']],
+            y=[row['Power (MW)']],
+            mode='markers',
+            marker=dict(
+                size=style['size'] + (row['Capacity (MWh)'] / 20),  # Size by capacity
+                color=style['color'],
+                symbol=style['symbol'],
+                line=dict(width=2, color='white'),
+                opacity=0.95
+            ),
+            name=style['name'],
+            hovertext=f"{row['Configuration']}<br>" +
+                      f"Power: {row['Power (MW)']:.1f} MW<br>" +
+                      f"Duration: {row['Duration (h)']:.1f}h<br>" +
+                      f"Capacity: {row['Capacity (MWh)']:.1f} MWh<br>" +
+                      f"Total Revenue: ${row['Total Revenue']:,.0f}<br>" +
+                      f"Battery Revenue: ${row['Battery Revenue']:,.0f}",
+            hovertemplate='%{hovertext}<extra></extra>'
+        ))
+    
+    fig_comparison.update_layout(
+        title="Battery Sizing: Current vs. Minimum Zero-Curtailment vs. Revenue-Optimal",
+        xaxis_title="Battery Duration (hours)",
+        yaxis_title="Battery Power (MW)",
+        height=550,
+        hovermode='closest',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor='rgba(255, 255, 255, 0.9)',
+            bordercolor='rgba(0, 0, 0, 0.2)',
+            borderwidth=1
+        )
+    )
+    
+    st.plotly_chart(fig_comparison, width='stretch')
+    
+    st.caption("""
+    **💡 Zero-Curtailment Frontier**: The cyan line shows the **minimum** battery configurations needed to achieve ~0% curtailment.
+    - **Min Power**: The smallest inverter size (MW) that can handle the peak clipping.
+    - **Min Capacity**: The smallest total battery size (MWh) that can store the energy (often requires higher power to discharge faster).
+    """)
+    
+    # Comparison metrics table (4 columns)
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown("#### 🔴 Current")
+        st.metric("Power", f"{curr_p:.0f} MW")
+        st.metric("Duration", f"{curr_d:.1f}h")
+        st.metric("Capacity", f"{curr_c:.1f} MWh")
+        st.metric("Total Revenue", f"${current_hybrid_rev:,.0f}")
+        st.caption("Baseline asset")
+    
+    with col2:
+        st.markdown("#### 🔷 Min Power")
+        st.metric("Power", f"{min_power_p:.0f} MW", delta=f"{min_power_p - curr_p:+.0f} MW")
+        st.metric("Duration", f"{min_power_d:.1f}h", delta=f"{min_power_d - curr_d:+.1f}h")
+        st.metric("Capacity", f"{min_power_c:.1f} MWh", delta=f"{min_power_c - curr_c:+.1f} MWh")
+        st.metric("Total Revenue", f"${min_power_revenue:,.0f}", delta=f"{min_power_revenue - current_hybrid_rev:+,.0f}")
+        st.caption("Lowest viable MW")
+        curtail_pct = (min_power_res.get('curtailed_clipping', 0) / max(total_clipped_mwh, 1)) * 100
+        st.caption(f"Curtailment: {curtail_pct:.1f}%")
+    
+    with col3:
+        st.markdown("#### 🟨 Min Capacity")
+        st.metric("Power", f"{min_capacity_p:.0f} MW", delta=f"{min_capacity_p - curr_p:+.0f} MW")
+        st.metric("Duration", f"{min_capacity_d:.1f}h", delta=f"{min_capacity_d - curr_d:+.1f}h")
+        st.metric("Capacity", f"{min_capacity_c:.1f} MWh", delta=f"{min_capacity_c - curr_c:+.1f} MWh")
+        st.metric("Total Revenue", f"${min_capacity_revenue:,.0f}", delta=f"{min_capacity_revenue - current_hybrid_rev:+,.0f}")
+        st.caption("Lowest viable MWh")
+        curtail_pct = (min_capacity_res.get('curtailed_clipping', 0) / max(total_clipped_mwh, 1)) * 100
+        st.caption(f"Curtailment: {curtail_pct:.1f}%")
+    
+    with col4:
+        st.markdown("#### 🟢 Optimal")
+        st.metric("Power", f"{optimal_power:.0f} MW", delta=f"{optimal_power - curr_p:+.0f} MW")
+        st.metric("Duration", f"{optimal_duration:.1f}h", delta=f"{optimal_duration - curr_d:+.1f}h")
+        st.metric("Capacity", f"{optimal_capacity:.1f} MWh", delta=f"{optimal_capacity - curr_c:+.1f} MWh")
+        st.metric("Total Revenue", f"${optimal_revenue:,.0f}", delta=f"{revenue_improvement:+,.0f}")
+        st.caption("Max revenue")
+
 
     with st.expander("📊 Detailed Breakdown (Optimal Configuration)"):
         col1, col2, col3, col4 = st.columns(4)

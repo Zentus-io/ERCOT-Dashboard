@@ -68,7 +68,7 @@ def add_curtailment_elimination_mode(df_sim, opt_col_left, opt_col_right):
                 )
         
         # Run analysis button
-        run_analysis = st.button("🔍 Analyze Curtailment Elimination", type="primary", use_container_width=True)
+        run_analysis = st.button("🔍 Analyze Curtailment Elimination", type="primary", width='stretch')
     
     # ========================================================================
     # ANALYSIS EXECUTION
@@ -180,7 +180,7 @@ def add_curtailment_elimination_mode(df_sim, opt_col_left, opt_col_right):
                     height=450
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # ============================================================
                 # CAPEX OPTIMIZATION (if enabled)
@@ -255,7 +255,7 @@ def add_curtailment_elimination_mode(df_sim, opt_col_left, opt_col_right):
                         'Use Case': f'Min cost @ ≤{max_curtailment}% curtailment'
                     }])], ignore_index=True)
                 
-                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                st.dataframe(comparison_df, width='stretch', hide_index=True)
 
 
 # ============================================================================
