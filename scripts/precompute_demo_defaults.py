@@ -36,6 +36,8 @@ import time
 from datetime import date
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
 
 # Add project root to path so we can import the same modules the app uses.
@@ -45,6 +47,8 @@ from config.settings import DEFAULT_BATTERY, DEFAULT_NODE, DEFAULT_STRATEGY  # n
 from core.battery.battery import BatterySpecs  # noqa: E402
 from core.battery.simulator import BatterySimulator  # noqa: E402
 from core.battery.strategies import (  # noqa: E402
+    ClippingAwareMPCStrategy,
+    ClippingOnlyStrategy,
     LinearOptimizationStrategy,
     MPCStrategy,
     RollingWindowStrategy,
@@ -56,8 +60,13 @@ from utils.demo_defaults import (  # noqa: E402
     PRECOMPUTE_DIR,
     SIM_PICKLE_PATH,
     STRATEGY_PICKLE_PATH,
+    SWEEP_PICKLE_PATH,
     write_manifest,
 )
+
+# Default Asset Design solar config — mirrors the number_input defaults in
+# pages/5_🏗️_Asset_Design.py: solar = 1.5× battery power, POI = 1× battery power.
+ASSET_DESIGN_GRID_RESOLUTION = '10×10 (100 configs, ~50s)'  # mirrors page default
 
 
 SCENARIOS = (
@@ -196,6 +205,197 @@ def _precompute_strategy_analysis(simulator, price_df, args):
     }
 
 
+def _build_solar_profile_db(loader, df_prices, node):
+    """Mirror pages/5_🏗️_Asset_Design.py:get_smart_solar_profile database path.
+
+    Returns a DataFrame indexed like df_prices with columns
+    ['gen_mw', 'forecast_mw', 'potential_mw'] normalized 0-1.
+    """
+    target_index = df_prices.index
+    start_date = target_index.min().date()
+    end_date = target_index.max().date()
+
+    df_gen = loader.load_generation_data(
+        node=node, fuel_type='Solar', start_date=start_date, end_date=end_date,
+    )
+    result = pd.DataFrame(index=target_index, data={'gen_mw': 0.0, 'forecast_mw': 0.0, 'potential_mw': 0.0})
+    if df_gen.empty:
+        return result
+
+    if df_gen.index.tz is not None:
+        df_gen.index = df_gen.index.tz_convert(None)
+
+    for col in ('gen_mw', 'forecast_mw', 'potential_mw'):
+        if col in df_gen.columns:
+            series = df_gen[col].reindex(target_index, method='ffill').fillna(0.0)
+            mx = series.max()
+            result[col] = (series / mx) if mx > 0 else series
+    return result
+
+
+def _build_df_hybrid(df_prices_indexed, solar_profile, solar_capacity_mw, interconnection_limit_mw):
+    """Replicate pages/5_🏗️_Asset_Design.py lines 306-309 + 384-387 (df_hybrid)."""
+    df = df_prices_indexed.copy()
+    df['Solar_MW'] = solar_profile['potential_mw'] * solar_capacity_mw
+    df['Export_MW'] = pd.concat([df['Solar_MW'], pd.Series(interconnection_limit_mw, index=df.index)], axis=1).min(axis=1)
+    df['Clipped_MW'] = (df['Solar_MW'] - interconnection_limit_mw).clip(lower=0)
+    df['clipped_mw'] = df['Clipped_MW']  # lowercase variant the strategy reads
+    return df
+
+
+def _compute_base_solar_revenue(df_hybrid, dt_hours):
+    """Replicate pages/5_🏗️_Asset_Design.py lines 367-369."""
+    return float((df_hybrid['Export_MW'] * df_hybrid['price_mwh_rt'] * dt_hours).sum())
+
+
+def _simulate_clipping_only(df_hybrid, power_mw, duration_h, battery_eff, base_solar_revenue,
+                             strategy_type, state_horizon, state_window,
+                             state_charge_pct, state_discharge_pct):
+    """Replicate pages/5_🏗️_Asset_Design.py:simulate_battery_config (lines 391-469)."""
+    capacity_mwh = power_mw * duration_h
+    specs = BatterySpecs(
+        capacity_mwh=capacity_mwh,
+        power_mw=power_mw,
+        efficiency=battery_eff,
+        initial_soc=0.05,
+    )
+
+    if strategy_type == 'Threshold-Based':
+        base = ThresholdStrategy(state_charge_pct, state_discharge_pct)
+    elif strategy_type == 'Rolling Window Optimization':
+        base = RollingWindowStrategy(state_window)
+    elif strategy_type == 'MPC (Rolling Horizon)':
+        base = ClippingAwareMPCStrategy(state_horizon)
+    else:
+        base = RollingWindowStrategy(window_hours=6)
+
+    strategy = ClippingOnlyStrategy(base_strategy=base)
+    simulator = BatterySimulator(specs)
+    result = simulator.run(df_hybrid, strategy, improvement_factor=0.0)
+    metadata = result.metadata or {}
+    return {
+        'power_mw': power_mw,
+        'duration_h': duration_h,
+        'capacity_mwh': capacity_mwh,
+        'battery_revenue': float(result.total_revenue),
+        'total_revenue': float(base_solar_revenue + result.total_revenue),
+        'clipped_captured': float(metadata.get('clipped_energy_captured', 0)),
+        'curtailed_clipping': float(metadata.get('curtailed_clipping', 0)),
+        'grid_arbitrage': float(metadata.get('grid_arbitrage_revenue', 0)),
+    }
+
+
+def _precompute_asset_design(loader, df_prices, specs, args):
+    """Run current_res + a fixed 10×10 sweep for the demo defaults.
+
+    Saves shape:
+      {
+        'current_res': dict,         # simulate_battery_config(current_power, current_duration)
+        'sweep_results': dict,       # {(p, d): result_dict, ...} keys are tuples
+        'config': {                  # what config produced this — used for verification
+            'solar_capacity_mw', 'interconnection_limit_mw',
+            'grid_resolution', 'base_solar_revenue', 'battery_eff',
+            'power_range', 'duration_range',
+        },
+      }
+    """
+    print('\n[Asset Design] Building solar profile + df_hybrid...')
+    # Page uses drop=False so 'timestamp' stays as both index and column —
+    # the simulator's _initialize_simulation_state reads price_df.iloc[0]['timestamp'].
+    if 'timestamp' in df_prices.columns and not isinstance(df_prices.index, pd.DatetimeIndex):
+        df_prices_indexed = df_prices.set_index('timestamp', drop=False).sort_index()
+    else:
+        df_prices_indexed = df_prices
+    df_prices_indexed = df_prices_indexed[~df_prices_indexed.index.duplicated(keep='first')]
+
+    solar_profile = _build_solar_profile_db(loader, df_prices_indexed, args.node)
+    if solar_profile['potential_mw'].sum() == 0:
+        print(f'  ⚠ No solar generation data found for {args.node} — skipping Asset Design precompute.')
+        return None
+
+    current_power = float(specs.power_mw)
+    current_duration = float(specs.capacity_mwh / specs.power_mw) if specs.power_mw > 0 else 0.0
+    solar_capacity_mw = current_power * 1.5
+    interconnection_limit_mw = current_power
+
+    df_hybrid = _build_df_hybrid(df_prices_indexed, solar_profile, solar_capacity_mw, interconnection_limit_mw)
+    dt_hours = float((df_hybrid.index[1] - df_hybrid.index[0]).total_seconds() / 3600.0)
+    base_solar_revenue = _compute_base_solar_revenue(df_hybrid, dt_hours)
+
+    print(f'  solar={solar_capacity_mw:.0f} MW, POI={interconnection_limit_mw:.0f} MW, '
+          f'base_solar_revenue=${base_solar_revenue:,.0f}, dt={dt_hours:.2f}h')
+    print(f'  clipped: peak={df_hybrid["Clipped_MW"].max():.1f} MW, '
+          f'total={df_hybrid["Clipped_MW"].sum() * dt_hours:,.0f} MWh')
+
+    print('\n[Asset Design] Current Asset simulation...')
+    t0 = time.time()
+    current_res = _simulate_clipping_only(
+        df_hybrid, current_power, current_duration, specs.efficiency, base_solar_revenue,
+        DEFAULT_STRATEGY['type'], int(DEFAULT_STRATEGY['horizon_hours']),
+        int(DEFAULT_STRATEGY['window_hours']),
+        float(DEFAULT_STRATEGY['charge_percentile']), float(DEFAULT_STRATEGY['discharge_percentile']),
+    )
+    print(f'  current ({current_power:.0f} MW × {current_duration:.2f}h)  '
+          f'battery=${current_res["battery_revenue"]:>9,.0f}  '
+          f'total=${current_res["total_revenue"]:>10,.0f}  ({time.time() - t0:.1f}s)')
+
+    # Fixed 10x10 sweep (no adaptive expansion — that's a UI-only feature).
+    # Bounds chosen to bracket the heuristic the page would compute: power range
+    # 0.5×–2.5× current_power, duration 0.5h–4h.
+    n_p, n_d = 10, 10
+    p_min, p_max = max(5.0, current_power * 0.3), current_power * 2.0
+    d_min, d_max = 0.5, 4.0
+    power_range = list(np.linspace(p_min, p_max, n_p).round(1))
+    duration_range = list(np.linspace(d_min, d_max, n_d).round(2))
+    print(f'\n[Asset Design] Sweep {n_p}×{n_d}={n_p * n_d} configs '
+          f'(power {p_min:.0f}-{p_max:.0f} MW, duration {d_min:.1f}-{d_max:.1f}h)...')
+
+    p_step = (p_max - p_min) / (n_p - 1)
+    d_step = (d_max - d_min) / (n_d - 1)
+    sweep_results = {}
+    t0 = time.time()
+    total = n_p * n_d
+    done = 0
+    for p in power_range:
+        for d in duration_range:
+            done += 1
+            res = _simulate_clipping_only(
+                df_hybrid, float(p), float(d), specs.efficiency, base_solar_revenue,
+                DEFAULT_STRATEGY['type'], int(DEFAULT_STRATEGY['horizon_hours']),
+                int(DEFAULT_STRATEGY['window_hours']),
+                float(DEFAULT_STRATEGY['charge_percentile']),
+                float(DEFAULT_STRATEGY['discharge_percentile']),
+            )
+            res['p_step'] = p_step
+            res['d_step'] = d_step
+            res['is_skipped'] = False
+            sweep_results[(float(p), float(d))] = res
+            if done % 10 == 0 or done == total:
+                print(f'  [{done:3d}/{total}] best so far: '
+                      f'${max(r["total_revenue"] for r in sweep_results.values()):>10,.0f}')
+    elapsed = time.time() - t0
+    best_key, best_res = max(sweep_results.items(), key=lambda kv: kv[1]['total_revenue'])
+    print(f'  → {elapsed:.1f}s. Optimal: {best_key[0]:.0f} MW × {best_key[1]:.1f}h '
+          f'= ${best_res["total_revenue"]:,.0f}')
+
+    return {
+        'current_res': current_res,
+        'sweep_results': sweep_results,
+        'config': {
+            'solar_capacity_mw': solar_capacity_mw,
+            'interconnection_limit_mw': interconnection_limit_mw,
+            'grid_resolution': ASSET_DESIGN_GRID_RESOLUTION,
+            'base_solar_revenue': base_solar_revenue,
+            'battery_eff': specs.efficiency,
+            'power_range': power_range,
+            'duration_range': duration_range,
+            'p_step': p_step,
+            'd_step': d_step,
+            'dt_hours': dt_hours,
+        },
+    }
+
+
 def _precompute_nodal_analysis(start_date, end_date):
     """Run the Nodal Analysis cross-node assessment for the visible date window.
 
@@ -264,7 +464,7 @@ def main():
                         help='Slider value used to build the "improved" scenario (default: 10%%)')
     parser.add_argument('--output-dir', default=None,
                         help=f'Output dir (default: {PRECOMPUTE_DIR})')
-    parser.add_argument('--scope', choices=['all', 'sim', 'strategy', 'nodal'], default='all',
+    parser.add_argument('--scope', choices=['all', 'sim', 'strategy', 'nodal', 'asset_design'], default='all',
                         help='Which artifacts to (re)generate (default: all)')
     args = parser.parse_args()
 
@@ -362,7 +562,7 @@ def main():
         }
 
     if args.scope in ('all', 'nodal'):
-        print(f'\n[4/4] Nodal Analysis cross-node scan...')
+        print(f'\n[4/5] Nodal Analysis cross-node scan...')
         nodal_results = _precompute_nodal_analysis(start_date, end_date)
         nodal_path = output_dir / 'nodal_default.pkl.gz' if args.output_dir else NODAL_PICKLE_PATH
         with gzip.open(nodal_path, 'wb') as f:
@@ -375,6 +575,34 @@ def main():
             'nodes_cached': len(node_data_cache),
             'top_node': str(results_df.iloc[0]['Node']) if not results_df.empty else None,
         }
+
+    if args.scope in ('all', 'asset_design'):
+        print(f'\n[5/5] Asset Design (current_res + fixed-grid sweep)...')
+        ad_results = _precompute_asset_design(loader, price_df, specs, args)
+        if ad_results is None:
+            print('  ⚠ Skipped — no solar generation data for this node.')
+        else:
+            sweep_path = output_dir / 'sweep_default.pkl.gz' if args.output_dir else SWEEP_PICKLE_PATH
+            with gzip.open(sweep_path, 'wb') as f:
+                pickle.dump(ad_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f'  ✓ {sweep_path.relative_to(Path(__file__).parent.parent)}  '
+                  f'({sweep_path.stat().st_size / 1024:.1f} KB)')
+            best_key, best_res = max(
+                ad_results['sweep_results'].items(),
+                key=lambda kv: kv[1]['total_revenue'],
+            )
+            extra_manifest['asset_design'] = {
+                'solar_capacity_mw': ad_results['config']['solar_capacity_mw'],
+                'interconnection_limit_mw': ad_results['config']['interconnection_limit_mw'],
+                'grid_resolution': ad_results['config']['grid_resolution'],
+                'current_total_revenue': round(ad_results['current_res']['total_revenue'], 2),
+                'best_config': {
+                    'power_mw': best_key[0], 'duration_h': best_key[1],
+                    'total_revenue': round(best_res['total_revenue'], 2),
+                    'battery_revenue': round(best_res['battery_revenue'], 2),
+                },
+                'sweep_size': len(ad_results['sweep_results']),
+            }
 
     # 5. Manifest (always rewritten — covers whichever scopes ran)
     signature = _build_signature(

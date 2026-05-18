@@ -113,19 +113,30 @@ def load_precomputed_simulations() -> Optional[dict]:
         return None
 
 
-def load_precomputed_sweep() -> Optional[Tuple[dict, list]]:
-    """Return (results_cache, history_data) for the Asset Design sweep, or None."""
+def load_precomputed_asset_design() -> Optional[dict]:
+    """Return precomputed Asset Design payload (current_res + sweep), or None.
+
+    Shape (matches scripts/precompute_demo_defaults._precompute_asset_design):
+        {
+            'current_res': dict,        # simulate_battery_config(current_power, current_duration)
+            'sweep_results': dict,      # {(p_mw, d_h): result_dict, ...}
+            'config': {
+                'solar_capacity_mw', 'interconnection_limit_mw',
+                'grid_resolution', 'base_solar_revenue', 'battery_eff',
+                'power_range', 'duration_range', 'p_step', 'd_step', 'dt_hours',
+            },
+        }
+    """
     if not SWEEP_PICKLE_PATH.exists():
         return None
     try:
         with gzip.open(SWEEP_PICKLE_PATH, 'rb') as f:
             obj = pickle.load(f)
-        if not (isinstance(obj, tuple) and len(obj) == 2):
+        if not isinstance(obj, dict):
             return None
-        results_cache, history_data = obj
-        if not (isinstance(results_cache, dict) and isinstance(history_data, list)):
+        if 'current_res' not in obj or 'sweep_results' not in obj or 'config' not in obj:
             return None
-        return results_cache, history_data
+        return obj
     except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ModuleNotFoundError):
         return None
 

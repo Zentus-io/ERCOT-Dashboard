@@ -469,12 +469,23 @@ def simulate_battery_config(power_mw: float, duration_h: float) -> dict:
         }
 
 # Calculate current asset revenue (using Clipping-Only logic for consistency)
-with st.spinner("Calculating current asset revenue..."):
-    # Use the same simulation logic as the optimization grid
-    # This ensures apples-to-apples comparison (no grid arbitrage in either)
-    current_res = simulate_battery_config(current_power, current_energy / current_power if current_power > 0 else 0)
+# Demo-default short-circuit: when the current state matches the precomputed
+# config, skip the ~3-5s simulation and use the bundled result.
+from utils.demo_defaults import current_state_matches_demo, load_precomputed_asset_design
+_demo_asset_design = (
+    load_precomputed_asset_design() if current_state_matches_demo(state) else None
+)
+if _demo_asset_design is not None:
+    current_res = _demo_asset_design['current_res']
     current_batt_revenue = current_res['battery_revenue']
     current_hybrid_rev = current_res['total_revenue']
+else:
+    with st.spinner("Calculating current asset revenue..."):
+        # Use the same simulation logic as the optimization grid
+        # This ensures apples-to-apples comparison (no grid arbitrage in either)
+        current_res = simulate_battery_config(current_power, current_energy / current_power if current_power > 0 else 0)
+        current_batt_revenue = current_res['battery_revenue']
+        current_hybrid_rev = current_res['total_revenue']
 
 # --- OPERATIONAL CHART & METRICS (TOP RIGHT) ---
 with col_top_right:
@@ -848,6 +859,19 @@ with opt_col_left:
 
     # Buttons stacked
     run_optimization = st.button("🚀 Run Optimization", type="primary", width='stretch')
+
+    # Demo-default short-circuit for the optimization sweep: when the current
+    # state matches the precomputed config and the pickle is bundled, force
+    # the sweep to "run" but populate results_cache from the pickle so the
+    # existing loop terminates immediately (every (p, d) is already cached).
+    # The user can override with the explicit "Run Optimization" click which
+    # sets `opt_live_overridden` and bypasses this path.
+    if (
+        _demo_asset_design is not None
+        and not st.session_state.get('opt_live_overridden', False)
+    ):
+        run_optimization = True
+        st.session_state['_demo_sweep_seed'] = _demo_asset_design
     
     if st.button(
         "🗑️ Clear Cache",
@@ -998,6 +1022,28 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
 
     # Local cache for results
     results_cache = {}
+
+    # If the demo precompute is loaded, seed results_cache with all (p, d)
+    # results so the live loop finds everything cached and skips every sim.
+    # Also force search bounds + grid resolution to match the precompute so
+    # all (p, d) keys are in the loop's iteration set.
+    _demo_seed = st.session_state.pop('_demo_sweep_seed', None)
+    if _demo_seed is not None:
+        for key, res in _demo_seed['sweep_results'].items():
+            results_cache[key] = dict(res)
+        _cfg = _demo_seed['config']
+        # Realign bounds + step to the precomputed grid.
+        current_min_p = float(_cfg['power_range'][0])
+        current_max_p = float(_cfg['power_range'][-1])
+        current_min_d = float(_cfg['duration_range'][0])
+        current_max_d = float(_cfg['duration_range'][-1])
+        p_step = float(_cfg['p_step'])
+        d_step = float(_cfg['d_step'])
+        # Disable adaptive expansion so we render exactly what was baked.
+        enable_smart_expansion = False
+        max_expansions = 0
+        st.caption(f"⚡ Using precomputed sweep ({len(results_cache)} configs). "
+                   f"Click 'Run Optimization' again after changing config to recompute live.")
 
     saturated_configs = [] # List of (p, d, revenue) that achieved saturation
     max_revenue_seen = 0  # Track maximum revenue for plateau detection
