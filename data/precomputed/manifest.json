@@ -34,18 +34,18 @@
     "discharge_percentile",
     "forecast_improvement"
   ],
-  "generated_at_utc": "2026-05-18T19:19:39Z",
+  "generated_at_utc": "2026-05-18T19:38:24Z",
   "price_rows": 1345,
   "asset_design": {
     "solar_capacity_mw": 150.0,
     "interconnection_limit_mw": 100.0,
     "grid_resolution": "10\u00d710 (100 configs, ~50s)",
-    "current_total_revenue": 433488.54,
+    "current_total_revenue": 551093.29,
     "best_config": {
-      "power_mw": 200.0,
-      "duration_h": 2.06,
-      "total_revenue": 493153.07,
-      "battery_revenue": 125444.53
+      "power_mw": 105.6,
+      "duration_h": 2.44,
+      "total_revenue": 607967.99,
+      "battery_revenue": 120598.71
     },
     "sweep_size": 100
   }

@@ -198,17 +198,36 @@ def get_smart_solar_profile(_df_prices, _uploaded_file=None, _node_name=None):
                 if df_gen.index.tz is not None:
                     df_gen.index = df_gen.index.tz_convert(None)
                 
-                # Helper to align and norm
+                # Helper to align and norm. When the DB only has data for a
+                # subset of the target window (common: generation table is
+                # backfilled less aggressively than prices), we DON'T want
+                # the gap to render as a flat-zero line. Instead, build the
+                # average daily template from the available data and tile
+                # it across missing days. The result keeps the realistic
+                # day/night shape, scales correctly, and matches real data
+                # where it exists.
                 def align_and_norm(col_name):
                     if col_name not in df_gen.columns:
                         return pd.Series(0.0, index=target_index)
-                    
-                    # Ensure target_index is also naive (it should be, but be safe)
+
                     safe_target = target_index
                     if safe_target.tz is not None:
                         safe_target = safe_target.tz_convert(None)
-                        
-                    aligned = df_gen[col_name].reindex(safe_target).interpolate(method='time').fillna(0)
+
+                    aligned = df_gen[col_name].reindex(safe_target)
+                    if aligned.notna().any() and aligned.isna().any():
+                        # Compute average value per time-of-day from real data.
+                        available = aligned.dropna()
+                        daily_template = available.groupby(available.index.time).mean()
+                        # Build a Series indexed by time-of-day for the missing slots
+                        # and broadcast back to the original timestamps.
+                        missing_mask = aligned.isna()
+                        time_keys = pd.Series(aligned.index.time, index=aligned.index)[missing_mask]
+                        fill_values = time_keys.map(daily_template).astype(float)
+                        aligned = aligned.copy()
+                        aligned[missing_mask] = fill_values
+                    # Any remaining NaN (e.g. time-of-day with no real example) → 0.
+                    aligned = aligned.interpolate(method='time').fillna(0)
                     mx = aligned.max()
                     if mx > 0:
                         return aligned / mx

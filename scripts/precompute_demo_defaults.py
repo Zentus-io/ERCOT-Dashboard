@@ -210,6 +210,12 @@ def _build_solar_profile_db(loader, df_prices, node):
 
     Returns a DataFrame indexed like df_prices with columns
     ['gen_mw', 'forecast_mw', 'potential_mw'] normalized 0-1.
+
+    When the generation table only covers part of the requested window
+    (very common — generation is backfilled less aggressively than prices),
+    the missing days are filled by tiling the average per-time-of-day
+    pattern computed from the available data. This keeps the realistic
+    day/night shape across the full window instead of flat-zero gaps.
     """
     target_index = df_prices.index
     start_date = target_index.min().date()
@@ -226,10 +232,20 @@ def _build_solar_profile_db(loader, df_prices, node):
         df_gen.index = df_gen.index.tz_convert(None)
 
     for col in ('gen_mw', 'forecast_mw', 'potential_mw'):
-        if col in df_gen.columns:
-            series = df_gen[col].reindex(target_index, method='ffill').fillna(0.0)
-            mx = series.max()
-            result[col] = (series / mx) if mx > 0 else series
+        if col not in df_gen.columns:
+            continue
+        aligned = df_gen[col].reindex(target_index)
+        if aligned.notna().any() and aligned.isna().any():
+            available = aligned.dropna()
+            daily_template = available.groupby(available.index.time).mean()
+            missing_mask = aligned.isna()
+            time_keys = pd.Series(aligned.index.time, index=aligned.index)[missing_mask]
+            fill_values = time_keys.map(daily_template).astype(float)
+            aligned = aligned.copy()
+            aligned[missing_mask] = fill_values
+        aligned = aligned.interpolate(method='time').fillna(0)
+        mx = aligned.max()
+        result[col] = (aligned / mx) if mx > 0 else aligned
     return result
 
 
