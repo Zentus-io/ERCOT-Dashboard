@@ -63,6 +63,19 @@ def run_or_get_cached_simulation():
     """
     state = get_state()
 
+    # Demo-defaults short-circuit: if every config field matches the canonical
+    # demo signature AND we have no cached scenarios yet, hydrate state from the
+    # precomputed pickle shipped in data/precomputed/ and skip the simulator.
+    # Saves ~5–15s on cold-start. Any state mismatch → falls through to live.
+    if any(state.simulation_results[k] is None for k in ('baseline', 'improved', 'optimal', 'theoretical_max')):
+        from utils.demo_defaults import current_state_matches_demo, load_precomputed_simulations
+        if current_state_matches_demo(state):
+            precomputed = load_precomputed_simulations()
+            if precomputed:
+                for scenario_name, result in precomputed.items():
+                    if scenario_name in state.simulation_results:
+                        state.simulation_results[scenario_name] = result
+
     # Check if we have valid cached results
     if (state.simulation_results['baseline'] is not None and
         state.simulation_results['improved'] is not None and

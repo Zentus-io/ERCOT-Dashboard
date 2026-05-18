@@ -59,6 +59,14 @@ DEFAULT_STRATEGY = {
     'horizon_hours': 6,
 }
 
+# Demo-default node: the node the precomputed-defaults pipeline targets.
+# Currently CACH_ESS_RN — highest RTM volatility in the restored Nov-2025 window
+# (stddev ≈ $46/MWh, max spike $689/MWh). Re-pick when DB is backfilled.
+DEFAULT_NODE = 'CACH_ESS_RN'
+
+# Toggle off via env to force live recompute even when state matches demo config.
+PRECOMPUTE_ENABLED = os.getenv('PRECOMPUTE_ENABLED', 'true').lower() != 'false'
+
 # Simulation defaults
 DEFAULT_FORECAST_IMPROVEMENT = 10  # %
 
