@@ -51,11 +51,14 @@ DEFAULT_BATTERY = {
 }
 
 # Strategy defaults
+# Values intentionally mirror utils/state.AppState defaults so the demo
+# signature in scripts/precompute_demo_defaults.py matches the signature
+# computed from live state at runtime.
 DEFAULT_STRATEGY = {
     'type': 'MPC (Rolling Horizon)',
     'charge_percentile': 0.25,
     'discharge_percentile': 0.75,
-    'window_hours': 12,
+    'window_hours': 6,
     'horizon_hours': 6,
 }
 
