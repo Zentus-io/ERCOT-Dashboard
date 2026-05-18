@@ -23,27 +23,28 @@ def render_strategy_config() -> dict:
     """
     state = get_state()
 
-    def on_strategy_change():
-        """Callback for strategy change"""
-        if "strategy_radio" in st.session_state:
-            new_strategy = st.session_state.strategy_radio
-            update_state(strategy_type=new_strategy)
-            clear_simulation_cache()
-
-    # Seed widget session_state from AppState BEFORE rendering. Using both
-    # index= and key= together creates drift across page navigations: Streamlit
-    # silently falls back to the index= default when session_state["strategy_radio"]
-    # is GC'd or stale, which then resets MPC/threshold child sliders too.
+    # IMPERATIVE PATTERN — no on_change callback. Streamlit fires on_change
+    # callbacks at unpredictable moments during multipage navigation (the
+    # widget gets "rerendered" on the new page and Streamlit treats that as
+    # a change event with the current session_state value, which can be the
+    # first option if the key was GC'd). The callback then writes
+    # "Threshold-Based" into state and the user loses their selection.
+    #
+    # Instead: ALWAYS sync session_state[key] from AppState before the widget
+    # renders. The widget then reads from session_state[key]. After render,
+    # imperatively compare the returned value to state and update if different.
     _strategy_options = ["Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"]
-    if "strategy_radio" not in st.session_state or st.session_state["strategy_radio"] not in _strategy_options:
-        st.session_state["strategy_radio"] = state.strategy_type if state.strategy_type in _strategy_options else "MPC (Rolling Horizon)"
+    _state_strategy = state.strategy_type if state.strategy_type in _strategy_options else "MPC (Rolling Horizon)"
+    st.session_state["strategy_radio"] = _state_strategy
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
         options=_strategy_options,
         help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page).",
         key="strategy_radio",
-        on_change=on_strategy_change
     )
+    if strategy_type != state.strategy_type:
+        update_state(strategy_type=strategy_type)
+        clear_simulation_cache()
 
     # Strategy-specific parameters
     if strategy_type == "Threshold-Based":
@@ -53,9 +54,9 @@ def render_strategy_config() -> dict:
         def on_threshold_change():
             clear_simulation_cache()
 
-        # Charge threshold slider (seed from state then drop value= to avoid drift)
-        if "charge_slider" not in st.session_state:
-            st.session_state["charge_slider"] = int(state.charge_percentile * 100)
+        # Imperative pattern: sync session_state[key] from state, render
+        # without on_change, then update state if widget returned a new value.
+        st.session_state["charge_slider"] = int(state.charge_percentile * 100)
         charge_pct = st.sidebar.slider(
             "Charge Threshold Percentile:",
             min_value=10,
@@ -63,17 +64,13 @@ def render_strategy_config() -> dict:
             step=5,
             help="Charge when price below this percentile",
             key="charge_slider",
-            on_change=lambda: _update_charge_threshold(on_threshold_change)
         )
-
-        # Update state if changed
         new_charge = charge_pct / 100
         if abs(new_charge - state.charge_percentile) > 0.001:
             update_state(charge_percentile=new_charge)
+            clear_simulation_cache()
 
-        # Discharge threshold slider
-        if "discharge_slider" not in st.session_state:
-            st.session_state["discharge_slider"] = int(state.discharge_percentile * 100)
+        st.session_state["discharge_slider"] = int(state.discharge_percentile * 100)
         discharge_pct = st.sidebar.slider(
             "Discharge Threshold Percentile:",
             min_value=60,
@@ -81,7 +78,6 @@ def render_strategy_config() -> dict:
             step=5,
             help="Discharge when price above this percentile",
             key="discharge_slider",
-            on_change=lambda: _update_discharge_threshold(on_threshold_change)
         )
         
         # Update state if changed
@@ -92,56 +88,34 @@ def render_strategy_config() -> dict:
     elif strategy_type == "Rolling Window Optimization":
         st.sidebar.markdown("**Optimization Parameters:**")
 
-        # Callback for window changes. Streamlit fires on_change callbacks
-        # BEFORE the script reruns, so the widget that owns the key may not
-        # have been recreated yet (e.g. after a strategy switch, after deploy
-        # rebuild, etc.). Guard against KeyError.
-        def on_window_change():
-            if "window_slider" not in st.session_state:
-                return
-            new_val = st.session_state.window_slider
-            if new_val != state.window_hours:
-                update_state(window_hours=new_val)
-                clear_simulation_cache()
-
-        # Lookahead window slider. Seed session state explicitly instead of
-        # passing value= (avoids the "default and session-state both set"
-        # Streamlit warning).
-        if "window_slider" not in st.session_state:
-            st.session_state["window_slider"] = state.window_hours if hasattr(state, "window_hours") else 12
-        st.sidebar.slider(
+        st.session_state["window_slider"] = state.window_hours if hasattr(state, "window_hours") else 12
+        window_hours = st.sidebar.slider(
             "Lookahead Window (hours):",
             min_value=2,
             max_value=24,
             step=1,
             help="Number of hours to look ahead for optimization",
             key="window_slider",
-            on_change=on_window_change
         )
+        if window_hours != state.window_hours:
+            update_state(window_hours=window_hours)
+            clear_simulation_cache()
 
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
 
-        # Same guard as on_window_change above.
-        def on_horizon_change():
-            if "mpc_horizon_slider" not in st.session_state:
-                return
-            new_val = st.session_state.mpc_horizon_slider
-            if not hasattr(state, 'horizon_hours') or new_val != state.horizon_hours:
-                update_state(horizon_hours=new_val)
-                clear_simulation_cache()
-
-        if "mpc_horizon_slider" not in st.session_state:
-            st.session_state["mpc_horizon_slider"] = state.horizon_hours if hasattr(state, "horizon_hours") else 6
-        st.sidebar.slider(
+        st.session_state["mpc_horizon_slider"] = state.horizon_hours if hasattr(state, "horizon_hours") else 6
+        horizon_hours = st.sidebar.slider(
             "Optimization Horizon (hours):",
             min_value=2,
             max_value=24,
             step=1,
             help="Lookahead horizon for each optimization step.",
             key="mpc_horizon_slider",
-            on_change=on_horizon_change
         )
+        if horizon_hours != state.horizon_hours:
+            update_state(horizon_hours=horizon_hours)
+            clear_simulation_cache()
 
     return {'type': strategy_type, 'params_changed': False}
 

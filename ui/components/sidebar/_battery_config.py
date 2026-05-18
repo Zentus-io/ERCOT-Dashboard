@@ -39,36 +39,26 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
     if eia_data is not None and not eia_data.empty:
         preset_options = ["Custom", "Current Asset"] + [v['name'] for v in BATTERY_PRESETS.values()]
 
-        # Initialize battery preset in session state if not present
+        # Imperative widget pattern. Force-sync the widget's session_state
+        # from our persistent value EVERY render. The callback approach was
+        # losing state across multipage navigation: Streamlit can fire the
+        # on_change callback when re-rendering the widget on a new page,
+        # reading whatever session_state value happens to be there at that
+        # moment (often the first option after a GC).
         if 'battery_preset_value' not in st.session_state:
             st.session_state.battery_preset_value = "Current Asset"
-
-        # Seed the WIDGET's session_state from our persistent value so the
-        # selectbox doesn't reset on cross-page navigations. Don't pass index=
-        # alongside key= — Streamlit drifts when both are present.
-        if (
-            "battery_preset_widget" not in st.session_state
-            or st.session_state["battery_preset_widget"] not in preset_options
-        ):
-            st.session_state["battery_preset_widget"] = (
-                st.session_state.battery_preset_value
-                if st.session_state.battery_preset_value in preset_options
-                else "Current Asset"
-            )
-
-        # Callback to persist selection
-        def on_preset_change():
-            st.session_state.battery_preset_value = st.session_state.battery_preset_widget
+        if st.session_state.battery_preset_value not in preset_options:
+            st.session_state.battery_preset_value = "Current Asset"
+        st.session_state["battery_preset_widget"] = st.session_state.battery_preset_value
 
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
             key="battery_preset_widget",
-            on_change=on_preset_change,
             help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."
         )
 
-        # Ensure our persistent value is in sync
+        # Persist the (possibly changed) selection imperatively.
         st.session_state.battery_preset_value = battery_preset
 
         # Determine default values based on preset
