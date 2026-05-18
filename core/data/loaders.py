@@ -56,12 +56,17 @@ class SupabaseDataLoader:
             query = query.gte("timestamp", start_date.isoformat()).lte(
                 "timestamp", (end_date + timedelta(days=1)).isoformat()
             )
+            # Pagination requires deterministic ordering, otherwise batches can
+            # overlap and produce duplicate rows in the DataFrame (which then
+            # breaks consumers that assume timestamp uniqueness — e.g.
+            # calculate_dt seeing dt=0 from two equal timestamps).
+            query = query.order("timestamp").order("market")
 
             # Fetch all data using pagination to bypass 1000-row limit
             data = []
             start = 0
             batch_size = 1000
-            
+
             while True:
                 response = query.range(start, start + batch_size - 1).execute()
                 if not response.data:
@@ -74,9 +79,11 @@ class SupabaseDataLoader:
             if not data:
                 return pd.DataFrame()
 
-            # Convert to DataFrame
+            # Convert to DataFrame and defensively dedupe in case any legacy
+            # duplicate rows survive past the composite PK guarantee.
             df = pd.DataFrame(data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.drop_duplicates(subset=['timestamp', 'market'], keep='first')
 
             # Pivot: market values (DAM/RTM) become columns
             # Use RTM as the base (more granular 15-min data)
