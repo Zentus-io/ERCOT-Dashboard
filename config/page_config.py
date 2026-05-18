@@ -34,14 +34,14 @@ def configure_page(page_title: Optional[str] = None):
             'About': """
             # ERCOT Battery Storage Revenue Dashboard
 
-            This dashboard demonstrates how improved renewable energy forecasting
-            increases battery storage revenue in ERCOT markets.
-
-            **Built for:** Engie Urja AI Challenge 2025
+            An interactive engine to size, dispatch, and stress-test battery
+            storage assets against ERCOT prices. Supports MPC, LP, threshold,
+            and rolling-window strategies plus hybrid solar+storage. Market-
+            agnostic core — adaptable to OMIE/SRAD/aFRR with a data-layer swap.
 
             **Author:** Juan Manuel Boullosa Novo
 
-            **Contact:** info@zentus.io
+            **Contact:** jmboullosa@zentus.io
             """
         }
     )

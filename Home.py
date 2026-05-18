@@ -3,7 +3,6 @@ ERCOT Battery Storage Revenue Opportunity Dashboard
 Zentus - Intelligent Forecasting for Renewables
 
 Author: Juan Manuel Boullosa Novo [jmboullosa@zentus.io]
-Date: November 2025
 
 Run with: streamlit run Home.py
 """
@@ -36,10 +35,13 @@ render_header()
 render_sidebar()
 
 st.markdown("""
-## Welcome to the ERCOT Battery Revenue Dashboard
+## ERCOT Battery Storage Revenue Dashboard
 
-This dashboard demonstrates how improved renewable energy forecasting increases
-battery storage revenue in ERCOT markets.
+An interactive engine to size, dispatch, and stress-test battery storage assets
+against ERCOT day-ahead and real-time prices. The simulator supports threshold,
+rolling-window, MPC, and LP perfect-foresight strategies, plus hybrid
+solar+storage clipping recovery. Market-agnostic at the core — adaptable to
+OMIE/SRAD/aFRR with a data-layer swap.
 """)
 
 state = get_state()
@@ -339,13 +341,14 @@ forecasts improve Scenario 2!
 
 ### 🎯 About This Project
 
-Built for the **Engie Urja AI Challenge 2025**, this dashboard showcases the
-value of intelligent forecasting for renewable energy storage operations in
-competitive electricity markets.
+A research dashboard quantifying how forecast quality affects revenue capture
+for battery storage in liquid wholesale markets. Built around a market-agnostic
+dispatch engine with multiple strategy implementations (Threshold, Rolling
+Window, MPC, LP perfect-foresight) and hybrid solar+storage support.
 
 **Author**: Juan Manuel Boullosa Novo
 **Organization**: Zentus - Intelligent Forecasting for Renewables
-**Contact**: info@zentus.io
+**Contact**: jmboullosa@zentus.io
 
 ---
 
@@ -361,7 +364,6 @@ st.markdown("""
 <div style='text-align: center; color: #6C757D;'>
     <p><strong>Zentus</strong> - Intelligent Forecasting for Renewables</p>
     <p>Stanford Doerr School of Sustainability Accelerator Fellow</p>
-    <p>Engie Urja AI Challenge 2025</p>
-    <p>Contact: info@zentus.io | zentus.io</p>
+    <p>Contact: jmboullosa@zentus.io | zentus.io</p>
 </div>
 """, unsafe_allow_html=True)
