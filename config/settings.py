@@ -52,7 +52,7 @@ DEFAULT_BATTERY = {
 
 # Strategy defaults
 DEFAULT_STRATEGY = {
-    'type': 'Threshold-Based',
+    'type': 'MPC (Rolling Horizon)',
     'charge_percentile': 0.25,
     'discharge_percentile': 0.75,
     'window_hours': 12,
