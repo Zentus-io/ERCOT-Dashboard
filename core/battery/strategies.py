@@ -347,12 +347,35 @@ def solve_linear_optimization(
             'soc_mwh': []
         })
 
+    # Defensive: scipy.linprog rejects c with any nan/inf. Replace any non-finite
+    # value in prices with the median of the finite ones (or 0.0 if everything is
+    # bad). The simulation may produce slightly off decisions on the affected
+    # timesteps but won't crash the whole Overview page. Log when this kicks in
+    # so we can hunt the root cause later.
+    prices = np.asarray(prices, dtype=float)
+    non_finite = ~np.isfinite(prices)
+    if non_finite.any():
+        finite_vals = prices[~non_finite]
+        replacement = float(np.median(finite_vals)) if finite_vals.size else 0.0
+        print(
+            f"WARN solve_linear_optimization: {int(non_finite.sum())}/{n_steps} "
+            f"non-finite prices detected, substituting with median={replacement:.2f}"
+        )
+        prices = np.where(non_finite, replacement, prices)
+    if charge_cost_profile is not None:
+        charge_cost_profile = np.asarray(charge_cost_profile, dtype=float)
+        ccp_non_finite = ~np.isfinite(charge_cost_profile)
+        if ccp_non_finite.any():
+            ccp_finite = charge_cost_profile[~ccp_non_finite]
+            ccp_replacement = float(np.median(ccp_finite)) if ccp_finite.size else 0.0
+            charge_cost_profile = np.where(ccp_non_finite, ccp_replacement, charge_cost_profile)
+
     # Variables vector x: [Charge_0...N-1, Discharge_0...N-1, SOC_0...N-1]
     # Total variables = 3 * n_steps
 
     # 1. Objective Function: Minimize Cost - Revenue
     # Minimize: Sum(Cost_Charge * C * dt) - Sum(Price_Discharge * D * dt)
-    
+
     # Determine charge costs
     if charge_cost_profile is not None:
         if len(charge_cost_profile) != n_steps:
