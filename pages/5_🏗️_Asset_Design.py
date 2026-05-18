@@ -1506,16 +1506,39 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
     st.markdown("---")
     st.markdown("### 🎯 Curtailment Elimination: Minimum Battery Configurations")
     
-    with st.spinner("Calculating minimum configurations for zero curtailment..."):
+    # Demo-default short-circuit for the curtailment frontier + min-config sims.
+    # The full block below otherwise runs 3200 frontier evaluations + 2 extra
+    # battery sims every time the user clicks Run Optimization.
+    _demo_curtailment = None
+    if _demo_asset_design is not None:
+        _demo_curtailment = _demo_asset_design.get('curtailment')
+
+    if _demo_curtailment is not None:
+        peak_clipping = float(_demo_curtailment['peak_clipping_mw'])
+        frontier_curve = _demo_curtailment['frontier_curve']
+        min_power_p = _demo_curtailment['min_power']['power_mw']
+        min_power_d = _demo_curtailment['min_power']['duration_h']
+        min_power_c = _demo_curtailment['min_power']['capacity_mwh']
+        min_power_res = _demo_curtailment['min_power']['res']
+        min_power_revenue = min_power_res['total_revenue']
+        min_power_batt_rev = min_power_res['battery_revenue']
+        min_capacity_p = _demo_curtailment['min_capacity']['power_mw']
+        min_capacity_d = _demo_curtailment['min_capacity']['duration_h']
+        min_capacity_c = _demo_curtailment['min_capacity']['capacity_mwh']
+        min_capacity_res = _demo_curtailment['min_capacity']['res']
+        min_capacity_revenue = min_capacity_res['total_revenue']
+        min_capacity_batt_rev = min_capacity_res['battery_revenue']
+    else:
+      with st.spinner("Calculating minimum configurations for zero curtailment..."):
         # Calculate curtailment frontier to find zero-curtailment configurations
         peak_clipping = df_sim['Clipped_MW'].quantile(0.99)
-        
+
         # Define search ranges for frontier calculation
         # Power: From peak clipping up to 3x peak (to find capacity trade-offs)
         power_search = np.linspace(peak_clipping * 0.95, peak_clipping * 3.0, 20)
         # Duration: Wide range to catch the curve (includes short-duration batteries)
         duration_search = np.linspace(0.1, 16.0, 160)  # 0.1h steps, includes high-power/short-duration configs
-        
+
         # Calculate curtailment for various configurations
         frontier_df = calculate_curtailment_frontier(
             df_sim['Clipped_MW'],
@@ -1524,40 +1547,40 @@ Consider increasing Solar Capacity or reducing Interconnection Limit.
             power_range=power_search,
             duration_range=duration_search
         )
-        
+
         # Filter to configurations with effectively zero curtailment (<0.1%)
         valid_configs = frontier_df[frontier_df['curtailment_pct'] < 0.1].copy()
-        
+
         if not valid_configs.empty:
             # FIND TRUE FRONTIER: For each power level, find the MINIMUM duration that works
             # Group by power and take the row with min duration
             frontier_curve = valid_configs.loc[valid_configs.groupby('power_mw')['duration_h'].idxmin()].copy()
             frontier_curve = frontier_curve.sort_values('power_mw')
-            
+
             # 1. Minimum Power Configuration (The absolute lowest MW that works)
             min_power_row = frontier_curve.iloc[0]
             min_power_p = min_power_row['power_mw']
             min_power_d = min_power_row['duration_h']
             min_power_c = min_power_p * min_power_d
-            
+
             # 2. Minimum Capacity Configuration (The absolute lowest MWh that works)
             # Usually found at higher power levels where discharge is faster
             min_capacity_row = frontier_curve.loc[frontier_curve['capacity_mwh'].idxmin()]
             min_capacity_p = min_capacity_row['power_mw']
             min_capacity_d = min_capacity_row['duration_h']
             min_capacity_c = min_capacity_row['capacity_mwh']
-            
+
             # Simulate both configurations for actual revenue
             min_power_res = simulate_battery_config(min_power_p, min_power_d)
             min_capacity_res = simulate_battery_config(min_capacity_p, min_capacity_d)
-            
+
             # Extract results
             min_power_revenue = min_power_res['total_revenue']
             min_power_batt_rev = min_power_res['battery_revenue']
-            
+
             min_capacity_revenue = min_capacity_res['total_revenue']
             min_capacity_batt_rev = min_capacity_res['battery_revenue']
-            
+
         else:
             # Fallback if no zero-curtailment config found in range
             min_power_p = peak_clipping

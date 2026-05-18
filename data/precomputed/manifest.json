@@ -34,43 +34,8 @@
     "discharge_percentile",
     "forecast_improvement"
   ],
-  "generated_at_utc": "2026-05-18T18:23:51Z",
+  "generated_at_utc": "2026-05-18T19:19:39Z",
   "price_rows": 1345,
-  "scenarios": {
-    "baseline": {
-      "total_revenue": 82232.13,
-      "charge_count": 155,
-      "discharge_count": 130,
-      "hold_count": 1060
-    },
-    "improved": {
-      "total_revenue": 136540.3,
-      "charge_count": 161,
-      "discharge_count": 132,
-      "hold_count": 1052
-    },
-    "optimal": {
-      "total_revenue": 219519.54,
-      "charge_count": 392,
-      "discharge_count": 317,
-      "hold_count": 636
-    },
-    "theoretical_max": {
-      "total_revenue": 219519.54,
-      "charge_count": 392,
-      "discharge_count": 317,
-      "hold_count": 636
-    }
-  },
-  "strategy_analysis": {
-    "sensitivity_points": 11,
-    "horizon_points": 6
-  },
-  "nodal_analysis": {
-    "nodes_ranked": 19,
-    "nodes_cached": 16,
-    "top_node": "ODESW_RN"
-  },
   "asset_design": {
     "solar_capacity_mw": 150.0,
     "interconnection_limit_mw": 100.0,

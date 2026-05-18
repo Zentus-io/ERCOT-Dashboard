@@ -378,9 +378,71 @@ def _precompute_asset_design(loader, df_prices, specs, args):
     print(f'  → {elapsed:.1f}s. Optimal: {best_key[0]:.0f} MW × {best_key[1]:.1f}h '
           f'= ${best_res["total_revenue"]:,.0f}')
 
+    # --- Curtailment Elimination: Minimum Battery Configurations ---
+    # Replicates the spinner block in pages/5_🏗️_Asset_Design.py around
+    # line 1509: builds the curtailment frontier, finds Min Power and Min
+    # Capacity configs that hit ~0% curtailment, simulates each.
+    print('\n[Asset Design] Curtailment frontier + min-config sims...')
+    from core.analytics.curtailment_optimizer import calculate_curtailment_frontier
+    t0 = time.time()
+    peak_clipping = float(df_hybrid['Clipped_MW'].quantile(0.99))
+    power_search = np.linspace(peak_clipping * 0.95, peak_clipping * 3.0, 20)
+    duration_search = np.linspace(0.1, 16.0, 160)
+    frontier_df = calculate_curtailment_frontier(
+        df_hybrid['Clipped_MW'],
+        df_hybrid['price_mwh_rt'],
+        efficiency=specs.efficiency,
+        power_range=power_search,
+        duration_range=duration_search,
+    )
+    print(f'  frontier rows={len(frontier_df)}  built in {time.time() - t0:.1f}s')
+
+    valid_configs = frontier_df[frontier_df['curtailment_pct'] < 0.1].copy()
+    curtailment_payload = None
+    if not valid_configs.empty:
+        frontier_curve = valid_configs.loc[
+            valid_configs.groupby('power_mw')['duration_h'].idxmin()
+        ].copy().sort_values('power_mw')
+        min_power_row = frontier_curve.iloc[0]
+        min_power_p = float(min_power_row['power_mw'])
+        min_power_d = float(min_power_row['duration_h'])
+        min_capacity_row = frontier_curve.loc[frontier_curve['capacity_mwh'].idxmin()]
+        min_capacity_p = float(min_capacity_row['power_mw'])
+        min_capacity_d = float(min_capacity_row['duration_h'])
+
+        t0 = time.time()
+        min_power_res = _simulate_clipping_only(
+            df_hybrid, min_power_p, min_power_d, specs.efficiency, base_solar_revenue,
+            DEFAULT_STRATEGY['type'], int(DEFAULT_STRATEGY['horizon_hours']),
+            int(DEFAULT_STRATEGY['window_hours']),
+            float(DEFAULT_STRATEGY['charge_percentile']),
+            float(DEFAULT_STRATEGY['discharge_percentile']),
+        )
+        min_capacity_res = _simulate_clipping_only(
+            df_hybrid, min_capacity_p, min_capacity_d, specs.efficiency, base_solar_revenue,
+            DEFAULT_STRATEGY['type'], int(DEFAULT_STRATEGY['horizon_hours']),
+            int(DEFAULT_STRATEGY['window_hours']),
+            float(DEFAULT_STRATEGY['charge_percentile']),
+            float(DEFAULT_STRATEGY['discharge_percentile']),
+        )
+        print(f'  min_power   {min_power_p:.1f} MW × {min_power_d:.2f}h  '
+              f'rev=${min_power_res["total_revenue"]:>10,.0f}')
+        print(f'  min_capacity {min_capacity_p:.1f} MW × {min_capacity_d:.2f}h  '
+              f'rev=${min_capacity_res["total_revenue"]:>10,.0f}  ({time.time() - t0:.1f}s)')
+
+        curtailment_payload = {
+            'frontier_curve': frontier_curve.reset_index(drop=True),
+            'peak_clipping_mw': peak_clipping,
+            'min_power': {'power_mw': min_power_p, 'duration_h': min_power_d,
+                          'capacity_mwh': min_power_p * min_power_d, 'res': min_power_res},
+            'min_capacity': {'power_mw': min_capacity_p, 'duration_h': min_capacity_d,
+                             'capacity_mwh': min_capacity_p * min_capacity_d, 'res': min_capacity_res},
+        }
+
     return {
         'current_res': current_res,
         'sweep_results': sweep_results,
+        'curtailment': curtailment_payload,
         'config': {
             'solar_capacity_mw': solar_capacity_mw,
             'interconnection_limit_mw': interconnection_limit_mw,
