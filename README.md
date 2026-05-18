@@ -1,8 +1,8 @@
 # ERCOT Battery Storage Revenue Opportunity Dashboard
 
-## Zentus - Engie Urja AI Challenge 2025
+## Zentus
 
-Interactive Streamlit dashboard demonstrating how improved renewable energy forecasting increases battery storage revenue in ERCOT markets. Features a modular OOP architecture with Supabase database integration for scalable historical data analysis.
+Interactive Streamlit dashboard demonstrating how improved renewable energy forecasting increases battery storage revenue in ERCOT markets. Features a modular OOP architecture with Supabase database integration for scalable historical data analysis. Market-agnostic core — the same dispatch engine adapts to OMIE/SRAD/aFRR with a data-layer swap.
 
 ---
 
@@ -419,8 +419,7 @@ Stanford Doerr School of Sustainability Accelerator Fellow
 ### Dashboard Code
 
 - **Author**: Zentus
-- **Purpose**: Engie Urja AI Challenge 2025 submission
-- **Framework**: Streamlit 1.28+
+- **Framework**: Streamlit 1.32+
 - **Database**: Supabase (PostgreSQL)
 
 ---
