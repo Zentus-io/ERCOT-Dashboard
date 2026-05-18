@@ -88,19 +88,27 @@ def render_strategy_config() -> dict:
     elif strategy_type == "Rolling Window Optimization":
         st.sidebar.markdown("**Optimization Parameters:**")
 
-        # Callback for window changes
+        # Callback for window changes. Streamlit fires on_change callbacks
+        # BEFORE the script reruns, so the widget that owns the key may not
+        # have been recreated yet (e.g. after a strategy switch, after deploy
+        # rebuild, etc.). Guard against KeyError.
         def on_window_change():
+            if "window_slider" not in st.session_state:
+                return
             new_val = st.session_state.window_slider
             if new_val != state.window_hours:
                 update_state(window_hours=new_val)
                 clear_simulation_cache()
 
-        # Lookahead window slider
+        # Lookahead window slider. Seed session state explicitly instead of
+        # passing value= (avoids the "default and session-state both set"
+        # Streamlit warning).
+        if "window_slider" not in st.session_state:
+            st.session_state["window_slider"] = state.window_hours if hasattr(state, "window_hours") else 12
         st.sidebar.slider(
             "Lookahead Window (hours):",
             min_value=2,
             max_value=24,
-            value=state.window_hours if hasattr(state, 'window_hours') else 12,
             step=1,
             help="Number of hours to look ahead for optimization",
             key="window_slider",
@@ -110,19 +118,21 @@ def render_strategy_config() -> dict:
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
 
-        # Callback for horizon changes
+        # Same guard as on_window_change above.
         def on_horizon_change():
+            if "mpc_horizon_slider" not in st.session_state:
+                return
             new_val = st.session_state.mpc_horizon_slider
             if not hasattr(state, 'horizon_hours') or new_val != state.horizon_hours:
                 update_state(horizon_hours=new_val)
                 clear_simulation_cache()
 
-        # Optimization horizon slider
+        if "mpc_horizon_slider" not in st.session_state:
+            st.session_state["mpc_horizon_slider"] = state.horizon_hours if hasattr(state, "horizon_hours") else 6
         st.sidebar.slider(
             "Optimization Horizon (hours):",
             min_value=2,
             max_value=24,
-            value=state.horizon_hours if hasattr(state, 'horizon_hours') else 6,
             step=1,
             help="Lookahead horizon for each optimization step.",
             key="mpc_horizon_slider",
