@@ -64,7 +64,7 @@ class AppState:
 
     # Strategy settings (practical dispatch strategies only - LP is used as
     # benchmark, not a strategy)
-    strategy_type: str = "Threshold-Based"  # Options: "Threshold-Based", "Rolling Window Optimization"
+    strategy_type: str = "MPC (Rolling Horizon)"  # Options: "Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"
     charge_percentile: float = 0.25
     discharge_percentile: float = 0.75
     window_hours: int = 6

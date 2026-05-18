@@ -176,15 +176,20 @@ def _render_date_range_selector(state, data_source):
             date.today()
         )
 
-        # Ensure state dates are within available range
-        if earliest and state.start_date < earliest:
+        # On first load (or if persisted state dates fall outside the database's
+        # available window), default to the FULL available window rather than
+        # clipping to a single day. Without this, the today-based defaults
+        # (date.today() - 30 .. date.today()) get clipped to (latest, latest)
+        # and the user sees a one-day stub of data instead of everything we have.
+        if earliest and latest and (
+            state.start_date > latest
+            or state.end_date < earliest
+            or state.start_date < earliest
+            or state.end_date > latest
+        ):
             state.start_date = earliest
-        if latest and state.start_date > latest:
-            state.start_date = latest
-        if earliest and state.end_date < earliest:
-            state.end_date = earliest
-        if latest and state.end_date > latest:
             state.end_date = latest
+            state._dates_auto_selected = True
 
         # Date range picker
         date_range_input = st.sidebar.date_input(
