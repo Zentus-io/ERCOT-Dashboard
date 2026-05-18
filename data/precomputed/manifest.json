@@ -34,7 +34,7 @@
     "discharge_percentile",
     "forecast_improvement"
   ],
-  "generated_at_utc": "2026-05-18T17:47:24Z",
+  "generated_at_utc": "2026-05-18T17:59:33Z",
   "price_rows": 1345,
   "scenarios": {
     "baseline": {
@@ -61,5 +61,14 @@
       "discharge_count": 399,
       "hold_count": 505
     }
+  },
+  "strategy_analysis": {
+    "sensitivity_points": 11,
+    "horizon_points": 6
+  },
+  "nodal_analysis": {
+    "nodes_ranked": 19,
+    "nodes_cached": 16,
+    "top_node": "ODESW_RN"
   }
 }

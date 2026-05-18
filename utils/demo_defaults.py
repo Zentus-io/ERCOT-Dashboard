@@ -30,6 +30,8 @@ SIMULATION_RESULT_VERSION = 1
 PRECOMPUTE_DIR = Path(__file__).parent.parent / 'data' / 'precomputed'
 SIM_PICKLE_PATH = PRECOMPUTE_DIR / 'sim_default.pkl.gz'
 SWEEP_PICKLE_PATH = PRECOMPUTE_DIR / 'sweep_default.pkl.gz'
+STRATEGY_PICKLE_PATH = PRECOMPUTE_DIR / 'strategy_default.pkl.gz'
+NODAL_PICKLE_PATH = PRECOMPUTE_DIR / 'nodal_default.pkl.gz'
 MANIFEST_PATH = PRECOMPUTE_DIR / 'manifest.json'
 
 
@@ -124,6 +126,50 @@ def load_precomputed_sweep() -> Optional[Tuple[dict, list]]:
         if not (isinstance(results_cache, dict) and isinstance(history_data, list)):
             return None
         return results_cache, history_data
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ModuleNotFoundError):
+        return None
+
+
+def load_precomputed_strategy_analysis() -> Optional[dict]:
+    """Return precomputed Strategy Analysis sensitivity dict, or None.
+
+    Expected shape:
+        {
+          'sensitivity': {
+            'improvement_range': list[int],
+            'revenue_threshold': list[float],
+            'revenue_rolling_window': list[float],
+            'revenue_mpc': list[float],
+            'revenue_linear': list[float],
+          },
+          'horizon_sensitivity': {
+            'horizon_range': list[int],
+            'revenue_horizon': list[float],
+          },
+        }
+    """
+    if not STRATEGY_PICKLE_PATH.exists():
+        return None
+    try:
+        with gzip.open(STRATEGY_PICKLE_PATH, 'rb') as f:
+            obj = pickle.load(f)
+        if not isinstance(obj, dict):
+            return None
+        return obj
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ModuleNotFoundError):
+        return None
+
+
+def load_precomputed_nodal_analysis() -> Optional[Tuple]:
+    """Return (results_df, node_data_cache) for the Nodal Analysis page, or None."""
+    if not NODAL_PICKLE_PATH.exists():
+        return None
+    try:
+        with gzip.open(NODAL_PICKLE_PATH, 'rb') as f:
+            obj = pickle.load(f)
+        if not (isinstance(obj, tuple) and len(obj) == 2):
+            return None
+        return obj
     except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ModuleNotFoundError):
         return None
 

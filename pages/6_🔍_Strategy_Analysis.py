@@ -228,9 +228,21 @@ def run_horizon_sensitivity_analysis(
     return list(horizon_range), revenue_horizon
 
 
-# Run forecast sensitivity analysis
-improvement_range, revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear = run_sensitivity_analysis(
-    node_data, state.battery_specs, state.charge_percentile, state.discharge_percentile, state.window_hours)
+# Run forecast sensitivity analysis (precomputed for the demo-default config)
+from utils.demo_defaults import current_state_matches_demo, load_precomputed_strategy_analysis
+_demo_strategy_data = (
+    load_precomputed_strategy_analysis() if current_state_matches_demo(state) else None
+)
+if _demo_strategy_data and 'sensitivity' in _demo_strategy_data:
+    s = _demo_strategy_data['sensitivity']
+    improvement_range = s['improvement_range']
+    revenue_threshold = s['revenue_threshold']
+    revenue_rolling_window = s['revenue_rolling_window']
+    revenue_mpc = s['revenue_mpc']
+    revenue_linear = s['revenue_linear']
+else:
+    improvement_range, revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear = run_sensitivity_analysis(
+        node_data, state.battery_specs, state.charge_percentile, state.discharge_percentile, state.window_hours)
 
 # Create comparison chart
 fig_sensitivity = go.Figure()
@@ -341,11 +353,16 @@ elif state.strategy_type == "MPC (Rolling Horizon)":
     st.markdown("---")
     st.subheader(f"Optimization Horizon Sensitivity (at {state.forecast_improvement}% Improvement)")
 
-    horizon_range, revenue_horizon_sens = run_horizon_sensitivity_analysis(
-        node_data,
-        state.battery_specs,
-        state.forecast_improvement / 100.0
-    )
+    if _demo_strategy_data and 'horizon_sensitivity' in _demo_strategy_data:
+        h = _demo_strategy_data['horizon_sensitivity']
+        horizon_range = h['horizon_range']
+        revenue_horizon_sens = h['revenue_horizon']
+    else:
+        horizon_range, revenue_horizon_sens = run_horizon_sensitivity_analysis(
+            node_data,
+            state.battery_specs,
+            state.forecast_improvement / 100.0
+        )
 
     fig_horizon = go.Figure()
 

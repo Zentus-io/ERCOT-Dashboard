@@ -168,15 +168,32 @@ with col2:
         st.success("Cache cleared! Click 'Run Analysis' to rescan.")
         st.rerun()
 
+# If the user is on the demo-default config and the precomputed nodal scan is
+# available, auto-populate the session cache so the page renders results
+# immediately without having to click "Run Analysis".
+state = get_state()
+if 'nodal_results' not in st.session_state:
+    from utils.demo_defaults import current_state_matches_demo, load_precomputed_nodal_analysis
+    if current_state_matches_demo(state):
+        _demo_nodal = load_precomputed_nodal_analysis()
+        if _demo_nodal is not None:
+            _demo_results_df, _demo_node_cache = _demo_nodal
+            st.session_state['nodal_results'] = _demo_results_df
+            st.session_state['node_data_cache'] = _demo_node_cache
+
 # Run analysis on button click or if results already cached
 if run_analysis or 'nodal_results' in st.session_state:
-    state = get_state()
-    with st.spinner("🔄 Scanning nodes..."):
-        results_df, node_data_cache = run_nodal_assessment(
-            source,
-            start_date=state.start_date,
-            end_date=state.end_date,
-        )
+    # If we already have precomputed results in session, skip the live scan.
+    if 'nodal_results' in st.session_state and not run_analysis:
+        results_df = st.session_state['nodal_results']
+        node_data_cache = st.session_state.get('node_data_cache', {})
+    else:
+        with st.spinner("🔄 Scanning nodes..."):
+            results_df, node_data_cache = run_nodal_assessment(
+                source,
+                start_date=state.start_date,
+                end_date=state.end_date,
+            )
 
     # Store in session state
     st.session_state['nodal_results'] = results_df

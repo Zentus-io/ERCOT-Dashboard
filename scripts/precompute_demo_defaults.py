@@ -52,8 +52,10 @@ from core.battery.strategies import (  # noqa: E402
 )
 from core.data.loaders import SupabaseDataLoader  # noqa: E402
 from utils.demo_defaults import (  # noqa: E402
-    SIM_PICKLE_PATH,
+    NODAL_PICKLE_PATH,
     PRECOMPUTE_DIR,
+    SIM_PICKLE_PATH,
+    STRATEGY_PICKLE_PATH,
     write_manifest,
 )
 
@@ -108,6 +110,118 @@ def _build_signature(node, start_date_str, end_date_str, forecast_improvement_pc
     )
 
 
+def _precompute_strategy_analysis(simulator, price_df, args):
+    """Run the 3 Strategy Analysis sensitivity sweeps used by page 6.
+
+    Mirrors the loops in pages/6_🔍_Strategy_Analysis.py:
+      - forecast sensitivity: 11 improvement levels × 4 strategies
+      - horizon sensitivity (MPC only): 6 horizon values
+      - window sensitivity (Rolling Window only): SKIPPED — not active when
+        default strategy is MPC, so the page never calls it.
+    """
+    print(f'\n[Strategy] Forecast sensitivity (11 improvements × 4 strategies)...')
+    improvement_range = list(range(0, 101, 10))
+    revenue_threshold, revenue_rolling_window, revenue_mpc, revenue_linear = [], [], [], []
+    t0 = time.time()
+    for imp in improvement_range:
+        factor = imp / 100.0
+        # Strategy instances rebuilt per iteration to mirror page code
+        s_threshold = ThresholdStrategy(0.25, 0.75)
+        s_window = RollingWindowStrategy(6)
+        # NOTE: page hardcodes MPC horizon=24 inside the sweep (line 133 of page 6)
+        s_mpc = MPCStrategy(horizon_hours=24)
+        s_linear = LinearOptimizationStrategy()
+        revenue_threshold.append(simulator.run(price_df, s_threshold, improvement_factor=factor).total_revenue)
+        revenue_rolling_window.append(simulator.run(price_df, s_window, improvement_factor=factor).total_revenue)
+        revenue_mpc.append(simulator.run(price_df, s_mpc, improvement_factor=factor).total_revenue)
+        revenue_linear.append(simulator.run(price_df, s_linear, improvement_factor=factor).total_revenue)
+        print(f'  imp={imp:3d}%  threshold=${revenue_threshold[-1]:>10,.0f}  '
+              f'window=${revenue_rolling_window[-1]:>10,.0f}  '
+              f'mpc=${revenue_mpc[-1]:>10,.0f}  lp=${revenue_linear[-1]:>10,.0f}')
+    print(f'  → {time.time() - t0:.1f}s')
+
+    print(f'\n[Strategy] Horizon sensitivity (6 horizons @ {args.forecast_improvement:.0f}%)...')
+    horizon_range = list(range(2, 14, 2))
+    revenue_horizon = []
+    t0 = time.time()
+    factor = args.forecast_improvement / 100.0
+    for h in horizon_range:
+        result = simulator.run(price_df, MPCStrategy(horizon_hours=h), improvement_factor=factor)
+        revenue_horizon.append(result.total_revenue)
+        print(f'  horizon={h:2d}h  revenue=${revenue_horizon[-1]:>10,.0f}')
+    print(f'  → {time.time() - t0:.1f}s')
+
+    return {
+        'sensitivity': {
+            'improvement_range': improvement_range,
+            'revenue_threshold': revenue_threshold,
+            'revenue_rolling_window': revenue_rolling_window,
+            'revenue_mpc': revenue_mpc,
+            'revenue_linear': revenue_linear,
+        },
+        'horizon_sensitivity': {
+            'horizon_range': horizon_range,
+            'revenue_horizon': revenue_horizon,
+        },
+    }
+
+
+def _precompute_nodal_analysis(start_date, end_date):
+    """Run the Nodal Analysis cross-node assessment for the visible date window.
+
+    Mirrors pages/1_🗺️_Nodal_Analysis.py:run_nodal_assessment exactly so the
+    intercept can drop these results straight into st.session_state.
+    """
+    from core.data.loaders import load_data as _load_data  # local: page does the same
+
+    print('\n[Nodal] Cross-node scan...')
+    loader = SupabaseDataLoader()
+    nodes = loader.get_available_nodes()[:50]
+    print(f'  scanning {len(nodes)} nodes for {start_date}..{end_date}')
+
+    results = []
+    node_data_cache = {}
+    t0 = time.time()
+    for i, node in enumerate(nodes, start=1):
+        try:
+            df = _load_data(source='database', node=node, start_date=start_date, end_date=end_date)
+        except Exception as exc:  # match page behavior: skip nodes that fail
+            print(f'  [{i:2d}/{len(nodes)}] {node:18s} ERROR: {exc}')
+            continue
+        if df.empty:
+            print(f'  [{i:2d}/{len(nodes)}] {node:18s} (no data)')
+            continue
+        volatility = df['price_mwh_rt'].std()
+        avg_spread = df['price_spread'].mean()
+        profitable_spreads = df[df['price_spread'] > 20]['price_spread']
+        revenue_score = profitable_spreads.sum()
+        results.append({
+            'Node': node,
+            'Volatility ($/MWh)': round(volatility, 2),
+            'Avg Spread ($/MWh)': round(avg_spread, 2),
+            'Revenue Score': round(revenue_score, 2),
+            'Data Points': len(df),
+        })
+        if len(node_data_cache) < 10:
+            node_data_cache[node] = df
+        print(f'  [{i:2d}/{len(nodes)}] {node:18s} vol=${volatility:6.2f}  score=${revenue_score:>10,.0f}')
+
+    import pandas as pd  # local import: avoid touching module-top imports
+    results_df = pd.DataFrame(results).sort_values('Revenue Score', ascending=False).reset_index(drop=True)
+    results_df.index += 1
+    # Make sure the top-10 (used by viz) are all in the cache, like the page does.
+    top_nodes = results_df.head(10)['Node'].tolist()
+    for node in top_nodes:
+        if node not in node_data_cache:
+            try:
+                node_data_cache[node] = _load_data(
+                    source='database', node=node, start_date=start_date, end_date=end_date)
+            except Exception:
+                pass
+    print(f'  → {time.time() - t0:.1f}s, {len(results_df)} nodes ranked')
+    return results_df, node_data_cache
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--node', default=DEFAULT_NODE,
@@ -120,6 +234,8 @@ def main():
                         help='Slider value used to build the "improved" scenario (default: 10%%)')
     parser.add_argument('--output-dir', default=None,
                         help=f'Output dir (default: {PRECOMPUTE_DIR})')
+    parser.add_argument('--scope', choices=['all', 'sim', 'strategy', 'nodal'], default='all',
+                        help='Which artifacts to (re)generate (default: all)')
     args = parser.parse_args()
 
     load_dotenv()
@@ -167,49 +283,76 @@ def main():
     specs = BatterySpecs(**DEFAULT_BATTERY)
     simulator = BatterySimulator(specs)
 
-    # 4. Run all 4 scenarios sequentially (no parallelism — easier to debug)
-    print(f'\n[2/3] Running {len(SCENARIOS)} scenarios sequentially...')
-    results = {}
-    for scenario_name, improvement_factor in SCENARIOS:
-        # 'improved' scenario uses the slider value (forecast_improvement / 100)
-        if improvement_factor is None:
-            improvement_factor = args.forecast_improvement / 100.0
-
-        strategy = _build_strategy(scenario_name, DEFAULT_STRATEGY['type'])
-        t0 = time.time()
-        result = simulator.run(price_df, strategy, improvement_factor=improvement_factor)
-        results[scenario_name] = result
-        print(f'  {scenario_name:18s} revenue=${result.total_revenue:>10,.0f}  '
-              f'charge={result.charge_count:4d}  discharge={result.discharge_count:4d}  '
-              f'({time.time() - t0:.1f}s)')
-
-    # 5. Serialize
-    print('\n[3/3] Writing artifacts...')
-    with gzip.open(sim_path, 'wb') as f:
-        pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
-    sim_size_kb = sim_path.stat().st_size / 1024
-    print(f'  ✓ {sim_path.relative_to(Path(__file__).parent.parent)}  ({sim_size_kb:.1f} KB)')
-
-    # 6. Manifest
-    signature = _build_signature(
-        args.node, str(start_date), str(end_date), args.forecast_improvement,
-    )
-    write_manifest(signature, extra={
+    extra_manifest = {
         'generated_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'price_rows': len(price_df),
-        'scenarios': {
+    }
+
+    sim_results = None
+    if args.scope in ('all', 'sim'):
+        # 4. Run all 4 scenarios sequentially (no parallelism — easier to debug)
+        print(f'\n[2/4] Running {len(SCENARIOS)} core scenarios sequentially...')
+        sim_results = {}
+        for scenario_name, improvement_factor in SCENARIOS:
+            if improvement_factor is None:
+                improvement_factor = args.forecast_improvement / 100.0
+            strategy = _build_strategy(scenario_name, DEFAULT_STRATEGY['type'])
+            t0 = time.time()
+            result = simulator.run(price_df, strategy, improvement_factor=improvement_factor)
+            sim_results[scenario_name] = result
+            print(f'  {scenario_name:18s} revenue=${result.total_revenue:>10,.0f}  '
+                  f'charge={result.charge_count:4d}  discharge={result.discharge_count:4d}  '
+                  f'({time.time() - t0:.1f}s)')
+        with gzip.open(sim_path, 'wb') as f:
+            pickle.dump(sim_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f'  ✓ {sim_path.relative_to(Path(__file__).parent.parent)}  '
+              f'({sim_path.stat().st_size / 1024:.1f} KB)')
+        extra_manifest['scenarios'] = {
             k: {
                 'total_revenue': round(float(v.total_revenue), 2),
                 'charge_count': int(v.charge_count),
                 'discharge_count': int(v.discharge_count),
                 'hold_count': int(v.hold_count),
             }
-            for k, v in results.items()
-        },
-    })
-    print(f'  ✓ {(output_dir / "manifest.json").relative_to(Path(__file__).parent.parent)}')
+            for k, v in sim_results.items()
+        }
 
-    print('\nDone. Reload the dashboard to verify cold-start time drops to <1s.')
+    if args.scope in ('all', 'strategy'):
+        print(f'\n[3/4] Strategy Analysis sensitivity sweeps...')
+        strategy_results = _precompute_strategy_analysis(simulator, price_df, args)
+        strat_path = output_dir / 'strategy_default.pkl.gz' if args.output_dir else STRATEGY_PICKLE_PATH
+        with gzip.open(strat_path, 'wb') as f:
+            pickle.dump(strategy_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f'  ✓ {strat_path.relative_to(Path(__file__).parent.parent)}  '
+              f'({strat_path.stat().st_size / 1024:.1f} KB)')
+        extra_manifest['strategy_analysis'] = {
+            'sensitivity_points': len(strategy_results['sensitivity']['improvement_range']),
+            'horizon_points': len(strategy_results['horizon_sensitivity']['horizon_range']),
+        }
+
+    if args.scope in ('all', 'nodal'):
+        print(f'\n[4/4] Nodal Analysis cross-node scan...')
+        nodal_results = _precompute_nodal_analysis(start_date, end_date)
+        nodal_path = output_dir / 'nodal_default.pkl.gz' if args.output_dir else NODAL_PICKLE_PATH
+        with gzip.open(nodal_path, 'wb') as f:
+            pickle.dump(nodal_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f'  ✓ {nodal_path.relative_to(Path(__file__).parent.parent)}  '
+              f'({nodal_path.stat().st_size / 1024:.1f} KB)')
+        results_df, node_data_cache = nodal_results
+        extra_manifest['nodal_analysis'] = {
+            'nodes_ranked': len(results_df),
+            'nodes_cached': len(node_data_cache),
+            'top_node': str(results_df.iloc[0]['Node']) if not results_df.empty else None,
+        }
+
+    # 5. Manifest (always rewritten — covers whichever scopes ran)
+    signature = _build_signature(
+        args.node, str(start_date), str(end_date), args.forecast_improvement,
+    )
+    write_manifest(signature, extra=extra_manifest)
+    print(f'\n  ✓ {(output_dir / "manifest.json").relative_to(Path(__file__).parent.parent)}')
+
+    print('\nDone. Reload the dashboard to verify cold-start time drops on covered pages.')
     return 0
 
 
