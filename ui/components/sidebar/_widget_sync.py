@@ -74,43 +74,30 @@ def render_synced_slider_input(
     slider_key = f"{key_prefix}_slider"
     input_key = f"{key_prefix}_input"
 
-    # Initialize master value if not present
+    # IMPERATIVE PATTERN — no on_change callbacks. Same root cause as the
+    # strategy_radio / threshold sliders: Streamlit re-renders sidebar
+    # widgets on multipage navigation and can fire on_change with stale
+    # session_state values (often the widget's min_value after a GC pass),
+    # which then writes nonsense into the master and corrupts AppState.
+    #
+    # The master_key is the persistent source of truth. Every render we
+    # FORCE-sync slider_key and input_key from master (so the widgets
+    # show the right value even if Streamlit cleared their keys), render
+    # them without callbacks, then read back their post-render values and
+    # update master if either changed.
     if master_key not in st.session_state:
-        if default_value is not None:
-            st.session_state[master_key] = float(default_value)
-        else:
-            st.session_state[master_key] = float(min_val)
+        st.session_state[master_key] = float(default_value) if default_value is not None else float(min_val)
+    elif default_value is not None and master_key not in st.session_state:
+        st.session_state[master_key] = float(default_value)
 
-    # Initialize widget values if not present
-    if slider_key not in st.session_state:
-        st.session_state[slider_key] = st.session_state[master_key]
-    if input_key not in st.session_state:
-        st.session_state[input_key] = st.session_state[master_key]
-
-    # Callbacks to synchronize values
-    def on_slider_change():
-        """Slider changed - update master and input"""
-        new_val = float(st.session_state[slider_key])
-        st.session_state[master_key] = new_val
-        st.session_state[input_key] = new_val
-        if on_change_callback:
-            on_change_callback()
-
-    def on_input_change():
-        """Input changed - update master and slider"""
-        new_val = float(st.session_state[input_key])
-        st.session_state[master_key] = new_val
-        # Round slider to nearest step
-        st.session_state[slider_key] = round(new_val / slider_step) * slider_step
-        if on_change_callback:
-            on_change_callback()
+    # Force-sync the slider/input widgets from master each render.
+    master_val = float(st.session_state[master_key])
+    st.session_state[slider_key] = max(float(min_val), min(float(max_val), master_val))
+    st.session_state[input_key] = st.session_state[slider_key]
 
     # Two-column layout: slider + precise input
     col_slider, col_input = st.sidebar.columns([2.25, 1])
 
-    # NOTE: with `key=` set AND the session state pre-populated above, do NOT
-    # pass `value=` — Streamlit warns and the two paths can fight. The widget
-    # reads its initial value straight from st.session_state[key].
     with col_slider:
         col_slider.slider(
             slider_label or label,
@@ -120,7 +107,6 @@ def render_synced_slider_input(
             help=help_text,
             disabled=disabled,
             key=slider_key,
-            on_change=on_slider_change
         )
 
     with col_input:
@@ -135,9 +121,21 @@ def render_synced_slider_input(
             help=f"Enter precise {label.lower()}",
             disabled=disabled,
             key=input_key,
-            on_change=on_input_change,
             label_visibility="collapsed" if not input_label_visible else "visible"
         )
+
+    # Imperative reconciliation: figure out which widget the user touched
+    # (if either) and update the master. Then run the optional callback.
+    new_slider = float(st.session_state[slider_key])
+    new_input = float(st.session_state[input_key])
+    if abs(new_slider - master_val) > 1e-9:
+        st.session_state[master_key] = new_slider
+        if on_change_callback:
+            on_change_callback()
+    elif abs(new_input - master_val) > 1e-9:
+        st.session_state[master_key] = new_input
+        if on_change_callback:
+            on_change_callback()
 
     return st.session_state[master_key]
 
