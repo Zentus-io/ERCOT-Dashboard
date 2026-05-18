@@ -43,12 +43,18 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
         if 'battery_preset_value' not in st.session_state:
             st.session_state.battery_preset_value = "Current Asset"
 
-        # Find the index for the stored preset value
-        try:
-            preset_index = preset_options.index(st.session_state.battery_preset_value)
-        except (ValueError, AttributeError):
-            preset_index = 0  # Default to "Custom"
-            st.session_state.battery_preset_value = "Current Asset"
+        # Seed the WIDGET's session_state from our persistent value so the
+        # selectbox doesn't reset on cross-page navigations. Don't pass index=
+        # alongside key= — Streamlit drifts when both are present.
+        if (
+            "battery_preset_widget" not in st.session_state
+            or st.session_state["battery_preset_widget"] not in preset_options
+        ):
+            st.session_state["battery_preset_widget"] = (
+                st.session_state.battery_preset_value
+                if st.session_state.battery_preset_value in preset_options
+                else "Current Asset"
+            )
 
         # Callback to persist selection
         def on_preset_change():
@@ -57,7 +63,6 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
-            index=preset_index,
             key="battery_preset_widget",
             on_change=on_preset_change,
             help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."

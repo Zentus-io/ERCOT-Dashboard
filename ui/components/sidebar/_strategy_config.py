@@ -30,14 +30,16 @@ def render_strategy_config() -> dict:
             update_state(strategy_type=new_strategy)
             clear_simulation_cache()
 
+    # Seed widget session_state from AppState BEFORE rendering. Using both
+    # index= and key= together creates drift across page navigations: Streamlit
+    # silently falls back to the index= default when session_state["strategy_radio"]
+    # is GC'd or stale, which then resets MPC/threshold child sliders too.
+    _strategy_options = ["Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"]
+    if "strategy_radio" not in st.session_state or st.session_state["strategy_radio"] not in _strategy_options:
+        st.session_state["strategy_radio"] = state.strategy_type if state.strategy_type in _strategy_options else "MPC (Rolling Horizon)"
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
-        options=["Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"],
-        index={
-            "Threshold-Based": 0,
-            "Rolling Window Optimization": 1,
-            "MPC (Rolling Horizon)": 2
-        }.get(state.strategy_type, 2),  # DEFAULT: MPC
+        options=_strategy_options,
         help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page).",
         key="strategy_radio",
         on_change=on_strategy_change
@@ -51,29 +53,31 @@ def render_strategy_config() -> dict:
         def on_threshold_change():
             clear_simulation_cache()
 
-        # Charge threshold slider
+        # Charge threshold slider (seed from state then drop value= to avoid drift)
+        if "charge_slider" not in st.session_state:
+            st.session_state["charge_slider"] = int(state.charge_percentile * 100)
         charge_pct = st.sidebar.slider(
             "Charge Threshold Percentile:",
             min_value=10,
             max_value=40,
-            value=int(state.charge_percentile * 100),
             step=5,
             help="Charge when price below this percentile",
             key="charge_slider",
             on_change=lambda: _update_charge_threshold(on_threshold_change)
         )
-        
+
         # Update state if changed
         new_charge = charge_pct / 100
         if abs(new_charge - state.charge_percentile) > 0.001:
             update_state(charge_percentile=new_charge)
 
         # Discharge threshold slider
+        if "discharge_slider" not in st.session_state:
+            st.session_state["discharge_slider"] = int(state.discharge_percentile * 100)
         discharge_pct = st.sidebar.slider(
             "Discharge Threshold Percentile:",
             min_value=60,
             max_value=90,
-            value=int(state.discharge_percentile * 100),
             step=5,
             help="Discharge when price above this percentile",
             key="discharge_slider",
