@@ -153,33 +153,52 @@ class SupabaseDataLoader:
             return []
 
     def get_date_range(self) -> tuple[Optional[date], Optional[date]]:
-        """Gets available date range from the database."""
-        try:
-            earliest_res = (
-                self.client.table("ercot_prices")
-                .select("timestamp")
-                .order("timestamp")
-                .limit(1)
-                .execute()
-            )
-            latest_res = (
-                self.client.table("ercot_prices")
-                .select("timestamp")
-                .order("timestamp", desc=True)
-                .limit(1)
-                .execute()
-            )
+        """Gets the actually-usable date range — intersection of DAM and RTM coverage.
 
-            if not earliest_res.data or not latest_res.data:
+        The simulator requires both DAM and RTM rows; reporting the union (e.g.
+        DAM-only days at the front of the dataset) gives users a misleading
+        tooltip that lets them pick ranges with zero RTM coverage. We compute
+        per-market min/max and return the intersection.
+        """
+        try:
+            def _bounds(market: str) -> tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+                earliest = (
+                    self.client.table("ercot_prices")
+                    .select("timestamp")
+                    .eq("market", market)
+                    .order("timestamp")
+                    .limit(1)
+                    .execute()
+                )
+                latest = (
+                    self.client.table("ercot_prices")
+                    .select("timestamp")
+                    .eq("market", market)
+                    .order("timestamp", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if not earliest.data or not latest.data:
+                    return None, None
+                e_ts = pd.to_datetime(str(earliest.data[0]["timestamp"]))
+                l_ts = pd.to_datetime(str(latest.data[0]["timestamp"]))
+                return e_ts, l_ts
+
+            dam_min, dam_max = _bounds("DAM")
+            rtm_min, rtm_max = _bounds("RTM")
+
+            if dam_min is None or rtm_min is None:
+                # Fall back to whichever market exists; better something than nothing.
+                only = dam_min or rtm_min
+                only_max = dam_max or rtm_max
+                return (only.date() if only is not None else None,
+                        only_max.date() if only_max is not None else None)
+
+            earliest = max(dam_min, rtm_min).date()
+            latest = min(dam_max, rtm_max).date()
+            if earliest > latest:
                 return None, None
-            # Convert to date type
-            earliest_data = earliest_res.data[0]
-            latest_data = latest_res.data[0]
-            if isinstance(earliest_data, dict) and isinstance(latest_data, dict):
-                earliest = pd.to_datetime(str(earliest_data['timestamp'])).date()
-                latest = pd.to_datetime(str(latest_data['timestamp'])).date()
-                return earliest, latest
-            return None, None
+            return earliest, latest
         except APIError as e:
             st.error(f"Database error fetching date range: {e}")
             return None, None
