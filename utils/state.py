@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from config.settings import DEFAULT_DATA_SOURCE, DEFAULT_DAYS_BACK, MAX_DAYS_RANGE
+from config.settings import DEFAULT_DATA_SOURCE, DEFAULT_DAYS_BACK, DEFAULT_NODE, MAX_DAYS_RANGE
 from core.battery.battery import BatterySpecs
 from core.battery.simulator import SimulationResult
 
@@ -71,8 +71,10 @@ class AppState:
     horizon_hours: int = 6
     forecast_improvement: int = 10
 
-    # Data selection
-    selected_node: Optional[str] = None
+    # Data selection. Pre-seed with DEFAULT_NODE so on first load the node
+    # selector lands on the precompute-default node (alphabetical fallback
+    # picks a different node and breaks the demo signature match).
+    selected_node: Optional[str] = DEFAULT_NODE
 
     # Date range selection (for database mode)
     start_date: date = field(
