@@ -74,35 +74,31 @@ def render_synced_slider_input(
     slider_key = f"{key_prefix}_slider"
     input_key = f"{key_prefix}_input"
 
-    # IMPERATIVE PATTERN — no on_change callbacks. Same root cause as the
-    # strategy_radio / threshold sliders: Streamlit re-renders sidebar
-    # widgets on multipage navigation and can fire on_change with stale
-    # session_state values (often the widget's min_value after a GC pass),
-    # which then writes nonsense into the master and corrupts AppState.
-    #
-    # The master_key is the persistent source of truth. Every render we
-    # FORCE-sync slider_key and input_key from master (so the widgets
-    # show the right value even if Streamlit cleared their keys), render
-    # them without callbacks, then read back their post-render values and
-    # update master if either changed.
+    # master_key is the persistent source of truth that the caller reads from.
     if master_key not in st.session_state:
-        st.session_state[master_key] = float(default_value) if default_value is not None else float(min_val)
-    elif default_value is not None and master_key not in st.session_state:
-        st.session_state[master_key] = float(default_value)
-
-    # Force-sync the slider/input widgets from master each render.
+        st.session_state[master_key] = (
+            float(default_value) if default_value is not None else float(min_val)
+        )
     master_val = float(st.session_state[master_key])
-    st.session_state[slider_key] = max(float(min_val), min(float(max_val), master_val))
-    st.session_state[input_key] = st.session_state[slider_key]
+    clamped_master = max(float(min_val), min(float(max_val), master_val))
+
+    # Pattern: pass `value=` AND `key=` to both widgets. Streamlit uses
+    # session_state[key] when present (so user input wins on a normal
+    # rerun) but falls back to `value=` when session_state[key] has been
+    # GC'd (which is what happens on cross-page navigation). This breaks
+    # the "reset to widget min_value" loop we kept hitting with various
+    # other patterns. Streamlit emits a soft warning about the combo —
+    # accept it; correctness > silencing the warning.
 
     # Two-column layout: slider + precise input
     col_slider, col_input = st.sidebar.columns([2.25, 1])
 
     with col_slider:
-        col_slider.slider(
+        slider_val = col_slider.slider(
             slider_label or label,
             min_value=min_val,
             max_value=max_val,
+            value=clamped_master,
             step=slider_step,
             help=help_text,
             disabled=disabled,
@@ -112,10 +108,11 @@ def render_synced_slider_input(
     with col_input:
         if not input_label_visible:
             col_input.write("")  # Alignment spacer
-        col_input.number_input(
+        input_val = col_input.number_input(
             input_label or label,
             min_value=min_val,
             max_value=max_val,
+            value=clamped_master,
             step=input_step,
             format=format_str,
             help=f"Enter precise {label.lower()}",
@@ -125,9 +122,11 @@ def render_synced_slider_input(
         )
 
     # Imperative reconciliation: figure out which widget the user touched
-    # (if either) and update the master. Then run the optional callback.
-    new_slider = float(st.session_state[slider_key])
-    new_input = float(st.session_state[input_key])
+    # (if either) and update the master. Skip when both widgets returned
+    # the master's current value (no user change). Optional callback
+    # fires only on a real change.
+    new_slider = float(slider_val)
+    new_input = float(input_val)
     if abs(new_slider - master_val) > 1e-9:
         st.session_state[master_key] = new_slider
         if on_change_callback:
