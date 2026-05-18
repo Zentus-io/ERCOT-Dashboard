@@ -41,14 +41,14 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
 
         # Initialize battery preset in session state if not present
         if 'battery_preset_value' not in st.session_state:
-            st.session_state.battery_preset_value = "Custom"
+            st.session_state.battery_preset_value = "Current Asset"
 
         # Find the index for the stored preset value
         try:
             preset_index = preset_options.index(st.session_state.battery_preset_value)
         except (ValueError, AttributeError):
             preset_index = 0  # Default to "Custom"
-            st.session_state.battery_preset_value = "Custom"
+            st.session_state.battery_preset_value = "Current Asset"
 
         # Callback to persist selection
         def on_preset_change():
@@ -73,7 +73,7 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
     else:
         # No EIA data available - force Custom mode
         if 'battery_preset_value' not in st.session_state:
-            st.session_state.battery_preset_value = "Custom"
+            st.session_state.battery_preset_value = "Current Asset"
         battery_preset = "Custom"
         default_capacity = DEFAULT_BATTERY['capacity_mwh']
         default_power = DEFAULT_BATTERY['power_mw']

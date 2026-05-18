@@ -1,11 +1,11 @@
 {
   "simulation_result_version": 1,
   "signature": [
-    "CACH_ESS_RN",
+    "NF_BRP_RN",
     "2025-11-12",
     "2025-11-26",
+    110.0,
     100.0,
-    50.0,
     0.95,
     0.05,
     0.95,
@@ -34,32 +34,32 @@
     "discharge_percentile",
     "forecast_improvement"
   ],
-  "generated_at_utc": "2026-05-18T17:59:33Z",
+  "generated_at_utc": "2026-05-18T18:08:11Z",
   "price_rows": 1345,
   "scenarios": {
     "baseline": {
-      "total_revenue": 91524.98,
-      "charge_count": 234,
-      "discharge_count": 236,
-      "hold_count": 875
+      "total_revenue": 82232.13,
+      "charge_count": 155,
+      "discharge_count": 130,
+      "hold_count": 1060
     },
     "improved": {
-      "total_revenue": 111395.8,
-      "charge_count": 238,
-      "discharge_count": 238,
-      "hold_count": 869
+      "total_revenue": 136540.3,
+      "charge_count": 161,
+      "discharge_count": 132,
+      "hold_count": 1052
     },
     "optimal": {
-      "total_revenue": 156378.03,
-      "charge_count": 441,
-      "discharge_count": 399,
-      "hold_count": 505
+      "total_revenue": 219519.54,
+      "charge_count": 392,
+      "discharge_count": 317,
+      "hold_count": 636
     },
     "theoretical_max": {
-      "total_revenue": 156397.35,
-      "charge_count": 441,
-      "discharge_count": 399,
-      "hold_count": 505
+      "total_revenue": 219519.54,
+      "charge_count": 392,
+      "discharge_count": 317,
+      "hold_count": 636
     }
   },
   "strategy_analysis": {

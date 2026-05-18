@@ -85,7 +85,37 @@ def _build_strategy(scenario_name: str, strategy_type: str):
     )
 
 
-def _build_signature(node, start_date_str, end_date_str, forecast_improvement_pct):
+def _resolve_current_asset_specs(loader, node: str):
+    """Mirror ui/components/sidebar/_battery_config._get_preset_values for
+    the "Current Asset" preset: capacity/power come from
+    engie_storage_assets row for `node`; efficiency / SOC bounds come from
+    DEFAULT_BATTERY.
+
+    Returns BatterySpecs ready to be passed to BatterySimulator.
+    """
+    engie = loader.load_engie_assets()
+    capacity_mwh = float(DEFAULT_BATTERY['capacity_mwh'])
+    power_mw = float(DEFAULT_BATTERY['power_mw'])
+    if not engie.empty:
+        match = engie[engie['settlement_point'] == node]
+        if not match.empty:
+            row = match.iloc[0]
+            # Page casts to int() — mirror that so the signature matches exactly.
+            if row.get('nameplate_power_mw') is not None:
+                power_mw = float(int(row['nameplate_power_mw']))
+            if row.get('nameplate_energy_mwh') is not None:
+                capacity_mwh = float(int(row['nameplate_energy_mwh']))
+    return BatterySpecs(
+        capacity_mwh=capacity_mwh,
+        power_mw=power_mw,
+        efficiency=DEFAULT_BATTERY['efficiency'],
+        min_soc=DEFAULT_BATTERY['min_soc'],
+        max_soc=DEFAULT_BATTERY['max_soc'],
+        initial_soc=DEFAULT_BATTERY['initial_soc'],
+    )
+
+
+def _build_signature(node, start_date_str, end_date_str, forecast_improvement_pct, specs):
     """Mirror utils/demo_defaults.state_signature() exactly."""
 
     def r(x):
@@ -95,12 +125,12 @@ def _build_signature(node, start_date_str, end_date_str, forecast_improvement_pc
         node,
         start_date_str,
         end_date_str,
-        r(DEFAULT_BATTERY['capacity_mwh']),
-        r(DEFAULT_BATTERY['power_mw']),
-        r(DEFAULT_BATTERY['efficiency']),
-        r(DEFAULT_BATTERY['min_soc']),
-        r(DEFAULT_BATTERY['max_soc']),
-        r(DEFAULT_BATTERY['initial_soc']),
+        r(specs.capacity_mwh),
+        r(specs.power_mw),
+        r(specs.efficiency),
+        r(specs.min_soc),
+        r(specs.max_soc),
+        r(specs.initial_soc),
         DEFAULT_STRATEGY['type'],
         int(DEFAULT_STRATEGY['horizon_hours']),
         int(DEFAULT_STRATEGY['window_hours']),
@@ -252,8 +282,6 @@ def main():
     print('=' * 80)
     print(f'Node:        {args.node}')
     print(f'Strategy:    {DEFAULT_STRATEGY["type"]} (horizon={DEFAULT_STRATEGY["horizon_hours"]}h)')
-    print(f'Battery:     {DEFAULT_BATTERY["capacity_mwh"]} MWh / '
-          f'{DEFAULT_BATTERY["power_mw"]} MW @ {DEFAULT_BATTERY["efficiency"]:.0%}')
     print(f'Improvement: {args.forecast_improvement:.1f}%')
 
     # 1. Resolve date range
@@ -279,8 +307,11 @@ def main():
         return 1
     print(f'  → {len(price_df):,} rows in {time.time() - t0:.1f}s')
 
-    # 3. Build battery + simulator
-    specs = BatterySpecs(**DEFAULT_BATTERY)
+    # 3. Build battery + simulator — use "Current Asset" preset for the demo node
+    # so the precompute signature matches what render_battery_config produces.
+    specs = _resolve_current_asset_specs(loader, args.node)
+    print(f'Battery:     {specs.power_mw:.0f} MW / {specs.capacity_mwh:.0f} MWh @ '
+          f'{specs.efficiency:.0%}  (from "Current Asset" preset for {args.node})')
     simulator = BatterySimulator(specs)
 
     extra_manifest = {
@@ -347,7 +378,7 @@ def main():
 
     # 5. Manifest (always rewritten — covers whichever scopes ran)
     signature = _build_signature(
-        args.node, str(start_date), str(end_date), args.forecast_improvement,
+        args.node, str(start_date), str(end_date), args.forecast_improvement, specs,
     )
     write_manifest(signature, extra=extra_manifest)
     print(f'\n  ✓ {(output_dir / "manifest.json").relative_to(Path(__file__).parent.parent)}')

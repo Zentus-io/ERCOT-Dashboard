@@ -63,9 +63,12 @@ DEFAULT_STRATEGY = {
 }
 
 # Demo-default node: the node the precomputed-defaults pipeline targets.
-# Currently CACH_ESS_RN — highest RTM volatility in the restored Nov-2025 window
-# (stddev ≈ $46/MWh, max spike $689/MWh). Re-pick when DB is backfilled.
-DEFAULT_NODE = 'CACH_ESS_RN'
+# Picked empirically: NF_BRP_RN (North Fork TX, BRP/Engie 100 MW / 110 MWh
+# 1.1h asset) has the highest arbitrage proxy in the Nov-2025 window (sum
+# of 15-min spreads above $20/MWh ≈ 2,198) AND a legible zone (North/Austin)
+# AND a real-sized 100 MW asset that maps cleanly to "Current Asset" preset.
+# Re-rank when DB is backfilled with more history.
+DEFAULT_NODE = 'NF_BRP_RN'
 
 # Toggle off via env to force live recompute even when state matches demo config.
 PRECOMPUTE_ENABLED = os.getenv('PRECOMPUTE_ENABLED', 'true').lower() != 'false'
