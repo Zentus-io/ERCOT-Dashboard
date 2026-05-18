@@ -39,21 +39,19 @@ def render_battery_config(eia_data: pd.DataFrame, engie_data: pd.DataFrame) -> B
     if eia_data is not None and not eia_data.empty:
         preset_options = ["Custom", "Current Asset"] + [v['name'] for v in BATTERY_PRESETS.values()]
 
-        # Imperative widget pattern. Force-sync the widget's session_state
-        # from our persistent value EVERY render. The callback approach was
-        # losing state across multipage navigation: Streamlit can fire the
-        # on_change callback when re-rendering the widget on a new page,
-        # reading whatever session_state value happens to be there at that
-        # moment (often the first option after a GC).
+        # Use index= + key= pattern. Streamlit picks session_state[key]
+        # when present (user click wins) and falls back to index= when
+        # the key was GC'd on cross-page navigation.
         if 'battery_preset_value' not in st.session_state:
             st.session_state.battery_preset_value = "Current Asset"
         if st.session_state.battery_preset_value not in preset_options:
             st.session_state.battery_preset_value = "Current Asset"
-        st.session_state["battery_preset_widget"] = st.session_state.battery_preset_value
+        _preset_index = preset_options.index(st.session_state.battery_preset_value)
 
         battery_preset = st.sidebar.selectbox(
             "Battery System Preset:",
             preset_options,
+            index=_preset_index,
             key="battery_preset_widget",
             help="Select a preset based on real Texas battery systems (EIA-860 data) or the currently selected asset."
         )

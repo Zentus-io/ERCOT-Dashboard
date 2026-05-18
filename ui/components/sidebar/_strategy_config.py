@@ -23,22 +23,18 @@ def render_strategy_config() -> dict:
     """
     state = get_state()
 
-    # IMPERATIVE PATTERN — no on_change callback. Streamlit fires on_change
-    # callbacks at unpredictable moments during multipage navigation (the
-    # widget gets "rerendered" on the new page and Streamlit treats that as
-    # a change event with the current session_state value, which can be the
-    # first option if the key was GC'd). The callback then writes
-    # "Threshold-Based" into state and the user loses their selection.
-    #
-    # Instead: ALWAYS sync session_state[key] from AppState before the widget
-    # renders. The widget then reads from session_state[key]. After render,
-    # imperatively compare the returned value to state and update if different.
+    # Pass index= matching state AND key=. Streamlit uses session_state[key]
+    # when present (so user clicks win) and falls back to index= when the
+    # key was GC'd on cross-page navigation (so we restore state on the
+    # next page). Force-syncing session_state[key] before render would
+    # instead OVERWRITE the user's brand-new click.
     _strategy_options = ["Threshold-Based", "Rolling Window Optimization", "MPC (Rolling Horizon)"]
     _state_strategy = state.strategy_type if state.strategy_type in _strategy_options else "MPC (Rolling Horizon)"
-    st.session_state["strategy_radio"] = _state_strategy
+    _state_strategy_index = _strategy_options.index(_state_strategy)
     strategy_type = st.sidebar.radio(
         "Battery Trading Strategy:",
         options=_strategy_options,
+        index=_state_strategy_index,
         help="Choose the battery dispatch strategy. Linear Programming is used as a theoretical benchmark (see Opportunity page).",
         key="strategy_radio",
     )
@@ -54,13 +50,11 @@ def render_strategy_config() -> dict:
         def on_threshold_change():
             clear_simulation_cache()
 
-        # Imperative pattern: sync session_state[key] from state, render
-        # without on_change, then update state if widget returned a new value.
-        st.session_state["charge_slider"] = int(state.charge_percentile * 100)
         charge_pct = st.sidebar.slider(
             "Charge Threshold Percentile:",
             min_value=10,
             max_value=40,
+            value=int(state.charge_percentile * 100),
             step=5,
             help="Charge when price below this percentile",
             key="charge_slider",
@@ -70,11 +64,11 @@ def render_strategy_config() -> dict:
             update_state(charge_percentile=new_charge)
             clear_simulation_cache()
 
-        st.session_state["discharge_slider"] = int(state.discharge_percentile * 100)
         discharge_pct = st.sidebar.slider(
             "Discharge Threshold Percentile:",
             min_value=60,
             max_value=90,
+            value=int(state.discharge_percentile * 100),
             step=5,
             help="Discharge when price above this percentile",
             key="discharge_slider",
@@ -88,11 +82,11 @@ def render_strategy_config() -> dict:
     elif strategy_type == "Rolling Window Optimization":
         st.sidebar.markdown("**Optimization Parameters:**")
 
-        st.session_state["window_slider"] = state.window_hours if hasattr(state, "window_hours") else 12
         window_hours = st.sidebar.slider(
             "Lookahead Window (hours):",
             min_value=2,
             max_value=24,
+            value=state.window_hours if hasattr(state, "window_hours") else 12,
             step=1,
             help="Number of hours to look ahead for optimization",
             key="window_slider",
@@ -104,11 +98,11 @@ def render_strategy_config() -> dict:
     elif strategy_type == "MPC (Rolling Horizon)":
         st.sidebar.markdown("**MPC Parameters:**")
 
-        st.session_state["mpc_horizon_slider"] = state.horizon_hours if hasattr(state, "horizon_hours") else 6
         horizon_hours = st.sidebar.slider(
             "Optimization Horizon (hours):",
             min_value=2,
             max_value=24,
+            value=state.horizon_hours if hasattr(state, "horizon_hours") else 6,
             step=1,
             help="Lookahead horizon for each optimization step.",
             key="mpc_horizon_slider",
