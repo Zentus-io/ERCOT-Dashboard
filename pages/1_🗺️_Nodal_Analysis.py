@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -11,6 +12,7 @@ from core.data.loaders import ParquetDataLoader, SupabaseDataLoader, load_data
 from ui.components.header import render_header
 from ui.components.sidebar import render_sidebar
 from ui.styles.custom_css import apply_custom_styles
+from utils.state import get_state
 
 configure_page("Nodal Analysis")
 apply_custom_styles()
@@ -36,21 +38,36 @@ if source == 'local_parquet':
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_node_data_cached(source: Literal['database', 'local_parquet'], node: str) -> pd.DataFrame:
+def load_node_data_cached(
+    source: Literal['database', 'local_parquet'],
+    node: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> pd.DataFrame:
     """
     Load and cache node data for 1 hour.
     Uses polars for fast parquet I/O when source is 'local_parquet'.
+
+    Date range is passed through so the database query targets the window
+    the user actually has data in. Without it, load_data() defaults to
+    today-30 → today, which is empty when the demo data is from a past
+    month.
     """
-    return load_data(source=source, node=node)
+    return load_data(source=source, node=node, start_date=start_date, end_date=end_date)
 
 
-def analyze_single_node(source: Literal['database', 'local_parquet'], node: str) -> Optional[dict]:
+def analyze_single_node(
+    source: Literal['database', 'local_parquet'],
+    node: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> Optional[dict]:
     """
     Analyze a single node and return metrics.
     Returns None if node has no data or error occurs.
     """
     try:
-        df = load_node_data_cached(source, node)
+        df = load_node_data_cached(source, node, start_date=start_date, end_date=end_date)
 
         if df.empty:
             return None
@@ -75,7 +92,11 @@ def analyze_single_node(source: Literal['database', 'local_parquet'], node: str)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[pd.DataFrame, dict]:
+def run_nodal_assessment(
+    source: Literal['database', 'local_parquet'],
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> tuple[pd.DataFrame, dict]:
     """
     Run nodal assessment with caching.
     Returns (results_df, node_data_cache) where node_data_cache contains data for top nodes.
@@ -107,12 +128,12 @@ def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[
     for i, node in enumerate(nodes):
         status_text.text(f"Analyzing node {i + 1}/{total}: {node}")
 
-        result = analyze_single_node(source, node)
+        result = analyze_single_node(source, node, start_date=start_date, end_date=end_date)
         if result:
             results.append(result)
             # Cache data for top nodes (we'll need top 3 for visualization)
             if len(results) <= 10:  # Cache top 10 to be safe
-                node_data_cache[node] = load_node_data_cached(source, node)
+                node_data_cache[node] = load_node_data_cached(source, node, start_date=start_date, end_date=end_date)
 
         progress_bar.progress((i + 1) / total)
 
@@ -130,7 +151,7 @@ def run_nodal_assessment(source: Literal['database', 'local_parquet']) -> tuple[
         top_nodes = results_df.head(10)['Node'].tolist()
         for node in top_nodes:
             if node not in node_data_cache:
-                node_data_cache[node] = load_node_data_cached(source, node)
+                node_data_cache[node] = load_node_data_cached(source, node, start_date=start_date, end_date=end_date)
 
         return results_df, node_data_cache
 
@@ -149,8 +170,13 @@ with col2:
 
 # Run analysis on button click or if results already cached
 if run_analysis or 'nodal_results' in st.session_state:
+    state = get_state()
     with st.spinner("🔄 Scanning nodes..."):
-        results_df, node_data_cache = run_nodal_assessment(source)
+        results_df, node_data_cache = run_nodal_assessment(
+            source,
+            start_date=state.start_date,
+            end_date=state.end_date,
+        )
 
     # Store in session state
     st.session_state['nodal_results'] = results_df

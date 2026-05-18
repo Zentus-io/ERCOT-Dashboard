@@ -108,12 +108,14 @@ def render_synced_slider_input(
     # Two-column layout: slider + precise input
     col_slider, col_input = st.sidebar.columns([2.25, 1])
 
+    # NOTE: with `key=` set AND the session state pre-populated above, do NOT
+    # pass `value=` — Streamlit warns and the two paths can fight. The widget
+    # reads its initial value straight from st.session_state[key].
     with col_slider:
         col_slider.slider(
             slider_label or label,
             min_value=min_val,
             max_value=max_val,
-            value=st.session_state[slider_key],
             step=slider_step,
             help=help_text,
             disabled=disabled,
@@ -128,7 +130,6 @@ def render_synced_slider_input(
             input_label or label,
             min_value=min_val,
             max_value=max_val,
-            value=st.session_state[input_key],
             step=input_step,
             format=format_str,
             help=f"Enter precise {label.lower()}",
