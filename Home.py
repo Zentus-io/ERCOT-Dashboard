@@ -321,10 +321,11 @@ Use the top navigation to explore different aspects of battery revenue optimizat
 
 ### 💡 Key Features
 
-- **Real ERCOT price data** from July 20, 2025
-- **Two dispatch strategies** with configurable parameters
+- **Real ERCOT DAM + RTM price data** with 15-minute granularity
+- **Multiple dispatch strategies**: Threshold, Rolling Window, MPC, LP perfect-foresight
 - **Three forecast scenarios** (Baseline, Improved, Theoretical Max)
-- **Battery presets** based on 136 real Texas systems (EIA-860 data)
+- **Battery presets** based on 136 real Texas systems (EIA-860 data) plus per-asset "Current Asset" lookup
+- **Hybrid solar + storage sizing** with curtailment optimization
 - **Interactive visualizations** with Plotly
 - **Revenue sensitivity analysis** to forecast accuracy
 

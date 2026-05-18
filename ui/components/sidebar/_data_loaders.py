@@ -157,5 +157,5 @@ def load_engie_data() -> pd.DataFrame:
     try:
         return SupabaseDataLoader().load_engie_assets()
     except Exception as e:
-        st.warning(f"Could not load Engie asset data: {e}")
+        st.warning(f"Could not load storage asset reference data: {e}")
         return pd.DataFrame()

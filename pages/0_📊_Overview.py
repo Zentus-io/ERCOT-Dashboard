@@ -35,7 +35,7 @@ render_sidebar()
 # MAIN CONTENT
 # ============================================================================
 
-st.header("📊 Revenue Analysis")
+st.header("📊 Overview")
 
 # Check if configuration is valid
 if not has_valid_config():
