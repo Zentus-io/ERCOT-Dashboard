@@ -403,41 +403,31 @@ class SupabaseDataLoader:
             data = []
             start = 0
             batch_size = 1000
-            
-            print(f"DEBUG: Fetching generation for {node} {fuel_type} from {start_date} to {end_date}")
-            
+
             while True:
-                print(f"DEBUG: Fetching range {start} to {start + batch_size - 1}")
                 response = query.range(start, start + batch_size - 1).execute()
                 if not response.data:
-                    print("DEBUG: No data returned in batch")
                     break
-                
                 batch_len = len(response.data)
-                print(f"DEBUG: Fetched {batch_len} rows")
                 data.extend(response.data)
-                
                 if batch_len < batch_size:
                     break
                 start += batch_size
-            
-            print(f"DEBUG: Total rows fetched: {len(data)}")
-            
+
             if not data:
                 return pd.DataFrame()
-                
+
             df = pd.DataFrame(data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
+
             # Convert to US/Central if TZ-aware, else assume it matches price data (which is usually local-naive in this app)
-            # The fetch script inserts as UTC (isoformat). 
+            # The fetch script inserts as UTC (isoformat).
             # Price data in this app is usually naive (local time).
             # We need to convert UTC -> Central -> Naive to match.
             if df['timestamp'].dt.tz is not None:
                 df['timestamp'] = df['timestamp'].dt.tz_convert('US/Central').dt.tz_localize(None)
-                
+
             df = df.set_index('timestamp').sort_index()
-            print(f"DEBUG: Final DataFrame range: {df.index.min()} to {df.index.max()}")
             return df
             
         except APIError as e:
