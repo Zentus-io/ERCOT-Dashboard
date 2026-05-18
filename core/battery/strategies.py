@@ -19,23 +19,29 @@ def calculate_dt(price_df: pd.DataFrame) -> float:
     """
     Calculate time step duration from price data timestamps.
 
-    Parameters
-    ----------
-    price_df : pd.DataFrame
-        Price data with 'timestamp' column
+    Returns the median positive time delta to be robust against duplicate
+    timestamps, out-of-order rows, and DST-related gaps. A first-two-rows
+    diff is fragile: if those two rows share a timestamp (which can happen
+    via duplicate inserts, merge artefacts, or DST fall-back repeated hour)
+    the returned dt is 0 and any downstream division blows up.
 
     Returns
     -------
     float
-        Time step duration in hours:
-        - 1.0 for hourly data (DAM)
-        - 0.25 for 15-minute data (RTM)
-        - Defaults to 1.0 if cannot determine
+        Median timestep in hours. Falls back to 1.0 if no positive diffs
+        can be computed.
     """
     if 'timestamp' in price_df.columns and len(price_df) > 1:
-        dt = (price_df['timestamp'].iloc[1] -
-              price_df['timestamp'].iloc[0]).total_seconds() / 3600.0
-        return dt
+        diffs_s = (
+            price_df['timestamp']
+            .sort_values()
+            .diff()
+            .dt.total_seconds()
+            .dropna()
+        )
+        positive = diffs_s[diffs_s > 0]
+        if len(positive) > 0:
+            return float(positive.median() / 3600.0)
     return 1.0
 
 
